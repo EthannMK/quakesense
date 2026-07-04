@@ -1,0 +1,17 @@
+# Secrets - never commit service-account keys
+*service-account*.json
+gcp-*.json
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Large downloaded data (regenerate with scripts/load_history.py)
+data/history.csv
+
+# OS
+.DS_Store
+Thumbs.db

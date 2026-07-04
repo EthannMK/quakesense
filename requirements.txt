@@ -1,0 +1,8 @@
+streamlit>=1.38
+pandas>=2.2
+numpy>=1.26
+requests>=2.31
+pydeck>=0.9
+google-cloud-bigquery>=3.25
+google-genai>=1.0
+db-dtypes>=1.2
