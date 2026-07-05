@@ -208,6 +208,103 @@ def ask_the_data(question: str, history: str = "") -> dict:
     return {"sql": sql, "df": df, "answer": explain_result(question, sql, df)}
 
 
+# ================================================================ SITREP ====
+SITREP_PROMPT = """You are the duty officer of an emergency operations center.
+Produce a formal SITUATION REPORT (SITREP) in markdown for the event below.
+Base every statement ONLY on the data given; where data is missing, write
+"No confirmed information at this time." Never predict earthquakes.
+
+EVENT (USGS): M{mag} - {place} - {time} UTC - depth {depth} km
+PAGER alert: {pager} | Tsunami flag: {tsunami} | Felt reports: {felt}
+REGION'S 50-YEAR RECORD (within ~300 km): {hist}
+LIVE ACTIVITY nearby this week: {live_near} events
+
+Use exactly these sections:
+# SITUATION REPORT - {place}
+*Generated {now} UTC · QuakeSense · Data: USGS*
+## 1. Summary
+## 2. Earthquake Overview
+## 3. Areas Potentially Affected
+(reason only from place name, depth and magnitude; be explicit about uncertainty)
+## 4. Historical Comparison
+## 5. Immediate Priorities
+(numbered, for local authorities)
+## 6. Public Safety Message
+(short, calm, quotable for radio/social media)
+Keep the whole report under 350 words."""
+
+
+def sitrep(ev: dict, hist: str, live_near: int) -> str:
+    from datetime import datetime, timezone as tz
+    now = datetime.now(tz.utc).strftime("%Y-%m-%d %H:%M")
+    try:
+        from google.genai import types
+        resp = _client().models.generate_content(
+            model=GEMINI_MODEL,
+            contents=SITREP_PROMPT.format(
+                mag=ev["mag"], place=ev["place"], time=ev["time"],
+                depth=round(ev["depth_km"], 1), pager=ev.get("pager_alert") or "not assigned",
+                tsunami="YES" if ev.get("tsunami_flag") else "no",
+                felt=ev.get("felt_reports", 0), hist=hist or "not available",
+                live_near=live_near, now=now),
+            config=types.GenerateContentConfig(temperature=0.2))
+        return resp.text.strip()
+    except Exception as e:
+        return (f"# SITUATION REPORT - {ev['place']}\n*Generated {now} UTC (template - "
+                f"AI unavailable: {str(e)[:60]})*\n\n## Summary\nM{ev['mag']} earthquake, "
+                f"{ev['place']}, depth {ev['depth_km']:.0f} km, at {ev['time']} UTC.\n\n"
+                f"## Immediate Priorities\n1. Verify impact through local authorities.\n"
+                f"2. Check critical infrastructure.\n3. Prepare for aftershocks.\n\n"
+                f"## Public Safety Message\nExpect aftershocks. Drop, cover, hold on. "
+                f"Follow official channels.")
+
+
+# ============================================================= do / don't ===
+DO_DONT_PROMPT = """You are a disaster-response educator writing for people in an
+earthquake-affected area BEFORE professional rescue teams arrive.
+Context: {context}. Write everything in {language}.
+
+Use only established international guidance (FEMA, Red Cross, INSARAG community
+guidance). Format in markdown with exactly these sections:
+
+### If you are trapped
+**Do** - 4-5 short bullets (protect airway from dust, tap on pipes or walls
+rhythmically, conserve phone battery, ...) / **Don't** - 3-4 bullets (don't
+shout continuously - save air; no lighters or matches - gas risk; ...)
+
+### If you are safe
+**Do** - 4-5 bullets (check on neighbors without entering damaged buildings,
+keep roads clear for responders, turn off gas if trained, ...) /
+**Don't** - 3-4 bullets (don't re-enter damaged buildings, don't spread
+unverified news, don't tie up phone lines, ...)
+
+### When rescuers arrive
+2-3 bullets: how to signal, and what information to have ready (who is missing,
+where they were last seen, building layout).
+
+Calm tone, short sentences, under 300 words total. NEVER advise moving heavy
+debris or attempting structural rescue - that is for trained teams only."""
+
+
+def do_dont(context: str, language: str = "English") -> str:
+    try:
+        from google.genai import types
+        resp = _client().models.generate_content(
+            model=GEMINI_MODEL,
+            contents=DO_DONT_PROMPT.format(context=context, language=language),
+            config=types.GenerateContentConfig(temperature=0.2))
+        return resp.text.strip()
+    except Exception:
+        return ("### If you are trapped\n**Do** - cover mouth against dust; tap on pipes "
+                "or walls in bursts of three; conserve phone battery.\n**Don't** - don't "
+                "shout continuously; never use lighters or matches (gas risk).\n\n"
+                "### If you are safe\n**Do** - check on neighbors from outside; keep roads "
+                "clear for responders; follow official channels.\n**Don't** - don't "
+                "re-enter damaged buildings; don't move heavy debris; don't spread rumors.\n\n"
+                "### When rescuers arrive\n- Tell them who is missing and where they were "
+                "last seen.\n- Follow their instructions - they are trained for this.")
+
+
 # =========================================================== smart router ===
 ROUTE_PROMPT = """Classify this earthquake-related question into exactly one route:
 - "data": needs the USGS event catalog (counts, lists, strongest/when/where of past events)

@@ -13,7 +13,61 @@ import requests
 import streamlit as st
 
 from src.ai import (situation_briefing, smart_ask, explain_anomaly,
-                    area_profile, run_bigquery, TABLE_FQN)
+                    area_profile, sitrep, do_dont, run_bigquery, TABLE_FQN)
+
+EMERGENCY_NUMBERS = {
+    "Thailand": "Police 191 · Ambulance 1669 · Disaster hotline (DDPM) 1784",
+    "Myanmar": "Police 199 · Fire 191 · Ambulance 192",
+    "India": "All emergencies 112 · Disaster helpline 1078",
+    "Indonesia": "All emergencies 112 · Ambulance 118",
+    "Japan": "Police 110 · Fire / Ambulance 119",
+    "Philippines": "All emergencies 911",
+    "Nepal": "Police 100 · Ambulance 102",
+    "Bangladesh": "All emergencies 999",
+    "Pakistan": "Rescue 1122",
+    "China": "Police 110 · Ambulance 120 · Fire 119",
+    "Vietnam": "Police 113 · Ambulance 115 · Fire 114",
+    "Laos": "Police 191 · Ambulance 195",
+    "Türkiye": "All emergencies 112",
+    "United States": "911", "Mexico": "911", "Chile": "Ambulance 131 · Police 133",
+    "New Zealand": "111", "Italy": "112", "Greece": "112",
+}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def emergency_facilities(lat: float, lon: float, radius_km: int = 20):
+    """Hospitals, fire and police stations near a point, from OpenStreetMap."""
+    query = (f'[out:json][timeout:25];('
+             f'node["amenity"~"hospital|fire_station|police"](around:{radius_km * 1000},{lat},{lon});'
+             f'way["amenity"~"hospital|fire_station|police"](around:{radius_km * 1000},{lat},{lon});'
+             f');out center 80;')
+    headers = {"User-Agent": "QuakeSense/1.0 (hackathon demo; contact: team KODA)"}
+    r = None
+    for host in ["https://overpass-api.de/api/interpreter",
+                 "https://overpass.kumi.systems/api/interpreter"]:
+        try:
+            r = requests.post(host, data={"data": query}, headers=headers, timeout=30)
+            r.raise_for_status()
+            break
+        except Exception:
+            r = None
+    if r is None:
+        raise RuntimeError("all Overpass mirrors unavailable")
+    rows = []
+    for el in r.json().get("elements", []):
+        tags = el.get("tags", {})
+        plat = el.get("lat") or el.get("center", {}).get("lat")
+        plon = el.get("lon") or el.get("center", {}).get("lon")
+        if plat is None:
+            continue
+        rows.append({"name": tags.get("name", "(unnamed)"),
+                     "type": tags.get("amenity", "").replace("_", " "),
+                     "lat": plat, "lon": plon})
+    df = pd.DataFrame(rows).drop_duplicates(subset=["name", "type"])
+    if not df.empty:
+        df["km away"] = df.apply(lambda r: round(haversine_km(lat, lon, r["lat"], r["lon"]), 1), axis=1)
+        df = df.sort_values("km away").reset_index(drop=True)
+    return df
 from src.anomaly import detect
 from src.live_feed import fetch_live, significant_events, PAGER_LABEL
 
@@ -148,7 +202,7 @@ except Exception as e:
 st.sidebar.markdown("##### MENU")
 page = st.sidebar.radio(
     "Navigation",
-    ["Live Monitor", "Ask the Data", "Anomaly Watch", "How to Use"],
+    ["Live Monitor", "Ask the Data", "Anomaly Watch", "Response Toolkit", "How to Use"],
     label_visibility="collapsed")
 
 if st.sidebar.button("Refresh live feed", use_container_width=True):
@@ -447,6 +501,7 @@ elif page == "Ask the Data":
                 hist_map = ar["df"].rename(columns={"latitude": "lat", "longitude": "lon"})
                 st.map(hist_map[["lat", "lon"]], zoom=5, color="#d97e4a", size=8000)
 
+
     # ------------------------------------------------------- agent section --
     st.divider()
     st.subheader("Ask about Earthquakes — AI agent")
@@ -604,6 +659,128 @@ elif page == "Anomaly Watch":
                     st.markdown("**Where they struck**")
                     st.map(evs[["lat", "lon"]], zoom=4, color="#d97e4a")
 
+# ========================================================= RESPONSE TOOLKIT ==
+elif page == "Response Toolkit":
+    st.subheader("Response Toolkit")
+    st.caption("Practical tools for the hours after an earthquake - for residents "
+               "waiting for help, and for the officials coordinating it.")
+
+    # ---- A: situation report -------------------------------------------
+    st.markdown("##### Situation report (SITREP)")
+    st.caption("A formal report in the format emergency operations centers use. "
+               "Pick an event, generate, download, distribute.")
+    if live.empty:
+        st.info("Live feed unavailable.")
+    else:
+        sig = significant_events(live)
+        labels_rt = [f"M{r.mag:.1f}  ·  {r.place}  ·  {r.time:%b %d %H:%M} UTC"
+                     for r in sig.itertuples()]
+        pick_rt = st.selectbox("Event (ranked by USGS significance)", labels_rt,
+                               key="rt_event")
+        ev = sig.iloc[labels_rt.index(pick_rt)].to_dict()
+        if st.button("Generate SITREP", type="primary"):
+            hist_ctx = ""
+            try:
+                hdf = run_bigquery(
+                    f"SELECT COUNT(*) AS n, MAX(mag) AS max_mag FROM {TABLE_FQN} "
+                    f"WHERE latitude BETWEEN {ev['lat'] - 2.7:.2f} AND {ev['lat'] + 2.7:.2f} "
+                    f"AND longitude BETWEEN {ev['lon'] - 2.8:.2f} AND {ev['lon'] + 2.8:.2f}")
+                hist_ctx = (f"{int(hdf.iloc[0]['n'])} M5+ events since 1975, "
+                            f"strongest ever M{hdf.iloc[0]['max_mag']:.1f}")
+            except Exception:
+                pass
+            near_ct = int((live.apply(lambda r: haversine_km(ev["lat"], ev["lon"],
+                                                             r["lat"], r["lon"]),
+                                      axis=1) <= 500).sum())
+            with st.spinner("Drafting situation report..."):
+                st.session_state.sitrep = sitrep(ev, hist_ctx, near_ct)
+                st.session_state.sitrep_event = pick_rt
+        if (st.session_state.get("sitrep")
+                and st.session_state.get("sitrep_event") == pick_rt):
+            st.markdown(st.session_state.sitrep)
+            st.download_button("Download SITREP (.txt)", st.session_state.sitrep,
+                               "quakesense_sitrep.txt", "text/plain")
+
+    # ---- B: do's and don'ts --------------------------------------------
+    st.divider()
+    st.markdown("##### Before rescue arrives — do's and don'ts")
+    st.caption("Established international guidance (FEMA / Red Cross), written for "
+               "your situation and language. Not a substitute for trained rescuers.")
+    d1, d2 = st.columns([1, 2])
+    with d1:
+        dd_lang = st.selectbox("Language", ["English", "Myanmar (Burmese)", "Thai",
+                                            "Hindi", "Bengali", "Telugu",
+                                            "Marathi", "Tamil"], key="rt_lang")
+    context = (f"M{ev['mag']:.1f} earthquake near {ev['place']}"
+               if not live.empty else "a strong earthquake")
+    if st.button("Generate guidance", type="primary", key="rt_dd"):
+        with st.spinner("Writing guidance..."):
+            st.session_state.dd = do_dont(context, dd_lang)
+            st.session_state.dd_lang = dd_lang
+    if st.session_state.get("dd") and st.session_state.get("dd_lang") == dd_lang:
+        st.markdown(st.session_state.dd)
+        st.download_button("Download guidance (.txt)", st.session_state.dd,
+                           "quakesense_guidance.txt", "text/plain")
+
+    # ---- C: emergency resources in the affected area --------------------
+    st.divider()
+    st.markdown("##### Emergency resources in the affected area")
+    tdb2 = towns_db()
+    if live.empty:
+        st.info("Live feed unavailable.")
+    elif tdb2 is None:
+        st.error("Towns database missing. Run once:  python scripts/load_towns.py")
+    else:
+        st.caption(f"Towns near the selected event above ({ev['place']}), located from "
+                   f"the event's actual USGS coordinates. Pick the affected town, then "
+                   f"find its emergency facilities.")
+        dlat = 1.5
+        dlon = 1.5 / max(0.2, math.cos(math.radians(ev["lat"])))
+        near_towns = tdb2[tdb2["latitude"].between(ev["lat"] - dlat, ev["lat"] + dlat)
+                          & tdb2["longitude"].between(ev["lon"] - dlon, ev["lon"] + dlon)].copy()
+        if not near_towns.empty:
+            near_towns["km"] = near_towns.apply(
+                lambda r: haversine_km(ev["lat"], ev["lon"],
+                                       r["latitude"], r["longitude"]), axis=1)
+            near_towns = near_towns[near_towns["km"] <= 150].sort_values("km")
+        if near_towns.empty:
+            st.info("No towns within 150 km of this epicenter - it is likely offshore "
+                    "or in a remote area. Select a different event above.")
+        else:
+            top = near_towns.head(15).reset_index(drop=True)
+            lab3 = [f"{r['name']} ({r['country']}) — {r['km']:.0f} km from epicenter"
+                    for _, r in top.iterrows()]
+            tix = st.selectbox("Affected-area town (nearest first)", range(len(lab3)),
+                               format_func=lambda i: lab3[i], key="rt_town")
+            trow = top.iloc[tix]
+            country2 = trow["country"]
+            if country2 in EMERGENCY_NUMBERS:
+                st.markdown(f"**Emergency hotlines ({country2}):** "
+                            f"{EMERGENCY_NUMBERS[country2]}")
+                st.caption("From public sources - verify locally. "
+                           "Numbers can differ by region.")
+
+            if st.button("Find hospitals, fire & police stations within 20 km"):
+                try:
+                    with st.spinner(f"Searching OpenStreetMap around {trow['name']}..."):
+                        fac = emergency_facilities(round(float(trow["latitude"]), 3),
+                                                   round(float(trow["longitude"]), 3))
+                    if fac.empty:
+                        st.info("OpenStreetMap has no tagged facilities within 20 km of "
+                                "this point. Local knowledge may know more.")
+                    else:
+                        f1, f2 = st.columns([1.2, 1])
+                        with f1:
+                            st.dataframe(fac[["name", "type", "km away"]].head(25),
+                                         use_container_width=True, hide_index=True)
+                        with f2:
+                            st.map(fac[["lat", "lon"]], zoom=10, color="#6fae7f")
+                        st.caption(f"{len(fac)} facilities from OpenStreetMap (community-"
+                                   f"maintained - coverage varies by area).")
+                except Exception as e:
+                    st.warning(f"Facility search unavailable right now ({str(e)[:60]}). "
+                               f"Try again in a minute.")
+
 # ============================================================== HOW TO USE ==
 else:
     st.subheader("How to use QuakeSense")
@@ -639,6 +816,12 @@ grounded in your area's real 50-year record.
 #### Anomaly Watch
 Compares this week's activity in every region against its 50-year average and
 flags what's unusual — swarms, aftershock sequences — with calm AI explanations.
+
+#### Response Toolkit
+For the hours after a quake: generate a formal **situation report (SITREP)** for
+any significant event, get **do's and don'ts** for people waiting for rescue
+(in 8 languages, based on FEMA/Red Cross guidance), and find **hospitals, fire
+and police stations** near any town, with national emergency hotlines.
 
 ---
 *Earthquakes cannot be predicted. QuakeSense supports awareness, communication,
