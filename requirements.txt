@@ -6,3 +6,5 @@ pydeck>=0.9
 google-cloud-bigquery>=3.25
 google-genai>=1.0
 db-dtypes>=1.2
+pycountry>=23.12
+

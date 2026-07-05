@@ -109,10 +109,24 @@ Columns:
   type STRING   -- always 'earthquake'
 
 Catalog scope: global events with mag >= 5.0 since 1975 (USGS).
+
+Conversation so far (use it to resolve follow-up references like 'and for Japan?'
+or 'only the strongest ones'):
+{history}
+
 Rules:
 - SELECT statements only. Never modify data.
 - Filter countries/regions with LOWER(place) LIKE '%myanmar%' style matching.
+- IMPORTANT: for "how many / count / list" questions about a specific region or
+  period, return the EVENT ROWS themselves, not just an aggregate:
+  SELECT DATE(time) AS date, mag AS magnitude, place, depth_km
+  ORDER BY mag DESC LIMIT 200. The count is implied by the rows, and users can
+  then see and verify each event. Use pure aggregates only for questions across
+  many groups (per-country/per-year summaries).
 - Always add LIMIT 200 unless aggregating.
+- ALWAYS give every output column a clear, human-readable alias
+  (e.g. COUNT(*) AS event_count, MAX(mag) AS max_magnitude). Never leave
+  an aggregate unaliased.
 - Return ONLY the SQL, no explanation, no markdown fences.
 
 User question: {question}
@@ -123,16 +137,31 @@ This BigQuery SQL was executed: {sql}
 Result (as CSV, possibly truncated):
 {result}
 
-Answer the user's question in 2-4 clear sentences based only on this result.
-Mention concrete numbers. If the result is empty, say no matching events were found in
-the catalog (global M5+ since 1975)."""
+You are a seismic data analyst agent. Respond in markdown (150-300 words) with:
+1. A direct answer with the total count and NAMED specific events from the
+   result: always call out the strongest (magnitude, place, date) and the most
+   recent, plus any notable cluster in time. The full table is shown to the
+   user below your answer, so refer to it ("the 19 events listed below").
+2. "**Insight:**" - a genuinely valuable observation grounded in the result:
+   a trend over time, a comparison, a concentration, or a notable extreme.
+3. "**Context:**" - expert interpretation: the tectonic setting behind these
+   numbers (e.g. the Sagaing Fault for Myanmar) and what they mean practically.
+End with: "All events verified against the official USGS record."
+Style rules: start directly with the answer - no openers like "Based on the
+data" or "According to the query". NEVER mention BigQuery, SQL, databases,
+queries, or training data in the prose - when attribution is needed, say
+"the official USGS earthquake record (1975-today)".
+If the result is empty, say no matching events exist in the official record
+(M5+ worldwide since 1975) and suggest how to broaden the question.
+Never speculate beyond the data. Do not predict future earthquakes."""
 
 
-def question_to_sql(question: str) -> str:
+def question_to_sql(question: str, history: str = "(none)") -> str:
     from google.genai import types
     resp = _client().models.generate_content(
         model=GEMINI_MODEL,
-        contents=NL2SQL_PROMPT.format(table=TABLE_FQN, question=question),
+        contents=NL2SQL_PROMPT.format(table=TABLE_FQN, question=question,
+                                      history=history or "(none)"),
         config=types.GenerateContentConfig(temperature=0.1),
     )
     sql = resp.text.strip()
@@ -170,34 +199,198 @@ def explain_result(question: str, sql: str, df: pd.DataFrame) -> str:
         return f"Query returned {len(df)} rows (see table below)."
 
 
-def ask_the_data(question: str) -> dict:
-    """Full NL->SQL->answer pipeline. Raises with clear message on failure."""
-    sql = question_to_sql(question)
+def ask_the_data(question: str, history: str = "") -> dict:
+    """Agentic NL->SQL->answer pipeline with conversation context."""
+    sql = question_to_sql(question, history)
     if not is_safe_select(sql):
         raise ValueError(f"Generated SQL failed the safety check (SELECT-only): {sql}")
     df = run_bigquery(sql)
     return {"sql": sql, "df": df, "answer": explain_result(question, sql, df)}
 
 
-# ======================================================== anomaly explain ===
-def explain_anomaly(cell: dict, events: pd.DataFrame) -> str:
-    places = ", ".join(events["place"].head(5).tolist())
+# =========================================================== smart router ===
+ROUTE_PROMPT = """Classify this earthquake-related question into exactly one route:
+- "data": needs the USGS event catalog (counts, lists, strongest/when/where of past events)
+- "general": earthquake science, safety, preparedness, definitions - no catalog needed
+- "hybrid": needs both (e.g. an area's history AND what residents should do)
+
+Question: {q}
+Return JSON: {{"route": "data" | "general" | "hybrid"}}"""
+
+GENERAL_PROMPT = """You are QuakeSense's earthquake knowledge assistant, serving citizens,
+officials and journalists. Conversation so far:
+{history}
+
+Question: {q}
+
+Give a substantial, well-organized answer in markdown (150-300 words): short
+paragraphs and/or a few bold-labelled points, the way a knowledgeable expert would
+explain it to an intelligent non-specialist. Cover the why/how, not just the what.
+Be accurate, calm and practical; use established seismology and official safety
+guidance (drop-cover-hold-on, etc.). Never predict earthquakes or give
+probabilities of future events. If the question would benefit from real catalog
+statistics, end with one suggested data question the user could ask
+(prefix "Try asking: ")."""
+
+HYBRID_PROMPT = """You are QuakeSense's earthquake analyst agent.
+The user asked: "{q}"
+Catalog query executed: {sql}
+Catalog result (CSV, truncated): {result}
+
+Combine the DATA with expert knowledge in markdown (150-300 words):
+1. Answer with concrete numbers from the result.
+2. "**Insight:**" - one valuable observation from the data.
+3. "**Context:**" - a substantial paragraph of expert interpretation: the
+   tectonic setting, why the pattern exists, and practical guidance where
+   relevant. Explain like an expert talking to an intelligent non-specialist.
+Style: start directly with the answer - no "Based on the data" openers. Never
+mention BigQuery, SQL or databases in prose; attribute facts to "the official
+USGS earthquake record" when needed.
+Never predict future earthquakes."""
+
+
+def smart_ask(question: str, history: str = "") -> dict:
+    """Route a question to catalog SQL, general knowledge, or both."""
+    from google.genai import types
+    client = _client()
+    try:
+        resp = client.models.generate_content(
+            model=GEMINI_MODEL, contents=ROUTE_PROMPT.format(q=question),
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json", temperature=0.0))
+        route = json.loads(resp.text).get("route", "general")
+    except Exception:
+        route = "general"
+
+    note = ""
+    if route in ("data", "hybrid"):
+        try:
+            sql = question_to_sql(question, history)
+            if not is_safe_select(sql):
+                raise ValueError("unsafe SQL")
+            df = run_bigquery(sql)
+            if route == "data":
+                return {"mode": "data", "sql": sql, "df": df,
+                        "answer": explain_result(question, sql, df)}
+            resp = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=HYBRID_PROMPT.format(
+                    q=question, sql=sql,
+                    result=df.head(40).to_csv(index=False)[:5000]),
+                config=types.GenerateContentConfig(temperature=0.3))
+            return {"mode": "hybrid", "sql": sql, "df": df,
+                    "answer": resp.text.strip()}
+        except Exception as e:
+            note = (f"Catalog unavailable ({str(e)[:90]}) - answered from general "
+                    f"knowledge instead. Check BigQuery credentials.")
+
+    resp = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=GENERAL_PROMPT.format(q=question, history=history or "(none)"),
+        config=types.GenerateContentConfig(temperature=0.4))
+    return {"mode": "general", "sql": None, "df": None,
+            "answer": resp.text.strip(), "note": note}
+
+
+# ========================================================= area profile ====
+AREA_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "headline": {"type": "string"},
+        "seismic_context": {"type": "string",
+                            "description": "2-3 sentences: what the 50-year record says about this area"},
+        "this_week": {"type": "string", "description": "1-2 sentences on current nearby activity"},
+        "preparedness_actions": {"type": "array", "items": {"type": "string"},
+                                 "description": "4 practical actions proportionate to actual risk"},
+        "caveats": {"type": "string"},
+    },
+    "required": ["headline", "seismic_context", "this_week",
+                 "preparedness_actions", "caveats"],
+}
+
+AREA_PROMPT = """You are a seismic risk communicator writing for residents of {place}.
+Create a community risk profile based ONLY on this data. Be calm and specific -
+if the record shows low local activity, say so plainly. If activity is mostly distant,
+mention that tall buildings can still feel long-period shaking from far events.
+Never predict earthquakes. Write ALL output in {language}.
+
+DATA (USGS catalog, M5+ since 1975, within 300 km of {place}):
+- Total events: {count}
+- Strongest: {strongest}
+- Most recent M5+ in the area: {latest}
+- Average per decade: {per_decade}
+
+LIVE (past 7 days within 500 km): {live_count} events, strongest {live_max}
+
+preparedness_actions: exactly 4, practical, proportionate to this actual risk level.
+"""
+
+
+def area_profile(place: str, hist: dict, live_near: dict,
+                 language: str = "English") -> dict:
     try:
         from google.genai import types
-        prompt = (f"You are a seismologist writing for the public. In the last 7 days, the "
-                  f"region around ({cell['cell_lat']}, {cell['cell_lon']}) recorded "
-                  f"{cell['current']} M4.5+ earthquakes vs a historical average of "
-                  f"{cell['weekly_avg']:.2f} per week ({cell['ratio']:.0f}x normal). "
-                  f"Recent events: {places}. In 3-4 sentences: what could this pattern mean "
-                  f"(aftershock sequence, swarm, or foreshock uncertainty), and what should "
-                  f"nearby communities do? Be calm and factual; note forecasting limits.")
+        resp = _client().models.generate_content(
+            model=GEMINI_MODEL,
+            contents=AREA_PROMPT.format(
+                place=place, language=language, count=hist["count"],
+                strongest=hist["strongest"], latest=hist["latest"],
+                per_decade=hist["per_decade"],
+                live_count=live_near["count"], live_max=live_near["max"]),
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=AREA_SCHEMA, temperature=0.3),
+        )
+        out = json.loads(resp.text)
+        out["source"] = "gemini"
+        return out
+    except Exception as e:
+        return {
+            "headline": f"Seismic profile for {place}",
+            "seismic_context": f"The USGS catalog records {hist['count']} M5+ events within "
+                               f"300 km since 1975. Strongest: {hist['strongest']}.",
+            "this_week": f"{live_near['count']} events within 500 km in the past 7 days.",
+            "preparedness_actions": [
+                "Identify safe spots at home: under sturdy tables, away from windows.",
+                "Keep a basic emergency kit: water, torch, first aid, copies of documents.",
+                "Agree a family meeting point and out-of-area contact.",
+                "Check your building's condition and secure heavy furniture to walls.",
+            ],
+            "caveats": "Template profile (Gemini unavailable). Data: USGS catalog.",
+            "source": f"fallback ({str(e)[:60]})",
+        }
+
+
+# ======================================================== anomaly explain ===
+def explain_anomaly(cell: dict, events: pd.DataFrame,
+                    hist_context: str = "") -> str:
+    ev_lines = "; ".join(
+        f"M{r.mag:.1f} {r.place} ({r.time:%b %d %H:%M} UTC, {r.depth_km:.0f} km deep)"
+        for r in events.sort_values('time').head(10).itertuples())
+    try:
+        from google.genai import types
+        prompt = (
+            "You are a seismologist-analyst writing for the public. Analyze this week's "
+            f"elevated activity in the region around ({cell['cell_lat']}, {cell['cell_lon']}).\n\n"
+            f"THIS WEEK: {cell['current']} events M4.5+ vs a 50-year average of "
+            f"{cell['weekly_avg']:.2f}/week ({cell['ratio']:.0f}x normal). Strongest: "
+            f"M{cell.get('max_mag', 0):.1f}.\n"
+            f"EVENT SEQUENCE (chronological): {ev_lines}\n"
+            f"REGION'S 50-YEAR RECORD: {hist_context or 'not available'}\n\n"
+            "Write ~150 words of markdown with exactly these bold-labelled parts:\n"
+            "**Pattern** - classify it (mainshock-aftershock sequence, swarm, or elevated "
+            "background) with reasoning from the magnitudes and timing above.\n"
+            "**Historical context** - how this week compares to the region's record.\n"
+            "**For nearby communities** - 2-3 calm, practical points.\n"
+            "Never predict; state clearly that elevated activity does not guarantee a larger event.")
         resp = _client().models.generate_content(
             model=GEMINI_MODEL, contents=prompt,
             config=types.GenerateContentConfig(temperature=0.3))
         return resp.text.strip()
     except Exception:
-        return (f"This area recorded {cell['current']} M4.5+ events this week vs a historical "
-                f"average of {cell['weekly_avg']:.2f}/week ({cell['ratio']:.0f}x normal) — "
-                f"likely an aftershock sequence or swarm near: {places}. Communities nearby "
-                f"should review preparedness and follow official guidance. Earthquakes cannot "
-                f"be predicted; elevated activity does not guarantee a larger event.")
+        places = ", ".join(events["place"].head(5).tolist())
+        return (f"**Pattern** - {cell['current']} M4.5+ events this week vs "
+                f"{cell['weekly_avg']:.2f}/week normally ({cell['ratio']:.0f}x) — likely an "
+                f"aftershock sequence or swarm near: {places}.\n\n**For nearby communities** - "
+                f"review preparedness, secure heavy items, follow official guidance. Earthquakes "
+                f"cannot be predicted; elevated activity does not guarantee a larger event.")

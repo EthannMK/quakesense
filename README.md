@@ -1,62 +1,89 @@
-# 🌍 QuakeSense — AI Earthquake Situation Room for Communities
+# QuakeSense
 
-**Gen AI Academy APAC Hackathon** · Theme: AI for Better Living and Smarter Communities (Disaster Response & Recovery / Public Safety)
+Live earthquake monitoring and AI analysis for communities. Built by Team KODA
+for the Gen AI Academy APAC hackathon (theme: AI for Better Living and Smarter
+Communities - disaster response).
 
-When an earthquake strikes, communities drown in raw numbers — magnitudes, depths, coordinates — while what people actually need is answers: *Was that dangerous? Who is affected? What should we do? Is this activity normal?* QuakeSense turns live and historical data from the **U.S. Geological Survey (USGS)** into plain-language decision intelligence for citizens, local officials, and journalists.
-
-**100% real public data. Zero synthetic records.**
+**Live app:** https://quakesense-537926118329.asia-southeast1.run.app
 
 ## What it does
 
-| Tab | Capability | Powered by |
-|---|---|---|
-| 🗺️ Live Monitor | Global map + metrics of every M2.5+ quake in the past 7 days, refreshed every 5 min | USGS real-time GeoJSON feed |
-| 📰 AI Briefings | One click turns raw seismic data (PAGER alert, depth, tsunami flag, felt reports) into a calm community briefing with recommended actions | Vertex AI Gemini |
-| 💬 Ask the Data | Plain-English questions over 50 years of global M5+ earthquakes — Gemini writes the SQL, BigQuery executes it, Gemini explains the answer. Generated SQL is always shown (explainable AI) | Gemini + BigQuery |
-| 📈 Anomaly Watch | Flags regions where this week's activity is ≥3× the 50-year baseline (swarms, aftershock sequences), with AI explanations | BigQuery baseline + Gemini |
+When an earthquake happens, USGS publishes the numbers within minutes. But
+magnitude, depth and coordinates don't answer the questions people actually
+have: was that dangerous, who is affected, what should we do, and is this
+normal for our area?
 
-## Architecture
+QuakeSense sits on top of two real USGS data sources - the live global feed
+and a 50-year catalog of about 86,000 events that we load into BigQuery - and
+uses Gemini to turn them into answers:
 
-```mermaid
-flowchart LR
-    U[USGS public APIs<br/>real-time feed + FDSN catalog] --> I[Ingestion<br/>scripts/load_history.py]
-    I --> B[(BigQuery<br/>50 yrs · global M5+<br/>~100k events)]
-    U -->|live, 5-min cache| A
-    subgraph GC[Google Cloud Run]
-      A[Streamlit app]
-    end
-    B <--> A
-    A <--> G[Vertex AI · Gemini Flash<br/>briefings · NL→SQL · anomaly analysis]
-```
+- **Live Monitor** - world map of the past 7 days. Filter by magnitude or
+  place, see tectonic plate boundaries, get tsunami-flagged events highlighted.
+  Below the map you can generate a plain-language briefing for any significant
+  event, written for residents rather than seismologists.
+- **My Area** - pick your country and town, pick a language (English, Burmese,
+  Thai, Hindi, Bengali, Telugu, Marathi or Tamil) and get a risk profile based
+  on what has actually happened within 300 km of your town since 1975.
+- **Ask about Earthquakes** - a chat agent. Questions about past events get
+  answered by generating SQL against the catalog (the SQL is shown, and you
+  can check every row). Science and safety questions are answered from
+  Gemini's general knowledge. It keeps the conversation context, so
+  follow-ups like "and for Japan?" work.
+- **Anomaly Watch** - compares this week's activity in each region against
+  that region's 50-year average and flags anything unusual, with an AI
+  explanation of the pattern.
 
-Core requirements coverage: multiple data sources (real-time feed + historical catalog) ✅ · natural-language interaction with data ✅ · insights, recommendations, alerts ✅ · patterns & anomalies ✅ · AI-assisted decisions ✅ · scalable Google Cloud deployment ✅
+One thing we were careful about: the app never predicts earthquakes, and says
+so on every page. Answers from the catalog end with a note that events are
+verified against the USGS record, because we found that plain chatbots
+happily invent earthquake lists (one gave us an M9.2 in Myanmar that never
+happened there).
 
-## Quickstart
+## How it's built
+
+USGS live feed + FDSN catalog -> BigQuery (86k events) -> Gemini on Vertex AI
+(briefings, NL-to-SQL, risk profiles, anomaly analysis) -> Streamlit app on
+Cloud Run. The NL-to-SQL path only accepts SELECT statements, and every AI
+call has a plain fallback so the app keeps working if a service is down.
+
+## Running it yourself
+
+You need a GCP project with BigQuery and Vertex AI enabled, and a service
+account with BigQuery Data Editor, BigQuery Job User and Vertex AI User roles.
 
 ```bash
 pip install -r requirements.txt
-python scripts/load_history.py          # downloads USGS 1975→today, loads BigQuery (~5 min)
-# or:  python scripts/load_history.py --local   (no GCP needed; NL2SQL tab disabled)
+
+# point at your service account key
+set GOOGLE_APPLICATION_CREDENTIALS=path\to\key.json   # Windows
+export GOOGLE_APPLICATION_CREDENTIALS=path/to/key.json # Linux/Mac
+
+python scripts/load_history.py   # downloads the USGS catalog, loads BigQuery (~10 min)
+python scripts/load_towns.py     # downloads the GeoNames towns list (~1 min)
+
 streamlit run app.py
 ```
 
-Auth: `set GOOGLE_APPLICATION_CREDENTIALS=path\to\key.json` (service account needs BigQuery Data Editor, BigQuery Job User, Vertex AI User).
+Project id and region are set in `src/config.py` (or via GCP_PROJECT /
+GCP_LOCATION environment variables).
 
-## Deploy to Cloud Run
+## Deploying
 
 ```bash
-gcloud run deploy quakesense --source . --region us-central1 \
-  --allow-unauthenticated --memory 1Gi --set-env-vars GCP_PROJECT=usar-decision-intel
+gcloud run deploy quakesense --source . --region asia-southeast1 \
+  --allow-unauthenticated --memory 1Gi
 ```
 
-## Responsible AI
-
-Every NL→SQL query passes a SELECT-only guardrail and the generated SQL is displayed to the user. Briefings are grounded strictly in USGS data with explicit caveats. The app states clearly: earthquakes cannot be predicted — QuakeSense supports awareness and preparedness decisions, not prediction. All AI features degrade gracefully to deterministic fallbacks.
+Give the Cloud Run service account the same three roles listed above.
 
 ## Data sources
 
-U.S. Geological Survey Earthquake Hazards Program — real-time GeoJSON feeds and FDSN Event Web Service (public domain).
+- USGS Earthquake Hazards Program (real-time GeoJSON feeds and the FDSN event
+  service) - public domain
+- GeoNames cities500 database (town names and coordinates) - CC-BY
+- Tectonic plate boundaries from Bird (2003), via the fraxen/tectonicplates
+  repository
 
-## Scaling path
+## Team
 
-Scheduled Cloud Function ingestion → streaming BigQuery inserts · multilingual briefings (Burmese, Thai...) · SMS/LINE alert delivery · Looker Studio public dashboards · PAGER + population-exposure joins for impact forecasting.
+Team KODA - Paing Thit Htoo, Rushitha Borra, Ardra T J, Mansi Ramesh Pardeshi.

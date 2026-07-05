@@ -12,6 +12,11 @@ venv/
 # Large downloaded data (regenerate with scripts/load_history.py)
 data/history.csv
 
+# Local working files, not part of the project
+NEXT_STEPS.md
+QuakeSense_Submission_Deck.pptx
+shots/
+
 # OS
 .DS_Store
 Thumbs.db
