@@ -13,6 +13,14 @@ from src.config import GCP_PROJECT, GCP_LOCATION, GEMINI_MODEL, BQ_DATASET, BQ_T
 _CLIENT = None
 
 
+def _pager_label(ev: dict) -> str:
+    """pager_alert is missing as either None (fresh from USGS) or NaN (a float,
+    once the event has passed through a pandas DataFrame) - both mean 'no PAGER
+    assessment issued', never a real value to display."""
+    val = ev.get("pager_alert")
+    return val if isinstance(val, str) and val.strip() else "not assigned"
+
+
 def _client():
     """Singleton Gemini client - recreating per call can hit a closed
     underlying HTTP client in Streamlit's rerun model."""
@@ -66,7 +74,7 @@ def situation_briefing(ev: dict) -> dict:
             contents=BRIEFING_PROMPT.format(
                 mag=ev["mag"], place=ev["place"], lat=ev["lat"], lon=ev["lon"],
                 depth_km=round(ev["depth_km"], 1), time=ev["time"],
-                pager=ev.get("pager_alert") or "not assigned",
+                pager=_pager_label(ev),
                 tsunami="YES - check official tsunami advisories" if ev.get("tsunami_flag") else "no",
                 felt=ev.get("felt_reports", 0), sig=ev.get("significance", 0)),
             config=types.GenerateContentConfig(
@@ -243,7 +251,7 @@ def sitrep(ev: dict, hist: str, live_near: int) -> str:
             model=GEMINI_MODEL,
             contents=SITREP_PROMPT.format(
                 mag=ev["mag"], place=ev["place"], time=ev["time"],
-                depth=round(ev["depth_km"], 1), pager=ev.get("pager_alert") or "not assigned",
+                depth=round(ev["depth_km"], 1), pager=_pager_label(ev),
                 tsunami="YES" if ev.get("tsunami_flag") else "no",
                 felt=ev.get("felt_reports", 0), hist=hist or "not available",
                 live_near=live_near, now=now),

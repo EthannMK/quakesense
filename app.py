@@ -353,11 +353,13 @@ if page == "Live Monitor":
                  help="Shallow quakes (under 70 km) shake the surface harder than deep ones of the same magnitude.")
         c.metric("Felt reports", ev["felt_reports"],
                  help="People who reported feeling this quake via USGS 'Did You Feel It?'.")
-        d.metric("PAGER alert", (ev.get("pager_alert") or "n/a").upper(),
+        pager_raw = ev.get("pager_alert")
+        pager_ok = isinstance(pager_raw, str) and pager_raw.strip() != ""
+        d.metric("PAGER alert", pager_raw.upper() if pager_ok else "N/A",
                  help="USGS impact estimate: GREEN minimal, YELLOW local, ORANGE regional, "
                       "RED major. 'N/A' means no assessment was issued.")
-        if ev.get("pager_alert"):
-            st.caption(PAGER_LABEL.get(ev["pager_alert"], ""))
+        if pager_ok:
+            st.caption(PAGER_LABEL.get(pager_raw, ""))
 
         if st.button("Generate community briefing", type="primary"):
             with st.spinner("Gemini drafting briefing..."):
