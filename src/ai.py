@@ -260,39 +260,57 @@ def sitrep(ev: dict, hist: str, live_near: int) -> str:
 
 
 # ============================================================= do / don't ===
-DO_DONT_PROMPT = """You are a disaster-response educator writing for people in an
-earthquake-affected area BEFORE professional rescue teams arrive.
-Context: {context}. Write everything in {language}.
+DO_DONT_PROMPT = """You are a disaster-response educator writing for ONE specific
+person in an earthquake-affected area BEFORE professional rescue teams arrive.
 
-Use only established international guidance (FEMA, Red Cross, INSARAG community
-guidance). Format in markdown with exactly these sections:
+Event context: {context}
+The reader's situation: {situation}
+Write everything in {language}.
 
-### If you are trapped
-**Do** - 4-5 short bullets (protect airway from dust, tap on pipes or walls
-rhythmically, conserve phone battery, ...) / **Don't** - 3-4 bullets (don't
-shout continuously - save air; no lighters or matches - gas risk; ...)
+Write guidance SPECIFIC to this reader's situation - do not give generic
+all-purpose advice. Tailor urgency and content to the event's magnitude and
+the reader's role. Use only established international guidance (FEMA, Red
+Cross, INSARAG community guidance).
 
-### If you are safe
-**Do** - 4-5 bullets (check on neighbors without entering damaged buildings,
-keep roads clear for responders, turn off gas if trained, ...) /
-**Don't** - 3-4 bullets (don't re-enter damaged buildings, don't spread
-unverified news, don't tie up phone lines, ...)
+Format in markdown:
+### Your situation
+One short sentence acknowledging their specific situation and this event.
+### Do
+5-6 short bullets, most important first, specific to their situation.
+### Don't
+4-5 bullets specific to their situation.
+### {closing}
 
-### When rescuers arrive
-2-3 bullets: how to signal, and what information to have ready (who is missing,
-where they were last seen, building layout).
-
-Calm tone, short sentences, under 300 words total. NEVER advise moving heavy
+Calm tone, short sentences, under 280 words total. NEVER advise moving heavy
 debris or attempting structural rescue - that is for trained teams only."""
 
+DD_SITUATIONS = {
+    "I am trapped or sheltering inside": (
+        "trapped under or inside a damaged building, possibly alone, phone may be low",
+        "How to signal rescuers"),
+    "I am safe and want to help others": (
+        "physically safe outside, wants to help neighbors without creating new victims",
+        "When professional rescuers arrive"),
+    "I am a parent / caring for children or elders": (
+        "responsible for children or elderly family members in the affected area",
+        "Keeping your family calm"),
+    "I am a community leader / volunteer coordinator": (
+        "organizing neighbors, shelters or information flow before authorities arrive",
+        "Working with authorities when they arrive"),
+}
 
-def do_dont(context: str, language: str = "English") -> str:
+
+def do_dont(context: str, language: str = "English",
+            situation_key: str = "I am safe and want to help others") -> str:
+    situation, closing = DD_SITUATIONS.get(
+        situation_key, DD_SITUATIONS["I am safe and want to help others"])
     try:
         from google.genai import types
         resp = _client().models.generate_content(
             model=GEMINI_MODEL,
-            contents=DO_DONT_PROMPT.format(context=context, language=language),
-            config=types.GenerateContentConfig(temperature=0.2))
+            contents=DO_DONT_PROMPT.format(context=context, language=language,
+                                           situation=situation, closing=closing),
+            config=types.GenerateContentConfig(temperature=0.4))
         return resp.text.strip()
     except Exception:
         return ("### If you are trapped\n**Do** - cover mouth against dust; tap on pipes "

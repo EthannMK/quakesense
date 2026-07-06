@@ -706,18 +706,25 @@ elif page == "Response Toolkit":
     st.markdown("##### Before rescue arrives — do's and don'ts")
     st.caption("Established international guidance (FEMA / Red Cross), written for "
                "your situation and language. Not a substitute for trained rescuers.")
-    d1, d2 = st.columns([1, 2])
+    d1, d2 = st.columns([1.6, 1])
     with d1:
+        from src.ai import DD_SITUATIONS
+        dd_sit = st.selectbox("Your situation", list(DD_SITUATIONS.keys()),
+                              key="rt_sit",
+                              help="The advice changes completely depending on who "
+                                   "you are and where you are right now.")
+    with d2:
         dd_lang = st.selectbox("Language", ["English", "Myanmar (Burmese)", "Thai",
                                             "Hindi", "Bengali", "Telugu",
                                             "Marathi", "Tamil"], key="rt_lang")
-    context = (f"M{ev['mag']:.1f} earthquake near {ev['place']}"
+    context = (f"M{ev['mag']:.1f} earthquake near {ev['place']}, depth "
+               f"{ev['depth_km']:.0f} km"
                if not live.empty else "a strong earthquake")
     if st.button("Generate guidance", type="primary", key="rt_dd"):
-        with st.spinner("Writing guidance..."):
-            st.session_state.dd = do_dont(context, dd_lang)
-            st.session_state.dd_lang = dd_lang
-    if st.session_state.get("dd") and st.session_state.get("dd_lang") == dd_lang:
+        with st.spinner("Writing guidance for your situation..."):
+            st.session_state.dd = do_dont(context, dd_lang, dd_sit)
+            st.session_state.dd_key = (dd_lang, dd_sit)
+    if st.session_state.get("dd") and st.session_state.get("dd_key") == (dd_lang, dd_sit):
         st.markdown(st.session_state.dd)
         st.download_button("Download guidance (.txt)", st.session_state.dd,
                            "quakesense_guidance.txt", "text/plain")
