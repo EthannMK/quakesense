@@ -21,3 +21,6 @@ shots/
 .DS_Store
 Thumbs.db
 ~$*
+data/feedback_local.csv
+__pycache__/
+*.pyc
