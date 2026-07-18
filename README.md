@@ -71,10 +71,14 @@ GCP_LOCATION environment variables).
 
 ```bash
 gcloud run deploy quakesense --source . --region asia-southeast1 \
-  --allow-unauthenticated --memory 1Gi
+  --allow-unauthenticated --memory 1Gi --min-instances 1
 ```
 
 Give the Cloud Run service account the same three roles listed above.
+
+`--min-instances 1` keeps one warm instance so visitors never hit a cold start
+(30+ seconds of container boot). It costs a little while idle; drop the flag to
+scale to zero if cost matters more than first-load speed.
 
 ## Data sources
 

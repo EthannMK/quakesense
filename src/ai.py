@@ -1,6 +1,10 @@
 """Gemini AI layer (Vertex AI): situation briefings, NL->SQL analytics, anomaly explainers.
 
 Every function has a deterministic fallback so the demo never stalls.
+
+Latency notes: Gemini 2.5 Flash spends seconds "thinking" by default, so every
+call here disables it (these are formatting/translation tasks, not puzzles).
+Routing and SQL generation happen in ONE model call, and chat answers stream.
 """
 import json
 import re
@@ -11,6 +15,7 @@ from src.config import GCP_PROJECT, GCP_LOCATION, GEMINI_MODEL, BQ_DATASET, BQ_T
 
 
 _CLIENT = None
+_BQ = None
 
 
 def _pager_label(ev: dict) -> str:
@@ -30,6 +35,37 @@ def _client():
         _CLIENT = genai.Client(vertexai=True, project=GCP_PROJECT,
                                location=GCP_LOCATION)
     return _CLIENT
+
+
+def _config(**kwargs):
+    """GenerateContentConfig with model thinking disabled for latency."""
+    from google.genai import types
+    try:
+        kwargs.setdefault("thinking_config",
+                          types.ThinkingConfig(thinking_budget=0))
+        return types.GenerateContentConfig(**kwargs)
+    except Exception:
+        kwargs.pop("thinking_config", None)
+        return types.GenerateContentConfig(**kwargs)
+
+
+def _stream_text(prompt: str, temperature: float, fallback: str):
+    """Yield answer chunks; if the model dies mid-answer, finish with the fallback."""
+    produced = False
+    try:
+        resp = _client().models.generate_content_stream(
+            model=GEMINI_MODEL, contents=prompt,
+            config=_config(temperature=temperature))
+        for chunk in resp:
+            if chunk.text:
+                produced = True
+                yield chunk.text
+    except Exception:
+        yield ("\n\n---\n*(Answer interrupted - showing summary instead.)*\n\n"
+               + fallback) if produced else fallback
+        return
+    if not produced:
+        yield fallback
 
 
 # ============================================================ briefings ====
@@ -61,6 +97,9 @@ EARTHQUAKE DATA (USGS real-time feed):
 - Public 'felt' reports submitted: {felt}
 - USGS significance score (0-1000+): {sig}
 
+Style: headline is one factual sentence, no sensational words. what_happened and
+who_is_affected are 2-3 sentences each, written for a worried resident reading on
+a phone - concrete, specific, reassuring where the data allows it.
 recommended_actions: 3-5 short imperative items appropriate to the actual severity.
 For a minor deep quake, say monitoring is sufficient - do not cause alarm.
 """
@@ -68,7 +107,6 @@ For a minor deep quake, say monitoring is sufficient - do not cause alarm.
 
 def situation_briefing(ev: dict) -> dict:
     try:
-        from google.genai import types
         resp = _client().models.generate_content(
             model=GEMINI_MODEL,
             contents=BRIEFING_PROMPT.format(
@@ -77,9 +115,8 @@ def situation_briefing(ev: dict) -> dict:
                 pager=_pager_label(ev),
                 tsunami="YES - check official tsunami advisories" if ev.get("tsunami_flag") else "no",
                 felt=ev.get("felt_reports", 0), sig=ev.get("significance", 0)),
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=BRIEFING_SCHEMA, temperature=0.3),
+            config=_config(response_mime_type="application/json",
+                           response_schema=BRIEFING_SCHEMA, temperature=0.3),
         )
         out = json.loads(resp.text)
         out["source"] = "gemini"
@@ -106,10 +143,7 @@ def situation_briefing(ev: dict) -> dict:
 # ============================================================== NL -> SQL ===
 TABLE_FQN = f"`{GCP_PROJECT}.{BQ_DATASET}.{BQ_TABLE}`"
 
-NL2SQL_PROMPT = """You are a BigQuery analytics engineer. Convert the user's question into
-ONE BigQuery StandardSQL SELECT statement over this table:
-
-Table: {table}
+_SCHEMA_BLOCK = """Table: {table}
 Columns:
   id STRING, time TIMESTAMP, latitude FLOAT64, longitude FLOAT64,
   depth_km FLOAT64, mag FLOAT64, mag_type STRING,
@@ -118,43 +152,80 @@ Columns:
 
 Catalog scope: global events with mag >= 5.0 since 1975 (USGS).
 
+SQL rules:
+- BigQuery StandardSQL, ONE SELECT statement only. Never modify data.
+- Filter countries/regions with LOWER(place) LIKE '%myanmar%' style matching.
+- For "how many / count / list" questions about a specific region or period,
+  return the EVENT ROWS themselves (date, magnitude, place, depth_km), ordered
+  by magnitude, LIMIT 200 - the count is implied and users can verify each row.
+  Use pure aggregates only for questions across many groups (per-country/per-year).
+- Always add LIMIT 200 unless aggregating.
+- ALWAYS alias every output column with a clear human-readable name
+  (COUNT(*) AS event_count, MAX(mag) AS max_magnitude).
+
+Example - "How many M6+ earthquakes hit Myanmar since 1990?":
+SELECT DATE(time) AS date, mag AS magnitude, place, depth_km
+FROM {table}
+WHERE LOWER(place) LIKE '%myanmar%' AND mag >= 6.0
+  AND time >= TIMESTAMP('1990-01-01')
+ORDER BY mag DESC LIMIT 200
+
+Example - "Which countries had the most M7+ quakes since 2000?":
+SELECT TRIM(SPLIT(place, ',')[SAFE_OFFSET(ARRAY_LENGTH(SPLIT(place, ',')) - 1)]) AS region,
+       COUNT(*) AS event_count, MAX(mag) AS max_magnitude
+FROM {table}
+WHERE mag >= 7.0 AND time >= TIMESTAMP('2000-01-01')
+GROUP BY region ORDER BY event_count DESC LIMIT 30"""
+
+NL2SQL_PROMPT = """You are a BigQuery analytics engineer. Convert the user's question into
+ONE BigQuery StandardSQL SELECT statement over this table:
+
+""" + _SCHEMA_BLOCK + """
+
 Conversation so far (use it to resolve follow-up references like 'and for Japan?'
 or 'only the strongest ones'):
 {history}
 
-Rules:
-- SELECT statements only. Never modify data.
-- Filter countries/regions with LOWER(place) LIKE '%myanmar%' style matching.
-- IMPORTANT: for "how many / count / list" questions about a specific region or
-  period, return the EVENT ROWS themselves, not just an aggregate:
-  SELECT DATE(time) AS date, mag AS magnitude, place, depth_km
-  ORDER BY mag DESC LIMIT 200. The count is implied by the rows, and users can
-  then see and verify each event. Use pure aggregates only for questions across
-  many groups (per-country/per-year summaries).
-- Always add LIMIT 200 unless aggregating.
-- ALWAYS give every output column a clear, human-readable alias
-  (e.g. COUNT(*) AS event_count, MAX(mag) AS max_magnitude). Never leave
-  an aggregate unaliased.
-- Return ONLY the SQL, no explanation, no markdown fences.
+Return ONLY the SQL, no explanation, no markdown fences.
 
 User question: {question}
 """
+
+ROUTE_SQL_PROMPT = """You are the router of an earthquake Q&A agent. Classify the question
+AND, when the catalog is needed, write the SQL - in a single JSON response.
+
+Routes:
+- "data": needs the USGS event catalog (counts, lists, strongest/when/where of past events)
+- "general": earthquake science, safety, preparedness, definitions - no catalog needed
+- "hybrid": needs both (e.g. an area's history AND what residents should do)
+
+""" + _SCHEMA_BLOCK + """
+
+Conversation so far (use it to resolve follow-ups like 'and for Japan?'):
+{history}
+
+Return JSON only: {{"route": "data" | "general" | "hybrid", "sql": "<the SELECT statement, or empty string when route is general>"}}
+
+User question: {question}"""
 
 ANSWER_PROMPT = """The user asked: "{question}"
 This BigQuery SQL was executed: {sql}
 Result (as CSV, possibly truncated):
 {result}
 
-You are a seismic data analyst agent. Respond in markdown (150-300 words) with:
+You are a seismic data analyst agent. Respond in markdown with:
 1. A direct answer with the total count and NAMED specific events from the
    result: always call out the strongest (magnitude, place, date) and the most
-   recent, plus any notable cluster in time. The full table is shown to the
-   user below your answer, so refer to it ("the 19 events listed below").
+   recent, plus any notable cluster in time. Bold the key numbers. The full
+   table is shown to the user below your answer, so refer to it
+   ("the 19 events listed below") instead of repeating rows.
 2. "**Insight:**" - a genuinely valuable observation grounded in the result:
    a trend over time, a comparison, a concentration, or a notable extreme.
 3. "**Context:**" - expert interpretation: the tectonic setting behind these
    numbers (e.g. the Sagaing Fault for Myanmar) and what they mean practically.
 End with: "All events verified against the official USGS record."
+Match length to the question: a simple count or lookup deserves ~80-150 words
+total; an analytical question 150-280. Never pad.
 Style rules: start directly with the answer - no openers like "Based on the
 data" or "According to the query". NEVER mention BigQuery, SQL, databases,
 queries, or training data in the prose - when attribution is needed, say
@@ -165,12 +236,11 @@ Never speculate beyond the data. Do not predict future earthquakes."""
 
 
 def question_to_sql(question: str, history: str = "(none)") -> str:
-    from google.genai import types
     resp = _client().models.generate_content(
         model=GEMINI_MODEL,
         contents=NL2SQL_PROMPT.format(table=TABLE_FQN, question=question,
                                       history=history or "(none)"),
-        config=types.GenerateContentConfig(temperature=0.1),
+        config=_config(temperature=0.1),
     )
     sql = resp.text.strip()
     sql = re.sub(r"^```(sql)?|```$", "", sql, flags=re.MULTILINE).strip()
@@ -187,20 +257,21 @@ def is_safe_select(sql: str) -> bool:
 
 
 def run_bigquery(sql: str) -> pd.DataFrame:
-    from google.cloud import bigquery
-    client = bigquery.Client(project=GCP_PROJECT)
-    return client.query(sql).to_dataframe()
+    global _BQ
+    if _BQ is None:
+        from google.cloud import bigquery
+        _BQ = bigquery.Client(project=GCP_PROJECT)
+    return _BQ.query(sql).to_dataframe()
 
 
 def explain_result(question: str, sql: str, df: pd.DataFrame) -> str:
     try:
-        from google.genai import types
         resp = _client().models.generate_content(
             model=GEMINI_MODEL,
             contents=ANSWER_PROMPT.format(
                 question=question, sql=sql,
                 result=df.head(50).to_csv(index=False)[:6000]),
-            config=types.GenerateContentConfig(temperature=0.2),
+            config=_config(temperature=0.2),
         )
         return resp.text.strip()
     except Exception:
@@ -246,7 +317,6 @@ def sitrep(ev: dict, hist: str, live_near: int) -> str:
     from datetime import datetime, timezone as tz
     now = datetime.now(tz.utc).strftime("%Y-%m-%d %H:%M")
     try:
-        from google.genai import types
         resp = _client().models.generate_content(
             model=GEMINI_MODEL,
             contents=SITREP_PROMPT.format(
@@ -255,7 +325,7 @@ def sitrep(ev: dict, hist: str, live_near: int) -> str:
                 tsunami="YES" if ev.get("tsunami_flag") else "no",
                 felt=ev.get("felt_reports", 0), hist=hist or "not available",
                 live_near=live_near, now=now),
-            config=types.GenerateContentConfig(temperature=0.2))
+            config=_config(temperature=0.2))
         return resp.text.strip()
     except Exception as e:
         return (f"# SITUATION REPORT - {ev['place']}\n*Generated {now} UTC (template - "
@@ -313,12 +383,11 @@ def do_dont(context: str, language: str = "English",
     situation, closing = DD_SITUATIONS.get(
         situation_key, DD_SITUATIONS["I am safe and want to help others"])
     try:
-        from google.genai import types
         resp = _client().models.generate_content(
             model=GEMINI_MODEL,
             contents=DO_DONT_PROMPT.format(context=context, language=language,
                                            situation=situation, closing=closing),
-            config=types.GenerateContentConfig(temperature=0.4))
+            config=_config(temperature=0.4))
         return resp.text.strip()
     except Exception:
         return ("### If you are trapped\n**Do** - cover mouth against dust; tap on pipes "
@@ -332,23 +401,17 @@ def do_dont(context: str, language: str = "English",
 
 
 # =========================================================== smart router ===
-ROUTE_PROMPT = """Classify this earthquake-related question into exactly one route:
-- "data": needs the USGS event catalog (counts, lists, strongest/when/where of past events)
-- "general": earthquake science, safety, preparedness, definitions - no catalog needed
-- "hybrid": needs both (e.g. an area's history AND what residents should do)
-
-Question: {q}
-Return JSON: {{"route": "data" | "general" | "hybrid"}}"""
-
 GENERAL_PROMPT = """You are QuakeSense's earthquake knowledge assistant, serving citizens,
 officials and journalists. Conversation so far:
 {history}
 
 Question: {q}
 
-Give a substantial, well-organized answer in markdown (150-300 words): short
-paragraphs and/or a few bold-labelled points, the way a knowledgeable expert would
-explain it to an intelligent non-specialist. Cover the why/how, not just the what.
+Give a well-organized answer in markdown: short paragraphs and/or a few
+bold-labelled points, the way a knowledgeable expert would explain it to an
+intelligent non-specialist. Cover the why/how, not just the what. Match length
+to the question - a definition deserves ~80 words, a "why/how" question
+150-280. Never pad.
 Be accurate, calm and practical; use established seismology and official safety
 guidance (drop-cover-hold-on, etc.). Never predict earthquakes or give
 probabilities of future events. If the question would benefit from real catalog
@@ -360,8 +423,8 @@ The user asked: "{q}"
 Catalog query executed: {sql}
 Catalog result (CSV, truncated): {result}
 
-Combine the DATA with expert knowledge in markdown (150-300 words):
-1. Answer with concrete numbers from the result.
+Combine the DATA with expert knowledge in markdown (150-280 words):
+1. Answer with concrete numbers from the result - bold the key figures.
 2. "**Insight:**" - one valuable observation from the data.
 3. "**Context:**" - a substantial paragraph of expert interpretation: the
    tectonic setting, why the pattern exists, and practical guidance where
@@ -372,45 +435,70 @@ USGS earthquake record" when needed.
 Never predict future earthquakes."""
 
 
-def smart_ask(question: str, history: str = "") -> dict:
-    """Route a question to catalog SQL, general knowledge, or both."""
-    from google.genai import types
-    client = _client()
+def route_and_sql(question: str, history: str = "") -> tuple[str, str]:
+    """One model call that both classifies the question and drafts the SQL."""
     try:
-        resp = client.models.generate_content(
-            model=GEMINI_MODEL, contents=ROUTE_PROMPT.format(q=question),
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json", temperature=0.0))
-        route = json.loads(resp.text).get("route", "general")
+        resp = _client().models.generate_content(
+            model=GEMINI_MODEL,
+            contents=ROUTE_SQL_PROMPT.format(table=TABLE_FQN, question=question,
+                                             history=history or "(none)"),
+            config=_config(response_mime_type="application/json",
+                           temperature=0.0))
+        out = json.loads(resp.text)
+        route = out.get("route", "general")
+        sql = (out.get("sql") or "").strip()
+        sql = re.sub(r"^```(sql)?|```$", "", sql, flags=re.MULTILINE).strip()
+        return route, sql
     except Exception:
-        route = "general"
+        return "general", ""
+
+
+def smart_ask(question: str, history: str = "", stream: bool = False) -> dict:
+    """Route a question to catalog SQL, general knowledge, or both.
+
+    With stream=True the returned dict carries a "stream" generator of answer
+    chunks (feed it to st.write_stream); otherwise "answer" holds the full text.
+    """
+    route, sql = route_and_sql(question, history)
 
     note = ""
-    if route in ("data", "hybrid"):
+    if route in ("data", "hybrid") and sql:
         try:
-            sql = question_to_sql(question, history)
             if not is_safe_select(sql):
                 raise ValueError("unsafe SQL")
             df = run_bigquery(sql)
+            fallback = f"Query returned {len(df)} rows (see table below)."
             if route == "data":
-                return {"mode": "data", "sql": sql, "df": df,
-                        "answer": explain_result(question, sql, df)}
-            resp = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=HYBRID_PROMPT.format(
+                prompt = ANSWER_PROMPT.format(
+                    question=question, sql=sql,
+                    result=df.head(50).to_csv(index=False)[:6000])
+                temp = 0.2
+            else:
+                prompt = HYBRID_PROMPT.format(
                     q=question, sql=sql,
-                    result=df.head(40).to_csv(index=False)[:5000]),
-                config=types.GenerateContentConfig(temperature=0.3))
-            return {"mode": "hybrid", "sql": sql, "df": df,
+                    result=df.head(40).to_csv(index=False)[:5000])
+                temp = 0.3
+            if stream:
+                return {"mode": route, "sql": sql, "df": df,
+                        "stream": _stream_text(prompt, temp, fallback)}
+            resp = _client().models.generate_content(
+                model=GEMINI_MODEL, contents=prompt,
+                config=_config(temperature=temp))
+            return {"mode": route, "sql": sql, "df": df,
                     "answer": resp.text.strip()}
         except Exception as e:
             note = (f"Catalog unavailable ({str(e)[:90]}) - answered from general "
                     f"knowledge instead. Check BigQuery credentials.")
 
-    resp = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=GENERAL_PROMPT.format(q=question, history=history or "(none)"),
-        config=types.GenerateContentConfig(temperature=0.4))
+    prompt = GENERAL_PROMPT.format(q=question, history=history or "(none)")
+    if stream:
+        return {"mode": "general", "sql": None, "df": None, "note": note,
+                "stream": _stream_text(prompt, 0.4,
+                                       "The knowledge service is unavailable "
+                                       "right now - please try again shortly.")}
+    resp = _client().models.generate_content(
+        model=GEMINI_MODEL, contents=prompt,
+        config=_config(temperature=0.4))
     return {"mode": "general", "sql": None, "df": None,
             "answer": resp.text.strip(), "note": note}
 
@@ -452,7 +540,6 @@ preparedness_actions: exactly 4, practical, proportionate to this actual risk le
 def area_profile(place: str, hist: dict, live_near: dict,
                  language: str = "English") -> dict:
     try:
-        from google.genai import types
         resp = _client().models.generate_content(
             model=GEMINI_MODEL,
             contents=AREA_PROMPT.format(
@@ -460,9 +547,8 @@ def area_profile(place: str, hist: dict, live_near: dict,
                 strongest=hist["strongest"], latest=hist["latest"],
                 per_decade=hist["per_decade"],
                 live_count=live_near["count"], live_max=live_near["max"]),
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=AREA_SCHEMA, temperature=0.3),
+            config=_config(response_mime_type="application/json",
+                           response_schema=AREA_SCHEMA, temperature=0.3),
         )
         out = json.loads(resp.text)
         out["source"] = "gemini"
@@ -491,7 +577,6 @@ def explain_anomaly(cell: dict, events: pd.DataFrame,
         f"M{r.mag:.1f} {r.place} ({r.time:%b %d %H:%M} UTC, {r.depth_km:.0f} km deep)"
         for r in events.sort_values('time').head(10).itertuples())
     try:
-        from google.genai import types
         prompt = (
             "You are a seismologist-analyst writing for the public. Analyze this week's "
             f"elevated activity in the region around ({cell['cell_lat']}, {cell['cell_lon']}).\n\n"
@@ -508,7 +593,7 @@ def explain_anomaly(cell: dict, events: pd.DataFrame,
             "Never predict; state clearly that elevated activity does not guarantee a larger event.")
         resp = _client().models.generate_content(
             model=GEMINI_MODEL, contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.3))
+            config=_config(temperature=0.3))
         return resp.text.strip()
     except Exception:
         places = ", ".join(events["place"].head(5).tolist())

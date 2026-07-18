@@ -4,7 +4,9 @@ Live USGS data + Vertex AI Gemini + BigQuery, served by Streamlit.
 
 Run:  streamlit run app.py
 """
+import base64
 import math
+import os
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -14,6 +16,8 @@ import streamlit as st
 
 from src.ai import (situation_briefing, smart_ask, explain_anomaly,
                     area_profile, sitrep, do_dont, run_bigquery, TABLE_FQN)
+from src.anomaly import detect
+from src.live_feed import fetch_live, significant_events, PAGER_LABEL
 
 EMERGENCY_NUMBERS = {
     "Thailand": "Police 191 · Ambulance 1669 · Disaster hotline (DDPM) 1784",
@@ -33,43 +37,6 @@ EMERGENCY_NUMBERS = {
     "New Zealand": "111", "Italy": "112", "Greece": "112",
 }
 
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def emergency_facilities(lat: float, lon: float, radius_km: int = 20):
-    """Hospitals, fire and police stations near a point, from OpenStreetMap."""
-    query = (f'[out:json][timeout:25];('
-             f'node["amenity"~"hospital|fire_station|police"](around:{radius_km * 1000},{lat},{lon});'
-             f'way["amenity"~"hospital|fire_station|police"](around:{radius_km * 1000},{lat},{lon});'
-             f');out center 80;')
-    headers = {"User-Agent": "QuakeSense/1.0 (hackathon demo; contact: team KODA)"}
-    r = None
-    for host in ["https://overpass-api.de/api/interpreter",
-                 "https://overpass.kumi.systems/api/interpreter"]:
-        try:
-            r = requests.post(host, data={"data": query}, headers=headers, timeout=30)
-            r.raise_for_status()
-            break
-        except Exception:
-            r = None
-    if r is None:
-        raise RuntimeError("all Overpass mirrors unavailable")
-    rows = []
-    for el in r.json().get("elements", []):
-        tags = el.get("tags", {})
-        plat = el.get("lat") or el.get("center", {}).get("lat")
-        plon = el.get("lon") or el.get("center", {}).get("lon")
-        if plat is None:
-            continue
-        rows.append({"name": tags.get("name", "(unnamed)"),
-                     "type": tags.get("amenity", "").replace("_", " "),
-                     "lat": plat, "lon": plon})
-    df = pd.DataFrame(rows).drop_duplicates(subset=["name", "type"])
-    if not df.empty:
-        df["km away"] = df.apply(lambda r: round(haversine_km(lat, lon, r["lat"], r["lon"]), 1), axis=1)
-        df = df.sort_values("km away").reset_index(drop=True)
-    return df
-from src.anomaly import detect
-from src.live_feed import fetch_live, significant_events, PAGER_LABEL
 
 st.set_page_config(page_title="QuakeSense - Global real-time earthquake intelligence",
                    page_icon=":material/earthquake:", layout="wide")
@@ -173,14 +140,64 @@ def area_history(lat: float, lon: float):
     return df[d <= 300].reset_index(drop=True)
 
 
-@st.cache_data(ttl=604800, show_spinner=False)
+@st.cache_data(show_spinner=False)
 def plate_boundaries():
+    """Tectonic plate boundaries (Bird 2003), bundled locally for instant load."""
+    import json
+    path = os.path.join("data", "plate_boundaries.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        pass
     try:
         url = ("https://raw.githubusercontent.com/fraxen/tectonicplates/"
                "master/GeoJSON/PB2002_boundaries.json")
         return requests.get(url, timeout=15).json()
     except Exception:
         return None
+
+
+@st.cache_data(show_spinner=False)
+def logo_b64() -> str:
+    with open(os.path.join("assets", "koda.png"), "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def emergency_facilities(lat: float, lon: float, radius_km: int = 20):
+    """Hospitals, fire and police stations near a point, from OpenStreetMap."""
+    query = (f'[out:json][timeout:25];('
+             f'node["amenity"~"hospital|fire_station|police"](around:{radius_km * 1000},{lat},{lon});'
+             f'way["amenity"~"hospital|fire_station|police"](around:{radius_km * 1000},{lat},{lon});'
+             f');out center 80;')
+    headers = {"User-Agent": "QuakeSense/1.0 (hackathon demo; contact: team KODA)"}
+    r = None
+    for host in ["https://overpass-api.de/api/interpreter",
+                 "https://overpass.kumi.systems/api/interpreter"]:
+        try:
+            r = requests.post(host, data={"data": query}, headers=headers, timeout=30)
+            r.raise_for_status()
+            break
+        except Exception:
+            r = None
+    if r is None:
+        raise RuntimeError("all Overpass mirrors unavailable")
+    rows = []
+    for el in r.json().get("elements", []):
+        tags = el.get("tags", {})
+        plat = el.get("lat") or el.get("center", {}).get("lat")
+        plon = el.get("lon") or el.get("center", {}).get("lon")
+        if plat is None:
+            continue
+        rows.append({"name": tags.get("name", "(unnamed)"),
+                     "type": tags.get("amenity", "").replace("_", " "),
+                     "lat": plat, "lon": plon})
+    df = pd.DataFrame(rows).drop_duplicates(subset=["name", "type"])
+    if not df.empty:
+        df["km away"] = df.apply(lambda r: round(haversine_km(lat, lon, r["lat"], r["lon"]), 1), axis=1)
+        df = df.sort_values("km away").reset_index(drop=True)
+    return df
 
 
 # ----------------------------------------------------------------- header --
@@ -213,9 +230,7 @@ st.sidebar.markdown("---")
 st.sidebar.caption("Earthquakes cannot be predicted. This tool supports awareness "
                    "and decision-making, not prediction.")
 
-import base64  # noqa: E402
-with open("assets/koda.png", "rb") as _f:
-    _koda_b64 = base64.b64encode(_f.read()).decode()
+_koda_b64 = logo_b64()
 st.sidebar.markdown(f"""
 <div class="qs-sidebar-bottom">
   <p class="qs-credit">Built with</p>
@@ -559,6 +574,8 @@ elif page == "Ask the Data":
     question = pending or typed
     if question:
         st.session_state.chat.append({"role": "user", "content": question})
+        with st.chat_message("user"):
+            st.markdown(question)
         history = "\n".join(f"{m['role']}: {m['content'][:250]}"
                             for m in st.session_state.chat[-7:-1])
         if st.session_state.get("area"):
@@ -568,18 +585,20 @@ elif page == "Ask the Data":
                        f"(~{ar['hist']['per_decade']}/decade). Strongest: {ar['hist']['strongest']}. "
                        f"This week within 500 km: {ar['live']['count']}. "
                        f"Profile headline: {ar['prof']['headline']}\n" + history)
-        try:
-            with st.spinner("Agent thinking: route → data/knowledge → answer..."):
-                res = smart_ask(question, history)
-            st.session_state.chat.append({"role": "assistant", "content": res["answer"],
-                                          "sql": res["sql"], "df": res["df"],
-                                          "mode": res.get("mode"),
-                                          "note": res.get("note", "")})
-        except Exception as e:
-            st.session_state.chat.append({
-                "role": "assistant",
-                "content": f"I could not answer that: {e}. Try rephrasing, or check that "
-                           f"BigQuery and Vertex AI are reachable."})
+        with st.chat_message("assistant"):
+            try:
+                with st.spinner("Checking the USGS record..."):
+                    res = smart_ask(question, history, stream=True)
+                answer = st.write_stream(res["stream"])
+                st.session_state.chat.append({"role": "assistant", "content": answer,
+                                              "sql": res["sql"], "df": res["df"],
+                                              "mode": res.get("mode"),
+                                              "note": res.get("note", "")})
+            except Exception as e:
+                st.session_state.chat.append({
+                    "role": "assistant",
+                    "content": f"I could not answer that: {e}. Try rephrasing, or check that "
+                               f"BigQuery and Vertex AI are reachable."})
         st.rerun()
 
     if st.session_state.chat and st.button("Clear conversation"):

@@ -24,7 +24,7 @@ PAGER_LABEL = {
 def fetch_live(feed_url: str = USGS_LIVE_FEED) -> pd.DataFrame:
     """Fetch past-7-days M2.5+ quakes as a tidy DataFrame (with offline fallback)."""
     try:
-        r = requests.get(feed_url, timeout=30)
+        r = requests.get(feed_url, timeout=12)
         r.raise_for_status()
         payload = r.json()
     except Exception:
