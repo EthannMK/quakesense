@@ -5,6 +5,7 @@ Live USGS data + Vertex AI Gemini + BigQuery, served by Streamlit.
 Run:  streamlit run app.py
 """
 import base64
+import html
 import math
 import os
 from datetime import datetime, timezone
@@ -100,6 +101,53 @@ section[data-testid="stSidebar"] .stRadio label p {font-size: 0.90rem;}
 .stButton button[kind="primary"] {
   letter-spacing: 0.06em; font-weight: 600; border-radius: 4px;
 }
+
+/* Floating quick-ask popup (bottom-right on every relevant page) */
+div[data-testid="stPopover"] {
+  position: fixed !important; bottom: 1.2rem; right: 1.2rem;
+  left: auto !important; width: auto !important; z-index: 999;
+}
+button[data-testid="stPopoverButton"] {
+  width: auto !important; border-radius: 999px !important;
+  padding: 0.5rem 1.15rem; font-weight: 600;
+  background: #d97e4a !important; color: #12161d !important;
+  border: none !important; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+button[data-testid="stPopoverButton"]:hover {
+  background: #e08c5c !important; color: #12161d !important;
+}
+div[data-testid="stPopoverBody"] {min-width: min(380px, 94vw);}
+
+/* Live event ticker under the header */
+.qs-ticker {
+  overflow: hidden; white-space: nowrap; border: 1px solid #29313c;
+  border-radius: 6px; background: #1a2029; padding: 0.35rem 0;
+  margin: 0.35rem 0 0.75rem 0; position: relative;
+}
+.qs-ticker-inner {
+  display: inline-block; padding-left: 100%;
+  animation: qs-scroll 60s linear infinite;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 0.78rem; color: #b6c0cc;
+}
+.qs-ticker:hover .qs-ticker-inner {animation-play-state: paused;}
+.qs-ticker .m6 {color: #d97e4a; font-weight: 600;}
+.qs-ticker .tsu {color: #40aadc; font-weight: 600;}
+@keyframes qs-scroll {
+  0% {transform: translateX(0);}
+  100% {transform: translateX(-100%);}
+}
+
+/* Small screens: tighten spacing so phones get a clean layout */
+@media (max-width: 640px) {
+  .block-container {padding-left: 0.9rem; padding-right: 0.9rem;}
+  .qs-wordmark {font-size: 1.2rem;}
+  .qs-subline {font-size: 0.58rem; letter-spacing: 0.12em;}
+  [data-testid="stMetric"] {padding: 8px 10px 6px 10px;}
+  [data-testid="stMetricValue"] {font-size: 1.2rem !important;}
+  h2, h3 {font-size: 1.15rem;}
+  div[data-testid="stPopover"] {bottom: 0.9rem; right: 0.9rem;}
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -165,6 +213,471 @@ def logo_b64() -> str:
         return base64.b64encode(f.read()).decode()
 
 
+def render_ticker(live_df):
+    """CNN-style scrolling strip of this week's significant events."""
+    if live_df is None or live_df.empty:
+        return
+    top = live_df[live_df["mag"] >= 5.0].head(14)
+    if top.empty:
+        return
+    now = pd.Timestamp.now(tz="UTC")
+    bits = []
+    for r in top.itertuples():
+        hrs = int((now - r.time).total_seconds() // 3600)
+        ago = f"{hrs}h ago" if hrs < 48 else f"{hrs // 24}d ago"
+        cls = "tsu" if r.tsunami_flag else ("m6" if r.mag >= 6 else "")
+        tag = " ⚠ tsunami flag" if r.tsunami_flag else ""
+        bits.append(f'<span class="{cls}">M{r.mag:.1f}</span> '
+                    f'{html.escape(str(r.place))}{tag} · {ago}')
+    items = " &nbsp;&nbsp;···&nbsp;&nbsp; ".join(bits)
+    st.markdown(f'<div class="qs-ticker"><div class="qs-ticker-inner">'
+                f'THIS WEEK M5+ &nbsp;&nbsp;···&nbsp;&nbsp; {items}'
+                f'</div></div>', unsafe_allow_html=True)
+
+
+@st.fragment
+def quick_ask(context: str, live_df):
+    """Floating quick-question popup for pages other than the full chat.
+
+    Page context travels with the question so answers refer to what the
+    user is actually looking at."""
+    with st.popover("💬 Ask QuakeSense"):
+        st.caption("Quick question about what you're seeing? For the full agent "
+                   "with SQL evidence and follow-ups, open **Ask the Data**.")
+        q = st.text_input("Your question", key="quick_q",
+                          placeholder="e.g. Should people nearby be worried?",
+                          label_visibility="collapsed")
+        if st.button("Ask", key="quick_go", type="primary") and q.strip():
+            hist = (f"[Quick popup question. Page context: {context}. "
+                    f"Answer concisely - under 120 words.]")
+            try:
+                with st.spinner("Thinking..."):
+                    res = smart_ask(q.strip(), hist, live_df=live_df)
+                st.session_state.quick = {"q": q.strip(), "a": res["answer"],
+                                          "mode": res.get("mode"),
+                                          "sources": res.get("sources") or []}
+            except Exception as e:
+                st.session_state.quick = {"q": q.strip(), "sources": [],
+                                          "a": f"Unavailable right now ({str(e)[:60]}). "
+                                               f"Try the Ask the Data page.",
+                                          "mode": None}
+        qa = st.session_state.get("quick")
+        if qa:
+            st.markdown(f"**You:** {qa['q']}")
+            st.markdown(qa["a"])
+            if qa.get("sources"):
+                st.caption("Sources: " + " · ".join(
+                    f"[{s['title']}]({s['uri']})" for s in qa["sources"][:3]))
+
+
+@st.fragment
+def briefing_block(ev: dict, pick: str):
+    """Generate + display the community briefing; reruns alone, not the page."""
+    if st.button("Generate community briefing", type="primary"):
+        with st.spinner("Gemini drafting briefing..."):
+            st.session_state.briefing = situation_briefing(ev)
+            st.session_state.briefing_event = pick
+
+    if st.session_state.get("briefing") and st.session_state.get("briefing_event") == pick:
+        br = st.session_state.briefing
+        st.success(f"### {br['headline']}")
+        st.markdown(f"**What happened.** {br['what_happened']}")
+        st.markdown(f"**Who is affected.** {br['who_is_affected']}")
+        st.markdown("**Recommended actions.**")
+        for act in br["recommended_actions"]:
+            st.markdown(f"- {act}")
+        st.info(br["caveats"])
+        st.caption(f"Source: {br['source']} · underlying data: USGS · "
+                   f"[official event page]({ev['url']})")
+        txt = (f"{br['headline']}\n\nWHAT HAPPENED\n{br['what_happened']}\n\n"
+               f"WHO IS AFFECTED\n{br['who_is_affected']}\n\nRECOMMENDED ACTIONS\n"
+               + "\n".join(f"- {a}" for a in br["recommended_actions"])
+               + f"\n\nNOTES\n{br['caveats']}\n\nGenerated by QuakeSense from USGS data.")
+        st.download_button("Download briefing (.txt)", txt,
+                           "quakesense_briefing.txt", "text/plain")
+
+
+MODE_BADGE = {"data": "Answered from: USGS catalog (BigQuery)",
+              "hybrid": "Answered from: USGS catalog + expert knowledge",
+              "live": "Answered from: USGS live feed (past 7 days)",
+              "general": "Answered from: expert knowledge (Gemini)"}
+
+
+def _sources_line(srcs):
+    return "Sources: " + " · ".join(
+        f"[{s['title']}]({s['uri']})" for s in srcs[:5])
+
+
+def _rate_answer(i: int, rating: str):
+    m = st.session_state.chat[i]
+    q = next((c["content"] for c in reversed(st.session_state.chat[:i])
+              if c["role"] == "user"), "")
+    log_feedback(q, m["content"], m.get("mode") or "", rating)
+    m["rated"] = rating
+
+
+@st.fragment
+def chat_agent(live):
+    """The full chat agent. As a fragment, every interaction (question,
+    feedback click, clear) reruns only this section - the rest of the page,
+    including the heavy map/table widgets, stays untouched."""
+    if "chat" not in st.session_state:
+        st.session_state.chat = []
+
+    examples = [
+        "How many M6+ earthquakes hit Myanmar since 1990?",
+        "Why does Myanmar get so many big earthquakes?",
+        "What should my family do during strong shaking?",
+        "Strongest quake ever near Japan - and what made it so deadly?",
+    ]
+    pending = None
+    if not st.session_state.chat:
+        st.markdown("&nbsp;")
+        st.markdown("<p style='text-align:center;color:#93a0af;'>Ask anything about "
+                    "earthquakes — past events, science, or safety. Try one of these:</p>",
+                    unsafe_allow_html=True)
+        r1 = st.columns(2)
+        r2 = st.columns(2)
+        for i, ex in enumerate(examples):
+            col = (r1 + r2)[i]
+            if col.button(ex, key=f"ex{i}", use_container_width=True):
+                pending = ex
+
+    for i, m in enumerate(st.session_state.chat):
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+            if m.get("mode"):
+                st.caption(MODE_BADGE.get(m["mode"], ""))
+            if m.get("sources"):
+                st.caption(_sources_line(m["sources"]))
+            if m.get("note"):
+                st.caption(f":orange[{m['note']}]")
+            if m.get("sql"):
+                with st.expander("Generated SQL (explainable AI)"):
+                    st.code(m["sql"], language="sql")
+            if m.get("df") is not None and len(m["df"]) and m["df"].size > 1:
+                st.dataframe(m["df"].head(30), use_container_width=True, hide_index=True)
+            if m["role"] == "assistant":
+                if m.get("rated"):
+                    st.caption("Feedback recorded — thank you.")
+                else:
+                    fb1, fb2, _ = st.columns([0.07, 0.07, 0.86])
+                    fb1.button("👍", key=f"fb_up_{i}", help="Good answer",
+                               on_click=_rate_answer, args=(i, "up"))
+                    fb2.button("👎", key=f"fb_down_{i}", help="Poor answer",
+                               on_click=_rate_answer, args=(i, "down"))
+
+    if st.session_state.get("area"):
+        st.caption(f"The agent can see your current My Area analysis "
+                   f"({st.session_state.area['city']}) — ask about it here.")
+
+    typed = st.chat_input("Ask anything about earthquakes — events, science, safety, "
+                          "or your area's analysis...")
+    question = pending or typed
+    if question:
+        st.session_state.chat.append({"role": "user", "content": question})
+        with st.chat_message("user"):
+            st.markdown(question)
+        history = "\n".join(f"{m['role']}: {m['content'][:250]}"
+                            for m in st.session_state.chat[-7:-1])
+        if st.session_state.get("area"):
+            ar = st.session_state.area
+            history = (f"[Current 'My Area' analysis shown to user] Location: {ar['city']}. "
+                       f"M5+ within 300 km since 1975: {ar['hist']['count']} "
+                       f"(~{ar['hist']['per_decade']}/decade). Strongest: {ar['hist']['strongest']}. "
+                       f"This week within 500 km: {ar['live']['count']}. "
+                       f"Profile headline: {ar['prof']['headline']}\n" + history)
+        with st.chat_message("assistant"):
+            try:
+                with st.spinner("Checking the USGS record..."):
+                    res = smart_ask(question, history, stream=True, live_df=live)
+                answer = st.write_stream(res["stream"])
+                srcs = res.get("sources") or []
+                if srcs:
+                    st.caption(_sources_line(srcs))
+                st.session_state.chat.append({"role": "assistant", "content": answer,
+                                              "sql": res["sql"], "df": res["df"],
+                                              "mode": res.get("mode"),
+                                              "sources": srcs,
+                                              "note": res.get("note", "")})
+            except Exception as e:
+                st.session_state.chat.append({
+                    "role": "assistant",
+                    "content": f"I could not answer that: {e}. Try rephrasing, or check that "
+                               f"BigQuery and Vertex AI are reachable."})
+        st.rerun(scope="fragment")
+
+    if st.session_state.chat and st.button("Clear conversation"):
+        st.session_state.chat = []
+        st.rerun(scope="fragment")
+
+
+@st.fragment
+def my_area_block(tdb, live):
+    """Country/town pickers + risk profile - reruns isolated from the page,
+    so browsing the (12k-row) town list never re-renders anything else."""
+    sel = None
+    row = None
+    lang = "English"
+    if tdb is None:
+        st.error("Towns database missing. Run once:  python scripts/load_towns.py")
+    else:
+        a0, a1, a2 = st.columns([1, 1.4, 1])
+        with a0:
+            countries = sorted(tdb["country"].dropna().unique().tolist())
+            default_ix = countries.index("Thailand") if "Thailand" in countries else 0
+            country = st.selectbox("Country", countries, index=default_ix)
+        with a1:
+            towns = tdb[tdb["country"] == country]
+            labels2 = [f"{r.name_}, {r.admin1}" if pd.notna(r.admin1) and str(r.admin1) != ""
+                       else str(r.name_)
+                       for r in towns.rename(columns={"name": "name_"}).itertuples()]
+            pick_ix = st.selectbox("Town (type to search the list)", range(len(labels2)),
+                                   format_func=lambda i: labels2[i],
+                                   help="Sorted by population - start typing to jump "
+                                        "to your town. Exact coordinates come from the "
+                                        "GeoNames database, no guessing.")
+        with a2:
+            lang = st.selectbox("Language", ["English", "Myanmar (Burmese)", "Thai",
+                                             "Hindi", "Bengali", "Telugu",
+                                             "Marathi", "Tamil"])
+        row = towns.iloc[pick_ix]
+        sel = f"{row['name']}, {country}"
+
+    if st.button("Generate risk profile", type="primary", disabled=sel is None) and sel:
+        lat, lon, display = float(row["latitude"]), float(row["longitude"]), sel
+        try:
+            with st.spinner("Reading 50 years of records for your area..."):
+                hist_df = area_history(round(lat, 3), round(lon, 3))
+            if hist_df.empty:
+                hist = {"count": 0, "strongest": "none on record",
+                        "latest": "none on record", "per_decade": 0}
+            else:
+                smax = hist_df.loc[hist_df["mag"].idxmax()]
+                latest = hist_df.loc[pd.to_datetime(hist_df["time"]).idxmax()]
+                years = max(1, datetime.now(timezone.utc).year - 1975)
+                hist = {
+                    "count": len(hist_df),
+                    "strongest": f"M{smax['mag']:.1f} - {smax['place']} "
+                                 f"({pd.to_datetime(smax['time']).year})",
+                    "latest": f"M{latest['mag']:.1f} - {latest['place']} "
+                              f"({pd.to_datetime(latest['time']).year})",
+                    "per_decade": round(len(hist_df) / years * 10, 1),
+                }
+            near = live.copy() if not live.empty else pd.DataFrame()
+            if not near.empty:
+                dists = near.apply(lambda r: haversine_km(lat, lon, r["lat"], r["lon"]), axis=1)
+                near = near[dists <= 500]
+            live_near = {"count": len(near),
+                         "max": f"M{near['mag'].max():.1f}" if len(near) else "none"}
+            with st.spinner("Gemini writing your community profile..."):
+                prof = area_profile(display.split(",")[0], hist, live_near, lang)
+            st.session_state.area = {"prof": prof, "hist": hist, "live": live_near,
+                                     "df": hist_df, "lat": lat, "lon": lon,
+                                     "city": sel, "display": display}
+        except Exception as e:
+            st.error(f"Historical layer unavailable: {e}")
+
+    if st.session_state.get("area") and st.session_state.area["city"] == sel:
+        ar = st.session_state.area
+        st.caption(f"Profile for: **{ar.get('display', sel)}** "
+                   f"({ar['lat']:.3f}, {ar['lon']:.3f})")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("M5+ since 1975", ar["hist"]["count"],
+                  help="All magnitude 5+ earthquakes within 300 km of your town "
+                       "in the official USGS record since 1975.")
+        m2.metric("Per decade", ar["hist"]["per_decade"],
+                  help="Average number of M5+ events per 10 years within 300 km - "
+                       "a rough measure of how seismically active your area is.")
+        m3.metric("Strongest ever",
+                  str(ar["hist"]["strongest"]).split(" - ")[0],
+                  help=f"The most powerful event on record near you: {ar['hist']['strongest']}")
+        m4.metric("Most recent M5+",
+                  str(ar["hist"]["latest"]).rsplit("(", 1)[-1].rstrip(")"),
+                  help=f"The last M5+ event within 300 km: {ar['hist']['latest']}")
+        m5.metric("This week · 500 km", ar["live"]["count"],
+                  help="Live count of M2.5+ events within 500 km in the past 7 days.")
+        prof = ar["prof"]
+        st.success(f"### {prof['headline']}")
+        st.markdown(f"**Seismic history.** {prof['seismic_context']}")
+        st.markdown(f"**Right now.** {prof['this_week']}")
+        st.markdown("**Be prepared.**")
+        for act in prof["preparedness_actions"]:
+            st.markdown(f"- {act}")
+        st.info(prof["caveats"])
+        st.caption(f"Source: {prof['source']} · USGS catalog + live feed · not a prediction")
+        if not ar["df"].empty:
+            hd = ar["df"].copy()
+            hd["year"] = pd.to_datetime(hd["time"]).dt.year
+            hd["decade"] = (hd["year"] // 10 * 10).astype(str) + "s"
+            hd["strength"] = pd.cut(hd["mag"], [5, 5.5, 6, 6.5, 7, 10],
+                                    labels=["M5.0-5.4", "M5.5-5.9", "M6.0-6.4",
+                                            "M6.5-6.9", "M7.0+"], right=False)
+            g1, g2 = st.columns(2)
+            with g1:
+                st.markdown("**Events per decade near you**")
+                st.bar_chart(hd.groupby("decade").size(), color="#d97e4a")
+                st.caption("Taller recent bars often reflect better instruments, "
+                           "not necessarily more earthquakes.")
+            with g2:
+                st.markdown("**How strong they were**")
+                st.bar_chart(hd.groupby("strength", observed=False).size(), color="#d97e4a")
+                st.caption("Most events cluster at the lower magnitudes - "
+                           "the big ones are rare but matter most.")
+            with st.expander("Map: every M5+ epicenter within 300 km since 1975",
+                             expanded=True):
+                hist_map = ar["df"].rename(columns={"latitude": "lat", "longitude": "lon"})
+                st.map(hist_map[["lat", "lon"]], zoom=5, color="#d97e4a", size=8000)
+
+
+@st.fragment
+def anomaly_explain_block(flagged, live_cells):
+    """Region explainer - selectbox + AI analysis rerun without the page."""
+    idx = st.selectbox(
+        "Explain a flagged region",
+        range(len(flagged)),
+        format_func=lambda i: f"{flagged.iloc[i]['sample_place']}  "
+                              f"({flagged.iloc[i]['ratio']:.0f}x normal)",
+        help="Pick a region and generate a plain-language explanation of why "
+             "its activity is unusual and what nearby communities should know.")
+    if st.button("Generate AI analysis", type="primary"):
+        cell = flagged.iloc[idx].to_dict()
+        evs = live_cells[(live_cells["cell_lat"] == cell["cell_lat"]) &
+                         (live_cells["cell_lon"] == cell["cell_lon"])]
+        hist_context = ""
+        try:
+            hdf = run_bigquery(
+                f"SELECT COUNT(*) AS n, MAX(mag) AS max_mag, "
+                f"MIN(EXTRACT(YEAR FROM time)) AS since "
+                f"FROM {TABLE_FQN} WHERE latitude BETWEEN {cell['cell_lat']} "
+                f"AND {cell['cell_lat'] + 5} AND longitude BETWEEN "
+                f"{cell['cell_lon']} AND {cell['cell_lon'] + 5}")
+            r0 = hdf.iloc[0]
+            hist_context = (f"{int(r0['n'])} M5+ events since {int(r0['since'])}, "
+                            f"strongest ever M{r0['max_mag']:.1f}")
+        except Exception:
+            pass
+        with st.spinner("Gemini analyzing pattern with 50-year context..."):
+            st.session_state.anomaly_text = explain_anomaly(cell, evs, hist_context)
+            st.session_state.anomaly_idx = idx
+    if (st.session_state.get("anomaly_text")
+            and st.session_state.get("anomaly_idx") == idx):
+        cellm = flagged.iloc[idx]
+        n1, n2, n3, n4 = st.columns(4)
+        n1.metric("Events this week", int(cellm["current"]),
+                  help="M4.5+ earthquakes recorded in this region in the past 7 days.")
+        n2.metric("Normal week", f"{cellm['weekly_avg']:.2f}",
+                  help="This region's average M4.5+ events per week over the last 50 years.")
+        n3.metric("Times above normal", f"{cellm['ratio']:.0f}x",
+                  help="This week divided by the 50-year weekly average. "
+                       "3x or more gets flagged.")
+        n4.metric("Strongest this week", f"M {cellm['max_mag']:.1f}",
+                  help="The largest event in this region during the past 7 days.")
+        st.info(st.session_state.anomaly_text)
+        cell = flagged.iloc[idx].to_dict()
+        evs = live_cells[(live_cells["cell_lat"] == cell["cell_lat"]) &
+                         (live_cells["cell_lon"] == cell["cell_lon"])].copy()
+        v1, v2 = st.columns(2)
+        with v1:
+            st.markdown("**When they struck this week**")
+            daily = evs.set_index(evs["time"].dt.floor("D")).groupby(level=0).size()
+            daily.index = daily.index.strftime("%b %d")
+            st.bar_chart(daily, color="#d97e4a")
+            st.caption("A tight burst suggests an aftershock sequence; "
+                       "spread-out days suggest a swarm.")
+        with v2:
+            st.markdown("**Where they struck**")
+            st.map(evs[["lat", "lon"]], zoom=4, color="#d97e4a")
+
+
+@st.fragment
+def sitrep_block(ev: dict, pick_rt: str, live):
+    """SITREP generation reruns alone - the toolkit page stays put."""
+    if st.button("Generate SITREP", type="primary"):
+        hist_ctx = ""
+        try:
+            hdf = run_bigquery(
+                f"SELECT COUNT(*) AS n, MAX(mag) AS max_mag FROM {TABLE_FQN} "
+                f"WHERE latitude BETWEEN {ev['lat'] - 2.7:.2f} AND {ev['lat'] + 2.7:.2f} "
+                f"AND longitude BETWEEN {ev['lon'] - 2.8:.2f} AND {ev['lon'] + 2.8:.2f}")
+            hist_ctx = (f"{int(hdf.iloc[0]['n'])} M5+ events since 1975, "
+                        f"strongest ever M{hdf.iloc[0]['max_mag']:.1f}")
+        except Exception:
+            pass
+        near_ct = int((live.apply(lambda r: haversine_km(ev["lat"], ev["lon"],
+                                                         r["lat"], r["lon"]),
+                                  axis=1) <= 500).sum())
+        with st.spinner("Drafting situation report..."):
+            st.session_state.sitrep = sitrep(ev, hist_ctx, near_ct)
+            st.session_state.sitrep_event = pick_rt
+    if (st.session_state.get("sitrep")
+            and st.session_state.get("sitrep_event") == pick_rt):
+        st.markdown(st.session_state.sitrep)
+        st.download_button("Download SITREP (.txt)", st.session_state.sitrep,
+                           "quakesense_sitrep.txt", "text/plain")
+
+
+@st.fragment
+def guidance_block(context: str):
+    """Situation/language pickers + guidance, isolated from the page."""
+    from src.ai import DD_SITUATIONS
+    d1, d2 = st.columns([1.6, 1])
+    with d1:
+        dd_sit = st.selectbox("Your situation", list(DD_SITUATIONS.keys()),
+                              key="rt_sit",
+                              help="The advice changes completely depending on who "
+                                   "you are and where you are right now.")
+    with d2:
+        dd_lang = st.selectbox("Language", ["English", "Myanmar (Burmese)", "Thai",
+                                            "Hindi", "Bengali", "Telugu",
+                                            "Marathi", "Tamil"], key="rt_lang")
+    if st.button("Generate guidance", type="primary", key="rt_dd"):
+        with st.spinner("Writing guidance for your situation..."):
+            st.session_state.dd = do_dont(context, dd_lang, dd_sit)
+            st.session_state.dd_key = (dd_lang, dd_sit)
+    if st.session_state.get("dd") and st.session_state.get("dd_key") == (dd_lang, dd_sit):
+        st.markdown(st.session_state.dd)
+        st.download_button("Download guidance (.txt)", st.session_state.dd,
+                           "quakesense_guidance.txt", "text/plain")
+
+
+@st.fragment
+def facilities_block(top):
+    """Town picker + OSM facility search, isolated from the page."""
+    lab3 = [f"{r['name']} ({r['country']}) — {r['km']:.0f} km from epicenter"
+            for _, r in top.iterrows()]
+    tix = st.selectbox("Affected-area town (nearest first)", range(len(lab3)),
+                       format_func=lambda i: lab3[i], key="rt_town")
+    trow = top.iloc[tix]
+    country2 = trow["country"]
+    if country2 in EMERGENCY_NUMBERS:
+        st.markdown(f"**Emergency hotlines ({country2}):** "
+                    f"{EMERGENCY_NUMBERS[country2]}")
+        st.caption("From public sources - verify locally. "
+                   "Numbers can differ by region.")
+
+    if st.button("Find hospitals, fire & police stations within 20 km"):
+        try:
+            with st.spinner(f"Searching OpenStreetMap around {trow['name']}..."):
+                fac = emergency_facilities(round(float(trow["latitude"]), 3),
+                                           round(float(trow["longitude"]), 3))
+            if fac.empty:
+                st.info("OpenStreetMap has no tagged facilities within 20 km of "
+                        "this point. Local knowledge may know more.")
+            else:
+                f1, f2 = st.columns([1.2, 1])
+                with f1:
+                    st.dataframe(fac[["name", "type", "km away"]].head(25),
+                                 use_container_width=True, hide_index=True)
+                with f2:
+                    st.map(fac[["lat", "lon"]], zoom=10, color="#6fae7f")
+                st.caption(f"{len(fac)} facilities from OpenStreetMap (community-"
+                           f"maintained - coverage varies by area).")
+        except Exception as e:
+            st.warning(f"Facility search unavailable right now ({str(e)[:60]}). "
+                       f"Try again in a minute.")
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def emergency_facilities(lat: float, lon: float, radius_km: int = 20):
     """Hospitals, fire and police stations near a point, from OpenStreetMap."""
@@ -215,6 +728,8 @@ try:
 except Exception as e:
     st.error(f"USGS live feed unreachable: {e}")
     live, feed_ok = pd.DataFrame(), False
+
+render_ticker(live)
 
 # ----------------------------------------------------------------- sidebar --
 st.sidebar.markdown("##### MENU")
@@ -377,28 +892,9 @@ if page == "Live Monitor":
         if pager_ok:
             st.caption(PAGER_LABEL.get(pager_raw, ""))
 
-        if st.button("Generate community briefing", type="primary"):
-            with st.spinner("Gemini drafting briefing..."):
-                st.session_state.briefing = situation_briefing(ev)
-                st.session_state.briefing_event = pick
+        briefing_block(ev, pick)
 
-        if st.session_state.get("briefing") and st.session_state.get("briefing_event") == pick:
-            br = st.session_state.briefing
-            st.success(f"### {br['headline']}")
-            st.markdown(f"**What happened.** {br['what_happened']}")
-            st.markdown(f"**Who is affected.** {br['who_is_affected']}")
-            st.markdown("**Recommended actions.**")
-            for act in br["recommended_actions"]:
-                st.markdown(f"- {act}")
-            st.info(br["caveats"])
-            st.caption(f"Source: {br['source']} · underlying data: USGS · "
-                       f"[official event page]({ev['url']})")
-            txt = (f"{br['headline']}\n\nWHAT HAPPENED\n{br['what_happened']}\n\n"
-                   f"WHO IS AFFECTED\n{br['who_is_affected']}\n\nRECOMMENDED ACTIONS\n"
-                   + "\n".join(f"- {a}" for a in br["recommended_actions"])
-                   + f"\n\nNOTES\n{br['caveats']}\n\nGenerated by QuakeSense from USGS data.")
-            st.download_button("Download briefing (.txt)", txt,
-                               "quakesense_briefing.txt", "text/plain")
+        quick_ask(f"Live Monitor world map (past 7 days); selected event: {pick}", live)
 
 # ============================================================ ASK THE DATA ==
 elif page == "Ask the Data":
@@ -407,118 +903,7 @@ elif page == "Ask the Data":
     st.caption("Select your country and town - the agent combines your area's 50-year record "
                "with this week's live activity into a personal risk profile, in your language.")
 
-    tdb = towns_db()
-    sel = None
-    if tdb is None:
-        st.error("Towns database missing. Run once:  python scripts/load_towns.py")
-    else:
-        a0, a1, a2 = st.columns([1, 1.4, 1])
-        with a0:
-            countries = sorted(tdb["country"].dropna().unique().tolist())
-            default_ix = countries.index("Thailand") if "Thailand" in countries else 0
-            country = st.selectbox("Country", countries, index=default_ix)
-        with a1:
-            towns = tdb[tdb["country"] == country]
-            labels2 = [f"{r.name_}, {r.admin1}" if pd.notna(r.admin1) and str(r.admin1) != ""
-                       else str(r.name_)
-                       for r in towns.rename(columns={"name": "name_"}).itertuples()]
-            pick_ix = st.selectbox("Town (type to search the list)", range(len(labels2)),
-                                   format_func=lambda i: labels2[i],
-                                   help="Sorted by population - start typing to jump "
-                                        "to your town. Exact coordinates come from the "
-                                        "GeoNames database, no guessing.")
-        with a2:
-            lang = st.selectbox("Language", ["English", "Myanmar (Burmese)", "Thai",
-                                             "Hindi", "Bengali", "Telugu",
-                                             "Marathi", "Tamil"])
-        row = towns.iloc[pick_ix]
-        sel = f"{row['name']}, {country}"
-
-    if st.button("Generate risk profile", type="primary", disabled=sel is None) and sel:
-        lat, lon, display = float(row["latitude"]), float(row["longitude"]), sel
-        try:
-            with st.spinner("Reading 50 years of records for your area..."):
-                hist_df = area_history(round(lat, 3), round(lon, 3))
-            if hist_df.empty:
-                hist = {"count": 0, "strongest": "none on record",
-                        "latest": "none on record", "per_decade": 0}
-            else:
-                smax = hist_df.loc[hist_df["mag"].idxmax()]
-                latest = hist_df.loc[pd.to_datetime(hist_df["time"]).idxmax()]
-                years = max(1, datetime.now(timezone.utc).year - 1975)
-                hist = {
-                    "count": len(hist_df),
-                    "strongest": f"M{smax['mag']:.1f} - {smax['place']} "
-                                 f"({pd.to_datetime(smax['time']).year})",
-                    "latest": f"M{latest['mag']:.1f} - {latest['place']} "
-                              f"({pd.to_datetime(latest['time']).year})",
-                    "per_decade": round(len(hist_df) / years * 10, 1),
-                }
-            near = live.copy() if not live.empty else pd.DataFrame()
-            if not near.empty:
-                dists = near.apply(lambda r: haversine_km(lat, lon, r["lat"], r["lon"]), axis=1)
-                near = near[dists <= 500]
-            live_near = {"count": len(near),
-                         "max": f"M{near['mag'].max():.1f}" if len(near) else "none"}
-            with st.spinner("Gemini writing your community profile..."):
-                prof = area_profile(display.split(",")[0], hist, live_near, lang)
-            st.session_state.area = {"prof": prof, "hist": hist, "live": live_near,
-                                     "df": hist_df, "lat": lat, "lon": lon,
-                                     "city": sel, "display": display}
-        except Exception as e:
-            st.error(f"Historical layer unavailable: {e}")
-
-    if st.session_state.get("area") and st.session_state.area["city"] == sel:
-        ar = st.session_state.area
-        st.caption(f"Profile for: **{ar.get('display', sel)}** "
-                   f"({ar['lat']:.3f}, {ar['lon']:.3f})")
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("M5+ since 1975", ar["hist"]["count"],
-                  help="All magnitude 5+ earthquakes within 300 km of your town "
-                       "in the official USGS record since 1975.")
-        m2.metric("Per decade", ar["hist"]["per_decade"],
-                  help="Average number of M5+ events per 10 years within 300 km - "
-                       "a rough measure of how seismically active your area is.")
-        m3.metric("Strongest ever",
-                  str(ar["hist"]["strongest"]).split(" - ")[0],
-                  help=f"The most powerful event on record near you: {ar['hist']['strongest']}")
-        m4.metric("Most recent M5+",
-                  str(ar["hist"]["latest"]).rsplit("(", 1)[-1].rstrip(")"),
-                  help=f"The last M5+ event within 300 km: {ar['hist']['latest']}")
-        m5.metric("This week · 500 km", ar["live"]["count"],
-                  help="Live count of M2.5+ events within 500 km in the past 7 days.")
-        prof = ar["prof"]
-        st.success(f"### {prof['headline']}")
-        st.markdown(f"**Seismic history.** {prof['seismic_context']}")
-        st.markdown(f"**Right now.** {prof['this_week']}")
-        st.markdown("**Be prepared.**")
-        for act in prof["preparedness_actions"]:
-            st.markdown(f"- {act}")
-        st.info(prof["caveats"])
-        st.caption(f"Source: {prof['source']} · USGS catalog + live feed · not a prediction")
-        if not ar["df"].empty:
-            hd = ar["df"].copy()
-            hd["year"] = pd.to_datetime(hd["time"]).dt.year
-            hd["decade"] = (hd["year"] // 10 * 10).astype(str) + "s"
-            hd["strength"] = pd.cut(hd["mag"], [5, 5.5, 6, 6.5, 7, 10],
-                                    labels=["M5.0-5.4", "M5.5-5.9", "M6.0-6.4",
-                                            "M6.5-6.9", "M7.0+"], right=False)
-            g1, g2 = st.columns(2)
-            with g1:
-                st.markdown("**Events per decade near you**")
-                st.bar_chart(hd.groupby("decade").size(), color="#d97e4a")
-                st.caption("Taller recent bars often reflect better instruments, "
-                           "not necessarily more earthquakes.")
-            with g2:
-                st.markdown("**How strong they were**")
-                st.bar_chart(hd.groupby("strength", observed=False).size(), color="#d97e4a")
-                st.caption("Most events cluster at the lower magnitudes - "
-                           "the big ones are rare but matter most.")
-            with st.expander("Map: every M5+ epicenter within 300 km since 1975",
-                             expanded=True):
-                hist_map = ar["df"].rename(columns={"latitude": "lat", "longitude": "lon"})
-                st.map(hist_map[["lat", "lon"]], zoom=5, color="#d97e4a", size=8000)
-
+    my_area_block(towns_db(), live)
 
     # ------------------------------------------------------- agent section --
     st.divider()
@@ -528,111 +913,7 @@ elif page == "Ask the Data":
                "live feed, and current news with web sources cited. It remembers "
                "follow-ups and can discuss your My Area analysis above.")
 
-    if "chat" not in st.session_state:
-        st.session_state.chat = []
-
-    examples = [
-        "How many M6+ earthquakes hit Myanmar since 1990?",
-        "Why does Myanmar get so many big earthquakes?",
-        "What should my family do during strong shaking?",
-        "Strongest quake ever near Japan - and what made it so deadly?",
-    ]
-    pending = None
-    if not st.session_state.chat:
-        st.markdown("&nbsp;")
-        st.markdown("<p style='text-align:center;color:#93a0af;'>Ask anything about "
-                    "earthquakes — past events, science, or safety. Try one of these:</p>",
-                    unsafe_allow_html=True)
-        r1 = st.columns(2)
-        r2 = st.columns(2)
-        for i, ex in enumerate(examples):
-            col = (r1 + r2)[i]
-            if col.button(ex, key=f"ex{i}", use_container_width=True):
-                pending = ex
-
-    MODE_BADGE = {"data": "Answered from: USGS catalog (BigQuery)",
-                  "hybrid": "Answered from: USGS catalog + expert knowledge",
-                  "live": "Answered from: USGS live feed (past 7 days)",
-                  "general": "Answered from: expert knowledge (Gemini)"}
-
-    def _sources_line(srcs):
-        return "Sources: " + " · ".join(
-            f"[{s['title']}]({s['uri']})" for s in srcs[:5])
-
-    def _rate_answer(i: int, rating: str):
-        m = st.session_state.chat[i]
-        q = next((c["content"] for c in reversed(st.session_state.chat[:i])
-                  if c["role"] == "user"), "")
-        log_feedback(q, m["content"], m.get("mode") or "", rating)
-        m["rated"] = rating
-
-    for i, m in enumerate(st.session_state.chat):
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
-            if m.get("mode"):
-                st.caption(MODE_BADGE.get(m["mode"], ""))
-            if m.get("sources"):
-                st.caption(_sources_line(m["sources"]))
-            if m.get("note"):
-                st.caption(f":orange[{m['note']}]")
-            if m.get("sql"):
-                with st.expander("Generated SQL (explainable AI)"):
-                    st.code(m["sql"], language="sql")
-            if m.get("df") is not None and len(m["df"]) and m["df"].size > 1:
-                st.dataframe(m["df"].head(30), use_container_width=True, hide_index=True)
-            if m["role"] == "assistant":
-                if m.get("rated"):
-                    st.caption("Feedback recorded — thank you.")
-                else:
-                    fb1, fb2, _ = st.columns([0.07, 0.07, 0.86])
-                    fb1.button("👍", key=f"fb_up_{i}", help="Good answer",
-                               on_click=_rate_answer, args=(i, "up"))
-                    fb2.button("👎", key=f"fb_down_{i}", help="Poor answer",
-                               on_click=_rate_answer, args=(i, "down"))
-
-    if st.session_state.get("area"):
-        st.caption(f"The agent can see your current My Area analysis "
-                   f"({st.session_state.area['city']}) — ask about it here.")
-
-    typed = st.chat_input("Ask anything about earthquakes — events, science, safety, "
-                          "or your area's analysis...")
-    question = pending or typed
-    if question:
-        st.session_state.chat.append({"role": "user", "content": question})
-        with st.chat_message("user"):
-            st.markdown(question)
-        history = "\n".join(f"{m['role']}: {m['content'][:250]}"
-                            for m in st.session_state.chat[-7:-1])
-        if st.session_state.get("area"):
-            ar = st.session_state.area
-            history = (f"[Current 'My Area' analysis shown to user] Location: {ar['city']}. "
-                       f"M5+ within 300 km since 1975: {ar['hist']['count']} "
-                       f"(~{ar['hist']['per_decade']}/decade). Strongest: {ar['hist']['strongest']}. "
-                       f"This week within 500 km: {ar['live']['count']}. "
-                       f"Profile headline: {ar['prof']['headline']}\n" + history)
-        with st.chat_message("assistant"):
-            try:
-                with st.spinner("Checking the USGS record..."):
-                    res = smart_ask(question, history, stream=True, live_df=live)
-                answer = st.write_stream(res["stream"])
-                srcs = res.get("sources") or []
-                if srcs:
-                    st.caption(_sources_line(srcs))
-                st.session_state.chat.append({"role": "assistant", "content": answer,
-                                              "sql": res["sql"], "df": res["df"],
-                                              "mode": res.get("mode"),
-                                              "sources": srcs,
-                                              "note": res.get("note", "")})
-            except Exception as e:
-                st.session_state.chat.append({
-                    "role": "assistant",
-                    "content": f"I could not answer that: {e}. Try rephrasing, or check that "
-                               f"BigQuery and Vertex AI are reachable."})
-        st.rerun()
-
-    if st.session_state.chat and st.button("Clear conversation"):
-        st.session_state.chat = []
-        st.rerun()
+    chat_agent(live)
 
 # =========================================================== ANOMALY WATCH ==
 elif page == "Anomaly Watch":
@@ -653,61 +934,10 @@ elif page == "Anomaly Watch":
                          use_container_width=True, hide_index=True)
             st.caption("current = M4.5+ events this week in that region · weekly_avg = the region's "
                        "50-year average per week · ratio = current ÷ average (3x or more gets flagged)")
-            idx = st.selectbox(
-                "Explain a flagged region",
-                range(len(flagged)),
-                format_func=lambda i: f"{flagged.iloc[i]['sample_place']}  "
-                                      f"({flagged.iloc[i]['ratio']:.0f}x normal)",
-                help="Pick a region and generate a plain-language explanation of why "
-                     "its activity is unusual and what nearby communities should know.")
-            if st.button("Generate AI analysis", type="primary"):
-                cell = flagged.iloc[idx].to_dict()
-                evs = live_cells[(live_cells["cell_lat"] == cell["cell_lat"]) &
-                                 (live_cells["cell_lon"] == cell["cell_lon"])]
-                hist_context = ""
-                try:
-                    hdf = run_bigquery(
-                        f"SELECT COUNT(*) AS n, MAX(mag) AS max_mag, "
-                        f"MIN(EXTRACT(YEAR FROM time)) AS since "
-                        f"FROM {TABLE_FQN} WHERE latitude BETWEEN {cell['cell_lat']} "
-                        f"AND {cell['cell_lat'] + 5} AND longitude BETWEEN "
-                        f"{cell['cell_lon']} AND {cell['cell_lon'] + 5}")
-                    r0 = hdf.iloc[0]
-                    hist_context = (f"{int(r0['n'])} M5+ events since {int(r0['since'])}, "
-                                    f"strongest ever M{r0['max_mag']:.1f}")
-                except Exception:
-                    pass
-                with st.spinner("Gemini analyzing pattern with 50-year context..."):
-                    st.session_state.anomaly_text = explain_anomaly(cell, evs, hist_context)
-                    st.session_state.anomaly_idx = idx
-            if (st.session_state.get("anomaly_text")
-                    and st.session_state.get("anomaly_idx") == idx):
-                cellm = flagged.iloc[idx]
-                n1, n2, n3, n4 = st.columns(4)
-                n1.metric("Events this week", int(cellm["current"]),
-                          help="M4.5+ earthquakes recorded in this region in the past 7 days.")
-                n2.metric("Normal week", f"{cellm['weekly_avg']:.2f}",
-                          help="This region's average M4.5+ events per week over the last 50 years.")
-                n3.metric("Times above normal", f"{cellm['ratio']:.0f}x",
-                          help="This week divided by the 50-year weekly average. "
-                               "3x or more gets flagged.")
-                n4.metric("Strongest this week", f"M {cellm['max_mag']:.1f}",
-                          help="The largest event in this region during the past 7 days.")
-                st.info(st.session_state.anomaly_text)
-                cell = flagged.iloc[idx].to_dict()
-                evs = live_cells[(live_cells["cell_lat"] == cell["cell_lat"]) &
-                                 (live_cells["cell_lon"] == cell["cell_lon"])].copy()
-                v1, v2 = st.columns(2)
-                with v1:
-                    st.markdown("**When they struck this week**")
-                    daily = evs.set_index(evs["time"].dt.floor("D")).groupby(level=0).size()
-                    daily.index = daily.index.strftime("%b %d")
-                    st.bar_chart(daily, color="#d97e4a")
-                    st.caption("A tight burst suggests an aftershock sequence; "
-                               "spread-out days suggest a swarm.")
-                with v2:
-                    st.markdown("**Where they struck**")
-                    st.map(evs[["lat", "lon"]], zoom=4, color="#d97e4a")
+            anomaly_explain_block(flagged, live_cells)
+        ctx = (f"{len(flagged)} regions flagged with unusual activity"
+               if not flagged.empty else "no anomalous regions this week")
+        quick_ask(f"Anomaly Watch page; {ctx}", live)
 
 # ========================================================= RESPONSE TOOLKIT ==
 elif page == "Response Toolkit":
@@ -728,56 +958,17 @@ elif page == "Response Toolkit":
         pick_rt = st.selectbox("Event (ranked by USGS significance)", labels_rt,
                                key="rt_event")
         ev = sig.iloc[labels_rt.index(pick_rt)].to_dict()
-        if st.button("Generate SITREP", type="primary"):
-            hist_ctx = ""
-            try:
-                hdf = run_bigquery(
-                    f"SELECT COUNT(*) AS n, MAX(mag) AS max_mag FROM {TABLE_FQN} "
-                    f"WHERE latitude BETWEEN {ev['lat'] - 2.7:.2f} AND {ev['lat'] + 2.7:.2f} "
-                    f"AND longitude BETWEEN {ev['lon'] - 2.8:.2f} AND {ev['lon'] + 2.8:.2f}")
-                hist_ctx = (f"{int(hdf.iloc[0]['n'])} M5+ events since 1975, "
-                            f"strongest ever M{hdf.iloc[0]['max_mag']:.1f}")
-            except Exception:
-                pass
-            near_ct = int((live.apply(lambda r: haversine_km(ev["lat"], ev["lon"],
-                                                             r["lat"], r["lon"]),
-                                      axis=1) <= 500).sum())
-            with st.spinner("Drafting situation report..."):
-                st.session_state.sitrep = sitrep(ev, hist_ctx, near_ct)
-                st.session_state.sitrep_event = pick_rt
-        if (st.session_state.get("sitrep")
-                and st.session_state.get("sitrep_event") == pick_rt):
-            st.markdown(st.session_state.sitrep)
-            st.download_button("Download SITREP (.txt)", st.session_state.sitrep,
-                               "quakesense_sitrep.txt", "text/plain")
+        sitrep_block(ev, pick_rt, live)
 
     # ---- B: do's and don'ts --------------------------------------------
     st.divider()
     st.markdown("##### Before rescue arrives — do's and don'ts")
     st.caption("Established international guidance (FEMA / Red Cross), written for "
                "your situation and language. Not a substitute for trained rescuers.")
-    d1, d2 = st.columns([1.6, 1])
-    with d1:
-        from src.ai import DD_SITUATIONS
-        dd_sit = st.selectbox("Your situation", list(DD_SITUATIONS.keys()),
-                              key="rt_sit",
-                              help="The advice changes completely depending on who "
-                                   "you are and where you are right now.")
-    with d2:
-        dd_lang = st.selectbox("Language", ["English", "Myanmar (Burmese)", "Thai",
-                                            "Hindi", "Bengali", "Telugu",
-                                            "Marathi", "Tamil"], key="rt_lang")
     context = (f"M{ev['mag']:.1f} earthquake near {ev['place']}, depth "
                f"{ev['depth_km']:.0f} km"
                if not live.empty else "a strong earthquake")
-    if st.button("Generate guidance", type="primary", key="rt_dd"):
-        with st.spinner("Writing guidance for your situation..."):
-            st.session_state.dd = do_dont(context, dd_lang, dd_sit)
-            st.session_state.dd_key = (dd_lang, dd_sit)
-    if st.session_state.get("dd") and st.session_state.get("dd_key") == (dd_lang, dd_sit):
-        st.markdown(st.session_state.dd)
-        st.download_button("Download guidance (.txt)", st.session_state.dd,
-                           "quakesense_guidance.txt", "text/plain")
+    guidance_block(context)
 
     # ---- C: emergency resources in the affected area --------------------
     st.divider()
@@ -804,39 +995,10 @@ elif page == "Response Toolkit":
             st.info("No towns within 150 km of this epicenter - it is likely offshore "
                     "or in a remote area. Select a different event above.")
         else:
-            top = near_towns.head(15).reset_index(drop=True)
-            lab3 = [f"{r['name']} ({r['country']}) — {r['km']:.0f} km from epicenter"
-                    for _, r in top.iterrows()]
-            tix = st.selectbox("Affected-area town (nearest first)", range(len(lab3)),
-                               format_func=lambda i: lab3[i], key="rt_town")
-            trow = top.iloc[tix]
-            country2 = trow["country"]
-            if country2 in EMERGENCY_NUMBERS:
-                st.markdown(f"**Emergency hotlines ({country2}):** "
-                            f"{EMERGENCY_NUMBERS[country2]}")
-                st.caption("From public sources - verify locally. "
-                           "Numbers can differ by region.")
+            facilities_block(near_towns.head(15).reset_index(drop=True))
 
-            if st.button("Find hospitals, fire & police stations within 20 km"):
-                try:
-                    with st.spinner(f"Searching OpenStreetMap around {trow['name']}..."):
-                        fac = emergency_facilities(round(float(trow["latitude"]), 3),
-                                                   round(float(trow["longitude"]), 3))
-                    if fac.empty:
-                        st.info("OpenStreetMap has no tagged facilities within 20 km of "
-                                "this point. Local knowledge may know more.")
-                    else:
-                        f1, f2 = st.columns([1.2, 1])
-                        with f1:
-                            st.dataframe(fac[["name", "type", "km away"]].head(25),
-                                         use_container_width=True, hide_index=True)
-                        with f2:
-                            st.map(fac[["lat", "lon"]], zoom=10, color="#6fae7f")
-                        st.caption(f"{len(fac)} facilities from OpenStreetMap (community-"
-                                   f"maintained - coverage varies by area).")
-                except Exception as e:
-                    st.warning(f"Facility search unavailable right now ({str(e)[:60]}). "
-                               f"Try again in a minute.")
+    quick_ask(f"Response Toolkit; selected event: {pick_rt}" if not live.empty
+              else "Response Toolkit page", live)
 
 # ============================================================== HOW TO USE ==
 else:
