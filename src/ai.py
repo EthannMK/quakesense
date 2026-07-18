@@ -37,9 +37,14 @@ def _client():
     return _CLIENT
 
 
-def _config(**kwargs):
-    """GenerateContentConfig with model thinking disabled for latency."""
+def _config(ground: bool = False, **kwargs):
+    """GenerateContentConfig with model thinking disabled for latency.
+
+    ground=True attaches the Google Search tool so Gemini can pull current
+    web information and return source links (grounding metadata)."""
     from google.genai import types
+    if ground:
+        kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
     try:
         kwargs.setdefault("thinking_config",
                           types.ThinkingConfig(thinking_budget=0))
@@ -49,17 +54,38 @@ def _config(**kwargs):
         return types.GenerateContentConfig(**kwargs)
 
 
-def _stream_text(prompt: str, temperature: float, fallback: str):
-    """Yield answer chunks; if the model dies mid-answer, finish with the fallback."""
+def _collect_sources(resp_or_chunk, out: list):
+    """Harvest web sources from grounding metadata into `out` (deduped)."""
+    try:
+        for cand in resp_or_chunk.candidates or []:
+            md = getattr(cand, "grounding_metadata", None)
+            for gc in (getattr(md, "grounding_chunks", None) or []):
+                web = getattr(gc, "web", None)
+                uri = getattr(web, "uri", None)
+                if uri and all(s["uri"] != uri for s in out):
+                    out.append({"title": getattr(web, "title", None) or uri,
+                                "uri": uri})
+    except Exception:
+        pass
+
+
+def _stream_text(prompt: str, temperature: float, fallback: str,
+                 ground: bool = False, sources: list = None):
+    """Yield answer chunks; if the model dies mid-answer, finish with the fallback.
+
+    When ground=True, web sources found by Gemini are appended to `sources`
+    (read it after the stream is fully consumed)."""
     produced = False
     try:
         resp = _client().models.generate_content_stream(
             model=GEMINI_MODEL, contents=prompt,
-            config=_config(temperature=temperature))
+            config=_config(ground=ground, temperature=temperature))
         for chunk in resp:
             if chunk.text:
                 produced = True
                 yield chunk.text
+            if sources is not None:
+                _collect_sources(chunk, sources)
     except Exception:
         yield ("\n\n---\n*(Answer interrupted - showing summary instead.)*\n\n"
                + fallback) if produced else fallback
@@ -195,16 +221,32 @@ ROUTE_SQL_PROMPT = """You are the router of an earthquake Q&A agent. Classify th
 AND, when the catalog is needed, write the SQL - in a single JSON response.
 
 Routes:
-- "data": needs the USGS event catalog (counts, lists, strongest/when/where of past events)
-- "general": earthquake science, safety, preparedness, definitions - no catalog needed
-- "hybrid": needs both (e.g. an area's history AND what residents should do)
+- "live": about earthquakes in the PAST 7 DAYS ("today", "this week", "right now",
+  "the latest quake") - answered from the live USGS feed, no SQL needed
+- "data": needs the historical USGS catalog (counts, lists, strongest/when/where
+  of past events beyond this week)
+- "general": earthquake science, safety, preparedness, definitions, or news/details
+  about a specific recent event - no catalog needed
+- "hybrid": needs both catalog numbers AND expert knowledge (e.g. an area's
+  history AND what residents should do)
+
+Also detect:
+- "fresh": true when the answer benefits from CURRENT web information - details or
+  impact of a specific recent earthquake, current advisories/warnings, casualty or
+  damage reports, anything after 2024. Otherwise false (timeless science/safety).
+- "language": the language the question is written in (e.g. "English", "Thai",
+  "Myanmar (Burmese)", "Hindi"). Answer language must match the question.
 
 """ + _SCHEMA_BLOCK + """
 
 Conversation so far (use it to resolve follow-ups like 'and for Japan?'):
 {history}
 
-Return JSON only: {{"route": "data" | "general" | "hybrid", "sql": "<the SELECT statement, or empty string when route is general>"}}
+Return JSON only:
+{{"route": "live" | "data" | "general" | "hybrid",
+  "sql": "<the SELECT statement, or empty string when no catalog needed>",
+  "fresh": true | false,
+  "language": "<language of the question>"}}
 
 User question: {question}"""
 
@@ -224,6 +266,7 @@ You are a seismic data analyst agent. Respond in markdown with:
 3. "**Context:**" - expert interpretation: the tectonic setting behind these
    numbers (e.g. the Sagaing Fault for Myanmar) and what they mean practically.
 End with: "All events verified against the official USGS record."
+Respond entirely in {language}.
 Match length to the question: a simple count or lookup deserves ~80-150 words
 total; an analytical question 150-280. Never pad.
 Style rules: start directly with the answer - no openers like "Based on the
@@ -256,20 +299,72 @@ def is_safe_select(sql: str) -> bool:
     return not any(b in s + " " for b in banned)
 
 
-def run_bigquery(sql: str) -> pd.DataFrame:
+def _bq_client():
     global _BQ
     if _BQ is None:
         from google.cloud import bigquery
         _BQ = bigquery.Client(project=GCP_PROJECT)
-    return _BQ.query(sql).to_dataframe()
+    return _BQ
 
 
-def explain_result(question: str, sql: str, df: pd.DataFrame) -> str:
+def run_bigquery(sql: str) -> pd.DataFrame:
+    return _bq_client().query(sql).to_dataframe()
+
+
+# ============================================================== feedback ====
+_FEEDBACK_READY = False
+
+
+def log_feedback(question: str, answer: str, mode: str, rating: str) -> bool:
+    """Store a thumbs up/down on an AI answer in BigQuery (local CSV fallback).
+
+    Powers the team's answer-quality review loop; never raises."""
+    from datetime import datetime, timezone as tz
+    row = {"ts": datetime.now(tz.utc).isoformat(),
+           "question": (question or "")[:500],
+           "answer_snippet": (answer or "")[:300],
+           "mode": mode or "", "rating": rating}
+    global _FEEDBACK_READY
+    try:
+        from google.cloud import bigquery
+        table_id = f"{GCP_PROJECT}.{BQ_DATASET}.feedback"
+        client = _bq_client()
+        if not _FEEDBACK_READY:
+            schema = [bigquery.SchemaField("ts", "TIMESTAMP"),
+                      bigquery.SchemaField("question", "STRING"),
+                      bigquery.SchemaField("answer_snippet", "STRING"),
+                      bigquery.SchemaField("mode", "STRING"),
+                      bigquery.SchemaField("rating", "STRING")]
+            client.create_table(bigquery.Table(table_id, schema=schema),
+                                exists_ok=True)
+            _FEEDBACK_READY = True
+        errors = client.insert_rows_json(table_id, [row])
+        if errors:
+            raise RuntimeError(str(errors)[:120])
+        return True
+    except Exception:
+        try:
+            import csv
+            import os
+            path = os.path.join("data", "feedback_local.csv")
+            new = not os.path.exists(path)
+            with open(path, "a", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(row))
+                if new:
+                    w.writeheader()
+                w.writerow(row)
+            return True
+        except Exception:
+            return False
+
+
+def explain_result(question: str, sql: str, df: pd.DataFrame,
+                   language: str = "English") -> str:
     try:
         resp = _client().models.generate_content(
             model=GEMINI_MODEL,
             contents=ANSWER_PROMPT.format(
-                question=question, sql=sql,
+                question=question, sql=sql, language=language,
                 result=df.head(50).to_csv(index=False)[:6000]),
             config=_config(temperature=0.2),
         )
@@ -303,20 +398,30 @@ Use exactly these sections:
 *Generated {now} UTC · QuakeSense · Data: USGS*
 ## 1. Summary
 ## 2. Earthquake Overview
+(include expected shaking character: shallow vs deep, what the PAGER level and
+felt reports imply about actual impact)
 ## 3. Areas Potentially Affected
 (reason only from place name, depth and magnitude; be explicit about uncertainty)
 ## 4. Historical Comparison
+(is this event unusual for this region's 50-year record, or routine?)
 ## 5. Immediate Priorities
-(numbered, for local authorities)
+(numbered, operationally specific, for local authorities - e.g. what to verify
+first, which infrastructure to check, aftershock posture)
 ## 6. Public Safety Message
 (short, calm, quotable for radio/social media)
-Keep the whole report under 350 words."""
+## 7. Verified External Reports
+(ONLY if web search returned relevant reports about THIS event from official
+agencies or reputable media: 2-3 one-line bullets, each ending with its source
+name. If nothing relevant was found, write "No verified external reports at
+this time.")
+Keep the whole report under 420 words."""
 
 
 def sitrep(ev: dict, hist: str, live_near: int) -> str:
     from datetime import datetime, timezone as tz
     now = datetime.now(tz.utc).strftime("%Y-%m-%d %H:%M")
     try:
+        srcs = []
         resp = _client().models.generate_content(
             model=GEMINI_MODEL,
             contents=SITREP_PROMPT.format(
@@ -325,8 +430,14 @@ def sitrep(ev: dict, hist: str, live_near: int) -> str:
                 tsunami="YES" if ev.get("tsunami_flag") else "no",
                 felt=ev.get("felt_reports", 0), hist=hist or "not available",
                 live_near=live_near, now=now),
-            config=_config(temperature=0.2))
-        return resp.text.strip()
+            config=_config(ground=True, temperature=0.2))
+        _collect_sources(resp, srcs)
+        text = resp.text.strip()
+        if srcs:
+            text += ("\n\n**Web sources:** "
+                     + " · ".join(f"[{s['title']}]({s['uri']})"
+                                  for s in srcs[:4]))
+        return text
     except Exception as e:
         return (f"# SITUATION REPORT - {ev['place']}\n*Generated {now} UTC (template - "
                 f"AI unavailable: {str(e)[:60]})*\n\n## Summary\nM{ev['mag']} earthquake, "
@@ -347,8 +458,11 @@ Write everything in {language}.
 
 Write guidance SPECIFIC to this reader's situation - do not give generic
 all-purpose advice. Tailor urgency and content to the event's magnitude and
-the reader's role. Use only established international guidance (FEMA, Red
-Cross, INSARAG community guidance).
+the reader's role: after a moderate quake (below ~M5.5) lead with reassurance
+and simple checks; after a strong quake (M6+) lead with structural caution and
+aftershock awareness. Where timing matters, say what to do NOW versus in the
+next hours. Use only established international guidance (FEMA, Red Cross,
+INSARAG community guidance).
 
 Format in markdown:
 ### Your situation
@@ -401,27 +515,40 @@ def do_dont(context: str, language: str = "English",
 
 
 # =========================================================== smart router ===
-GENERAL_PROMPT = """You are QuakeSense's earthquake knowledge assistant, serving citizens,
+GENERAL_PROMPT = """You are QuakeSense's earthquake assistant - as capable and helpful
+as a top general AI assistant, specialized in earthquakes: science, safety,
+preparedness, engineering, history, and current events. You serve citizens,
 officials and journalists. Conversation so far:
 {history}
 
 Question: {q}
 
-Give a well-organized answer in markdown: short paragraphs and/or a few
-bold-labelled points, the way a knowledgeable expert would explain it to an
-intelligent non-specialist. Cover the why/how, not just the what. Match length
-to the question - a definition deserves ~80 words, a "why/how" question
-150-280. Never pad.
-Be accurate, calm and practical; use established seismology and official safety
-guidance (drop-cover-hold-on, etc.). Never predict earthquakes or give
-probabilities of future events. If the question would benefit from real catalog
-statistics, end with one suggested data question the user could ask
-(prefix "Try asking: ")."""
+Respond entirely in {language}.
+
+Give a genuinely informative, well-organized answer in markdown: short paragraphs
+and/or a few bold-labelled points, the way a knowledgeable expert would explain it
+to an intelligent non-specialist. Cover the why/how, not just the what, with
+concrete examples where they help. Match length to the question - a definition
+deserves ~80 words, a "why/how" or current-events question 150-320. Never pad.
+
+Accuracy rules:
+- Never state precise historical statistics (exact counts, "the Nth strongest",
+  full event lists) from memory - famous well-documented facts (e.g. the 2011
+  M9.1 Tohoku earthquake) are fine, but for verifiable numbers tell the user the
+  verified catalog can answer it and end with one suggested data question
+  (prefix "Try asking: ").
+- When web search results are available, use them for current facts and recent
+  events - prefer official sources (USGS, national agencies) over news.
+- Be accurate, calm and practical; use established seismology and official
+  safety guidance (drop-cover-hold-on, etc.).
+- Never predict earthquakes or give probabilities of future events."""
 
 HYBRID_PROMPT = """You are QuakeSense's earthquake analyst agent.
 The user asked: "{q}"
 Catalog query executed: {sql}
 Catalog result (CSV, truncated): {result}
+
+Respond entirely in {language}.
 
 Combine the DATA with expert knowledge in markdown (150-280 words):
 1. Answer with concrete numbers from the result - bold the key figures.
@@ -434,9 +561,26 @@ mention BigQuery, SQL or databases in prose; attribute facts to "the official
 USGS earthquake record" when needed.
 Never predict future earthquakes."""
 
+LIVE_PROMPT = """You are QuakeSense's live-monitoring analyst. The user asked: "{q}"
 
-def route_and_sql(question: str, history: str = "") -> tuple[str, str]:
-    """One model call that both classifies the question and drafts the SQL."""
+LIVE USGS FEED - every M2.5+ earthquake worldwide in the past 7 days
+(UTC times; CSV, possibly truncated):
+{feed}
+
+Respond entirely in {language}.
+
+Answer from THIS FEED ONLY, in markdown (80-200 words): give the concrete
+numbers and name the specific events that answer the question (magnitude, place,
+time), bolding key figures. If the question is about a place with no events in
+the feed, say clearly that no M2.5+ events were recorded there in the past
+7 days - that is a meaningful, reassuring answer.
+Attribute facts to "the live USGS feed (past 7 days)". Do not invent events.
+Never predict future earthquakes.
+End with: "Source: USGS real-time feed, updated every 5 minutes." """
+
+
+def route_and_sql(question: str, history: str = "") -> dict:
+    """One model call: route + SQL + freshness flag + question language."""
     try:
         resp = _client().models.generate_content(
             model=GEMINI_MODEL,
@@ -445,23 +589,43 @@ def route_and_sql(question: str, history: str = "") -> tuple[str, str]:
             config=_config(response_mime_type="application/json",
                            temperature=0.0))
         out = json.loads(resp.text)
-        route = out.get("route", "general")
         sql = (out.get("sql") or "").strip()
         sql = re.sub(r"^```(sql)?|```$", "", sql, flags=re.MULTILINE).strip()
-        return route, sql
+        return {"route": out.get("route", "general"), "sql": sql,
+                "fresh": bool(out.get("fresh")),
+                "language": out.get("language") or "English"}
     except Exception:
-        return "general", ""
+        return {"route": "general", "sql": "", "fresh": False,
+                "language": "English"}
 
 
-def smart_ask(question: str, history: str = "", stream: bool = False) -> dict:
-    """Route a question to catalog SQL, general knowledge, or both.
+def smart_ask(question: str, history: str = "", stream: bool = False,
+              live_df: pd.DataFrame = None) -> dict:
+    """Route a question to the live feed, catalog SQL, general knowledge, or both.
 
     With stream=True the returned dict carries a "stream" generator of answer
-    chunks (feed it to st.write_stream); otherwise "answer" holds the full text.
+    chunks (feed it to st.write_stream) plus a "sources" list that fills with
+    web citations while the stream is consumed; otherwise "answer" holds the
+    full text. Answers match the language of the question.
     """
-    route, sql = route_and_sql(question, history)
+    r = route_and_sql(question, history)
+    route, sql, lang = r["route"], r["sql"], r["language"]
 
     note = ""
+    if route == "live" and live_df is not None and not live_df.empty:
+        feed = live_df[["time", "mag", "place", "depth_km", "tsunami_flag"]]
+        feed_csv = feed.head(300).to_csv(index=False)[:15000]
+        prompt = LIVE_PROMPT.format(q=question, feed=feed_csv, language=lang)
+        fallback = ("The live feed is loaded on the Live Monitor page - "
+                    "the answer service is unavailable right now.")
+        if stream:
+            return {"mode": "live", "sql": None, "df": None, "sources": [],
+                    "stream": _stream_text(prompt, 0.2, fallback)}
+        resp = _client().models.generate_content(
+            model=GEMINI_MODEL, contents=prompt, config=_config(temperature=0.2))
+        return {"mode": "live", "sql": None, "df": None,
+                "answer": resp.text.strip()}
+
     if route in ("data", "hybrid") and sql:
         try:
             if not is_safe_select(sql):
@@ -470,16 +634,16 @@ def smart_ask(question: str, history: str = "", stream: bool = False) -> dict:
             fallback = f"Query returned {len(df)} rows (see table below)."
             if route == "data":
                 prompt = ANSWER_PROMPT.format(
-                    question=question, sql=sql,
+                    question=question, sql=sql, language=lang,
                     result=df.head(50).to_csv(index=False)[:6000])
                 temp = 0.2
             else:
                 prompt = HYBRID_PROMPT.format(
-                    q=question, sql=sql,
+                    q=question, sql=sql, language=lang,
                     result=df.head(40).to_csv(index=False)[:5000])
                 temp = 0.3
             if stream:
-                return {"mode": route, "sql": sql, "df": df,
+                return {"mode": route, "sql": sql, "df": df, "sources": [],
                         "stream": _stream_text(prompt, temp, fallback)}
             resp = _client().models.generate_content(
                 model=GEMINI_MODEL, contents=prompt,
@@ -490,17 +654,24 @@ def smart_ask(question: str, history: str = "", stream: bool = False) -> dict:
             note = (f"Catalog unavailable ({str(e)[:90]}) - answered from general "
                     f"knowledge instead. Check BigQuery credentials.")
 
-    prompt = GENERAL_PROMPT.format(q=question, history=history or "(none)")
+    prompt = GENERAL_PROMPT.format(q=question, history=history or "(none)",
+                                   language=lang)
+    ground = r["fresh"]
     if stream:
+        sources = []
         return {"mode": "general", "sql": None, "df": None, "note": note,
+                "sources": sources,
                 "stream": _stream_text(prompt, 0.4,
                                        "The knowledge service is unavailable "
-                                       "right now - please try again shortly.")}
+                                       "right now - please try again shortly.",
+                                       ground=ground, sources=sources)}
+    srcs = []
     resp = _client().models.generate_content(
         model=GEMINI_MODEL, contents=prompt,
-        config=_config(temperature=0.4))
+        config=_config(ground=ground, temperature=0.4))
+    _collect_sources(resp, srcs)
     return {"mode": "general", "sql": None, "df": None,
-            "answer": resp.text.strip(), "note": note}
+            "answer": resp.text.strip(), "note": note, "sources": srcs}
 
 
 # ========================================================= area profile ====
@@ -533,7 +704,21 @@ DATA (USGS catalog, M5+ since 1975, within 300 km of {place}):
 
 LIVE (past 7 days within 500 km): {live_count} events, strongest {live_max}
 
-preparedness_actions: exactly 4, practical, proportionate to this actual risk level.
+Quality bar:
+- seismic_context: translate the numbers into plain meaning - characterize the
+  activity level in words (very low / low / moderate / high for an inhabited
+  area), name the general tectonic driver if the location makes it clear (e.g.
+  a nearby plate boundary, subduction zone or major fault), and put the
+  strongest recorded event in human terms (what shaking of that size feels
+  like at that distance).
+- this_week: interpret, don't restate - is current activity normal for this
+  area or worth noting?
+- preparedness_actions: exactly 4, practical, proportionate to this actual risk
+  level, and specific enough to act on today (not "be prepared" but what to do).
+  For low-risk areas focus on awareness and travel; for active areas focus on
+  home safety and family plans.
+- caveats: one honest sentence about what this data cannot tell them (local
+  soil, building quality), not boilerplate.
 """
 
 

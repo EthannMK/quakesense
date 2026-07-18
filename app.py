@@ -15,7 +15,8 @@ import requests
 import streamlit as st
 
 from src.ai import (situation_briefing, smart_ask, explain_anomaly,
-                    area_profile, sitrep, do_dont, run_bigquery, TABLE_FQN)
+                    area_profile, sitrep, do_dont, run_bigquery, TABLE_FQN,
+                    log_feedback)
 from src.anomaly import detect
 from src.live_feed import fetch_live, significant_events, PAGER_LABEL
 
@@ -522,10 +523,10 @@ elif page == "Ask the Data":
     # ------------------------------------------------------- agent section --
     st.divider()
     st.subheader("Ask about Earthquakes — AI agent")
-    st.caption("Ask anything: past events come from 50 years of USGS data in BigQuery "
-               "(SQL shown); science and safety come from Gemini's expert knowledge; "
-               "mixed questions get both. It remembers follow-ups and can discuss your "
-               "My Area analysis above.")
+    st.caption("Ask anything, in any language — it replies in yours. Historical numbers "
+               "come from 50 years of USGS data (SQL shown), this week's events from the "
+               "live feed, and current news with web sources cited. It remembers "
+               "follow-ups and can discuss your My Area analysis above.")
 
     if "chat" not in st.session_state:
         st.session_state.chat = []
@@ -551,12 +552,27 @@ elif page == "Ask the Data":
 
     MODE_BADGE = {"data": "Answered from: USGS catalog (BigQuery)",
                   "hybrid": "Answered from: USGS catalog + expert knowledge",
+                  "live": "Answered from: USGS live feed (past 7 days)",
                   "general": "Answered from: expert knowledge (Gemini)"}
-    for m in st.session_state.chat:
+
+    def _sources_line(srcs):
+        return "Sources: " + " · ".join(
+            f"[{s['title']}]({s['uri']})" for s in srcs[:5])
+
+    def _rate_answer(i: int, rating: str):
+        m = st.session_state.chat[i]
+        q = next((c["content"] for c in reversed(st.session_state.chat[:i])
+                  if c["role"] == "user"), "")
+        log_feedback(q, m["content"], m.get("mode") or "", rating)
+        m["rated"] = rating
+
+    for i, m in enumerate(st.session_state.chat):
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
             if m.get("mode"):
                 st.caption(MODE_BADGE.get(m["mode"], ""))
+            if m.get("sources"):
+                st.caption(_sources_line(m["sources"]))
             if m.get("note"):
                 st.caption(f":orange[{m['note']}]")
             if m.get("sql"):
@@ -564,6 +580,15 @@ elif page == "Ask the Data":
                     st.code(m["sql"], language="sql")
             if m.get("df") is not None and len(m["df"]) and m["df"].size > 1:
                 st.dataframe(m["df"].head(30), use_container_width=True, hide_index=True)
+            if m["role"] == "assistant":
+                if m.get("rated"):
+                    st.caption("Feedback recorded — thank you.")
+                else:
+                    fb1, fb2, _ = st.columns([0.07, 0.07, 0.86])
+                    fb1.button("👍", key=f"fb_up_{i}", help="Good answer",
+                               on_click=_rate_answer, args=(i, "up"))
+                    fb2.button("👎", key=f"fb_down_{i}", help="Poor answer",
+                               on_click=_rate_answer, args=(i, "down"))
 
     if st.session_state.get("area"):
         st.caption(f"The agent can see your current My Area analysis "
@@ -588,11 +613,15 @@ elif page == "Ask the Data":
         with st.chat_message("assistant"):
             try:
                 with st.spinner("Checking the USGS record..."):
-                    res = smart_ask(question, history, stream=True)
+                    res = smart_ask(question, history, stream=True, live_df=live)
                 answer = st.write_stream(res["stream"])
+                srcs = res.get("sources") or []
+                if srcs:
+                    st.caption(_sources_line(srcs))
                 st.session_state.chat.append({"role": "assistant", "content": answer,
                                               "sql": res["sql"], "df": res["df"],
                                               "mode": res.get("mode"),
+                                              "sources": srcs,
                                               "note": res.get("note", "")})
             except Exception as e:
                 st.session_state.chat.append({
@@ -831,15 +860,16 @@ Briefings**: pick any significant event and generate a plain-language community
 briefing with recommended actions, downloadable for sharing.
 
 #### Ask the Data
-Two tools on one page. The **AI agent**: ask anything about earthquakes in plain
-English. Data questions ("how many M6+ in Myanmar since 1990?") are answered from
-50 years of USGS records in BigQuery with the SQL shown; knowledge questions
-("what should we do during shaking?") are answered by Gemini's expertise; mixed
-questions get both — numbers plus context. It remembers follow-ups (*"and for
-Japan?"*). Below it, **My Area**: pick your country and town from verified
-dropdowns, choose from 8 languages (English, Burmese, Thai, Hindi, Bengali,
-Telugu, Marathi, Tamil), and get a community risk profile
-grounded in your area's real 50-year record.
+Two tools on one page. The **AI agent**: ask anything about earthquakes, in any
+language — it answers in yours. Historical questions ("how many M6+ in Myanmar
+since 1990?") are answered from 50 years of USGS records in BigQuery with the
+SQL shown; this-week questions come from the live feed; science and safety from
+Gemini's expertise; and questions about current events are answered with live
+web search, **sources cited**. Every answer takes a 👍/👎 so we can keep
+improving. It remembers follow-ups (*"and for Japan?"*). Below it, **My Area**:
+pick your country and town from verified dropdowns, choose from 8 languages
+(English, Burmese, Thai, Hindi, Bengali, Telugu, Marathi, Tamil), and get a
+community risk profile grounded in your area's real 50-year record.
 
 #### Anomaly Watch
 Compares this week's activity in every region against its 50-year average and
