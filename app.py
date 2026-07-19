@@ -596,8 +596,8 @@ body {margin:0; background:transparent; font-family:-apple-system,"Segoe UI",Rob
 .qs-newsimg {height:118px; background-size:cover; background-position:center;
   background-color:#263145;}
 .qs-newsmono {height:118px; display:flex; align-items:center;
-  justify-content:center; background:#263145; font-size:36px;
-  font-weight:600; color:#e08850;}
+  justify-content:center; background:#263145; font-size:30px;
+  font-weight:600; color:#e08850; letter-spacing:0.02em;}
 .qs-newstxt {display:flex; flex-direction:column; gap:4px; padding:8px 10px 10px;}
 .qs-newssrc {font-size:11px; color:#8fa0b5; text-transform:uppercase;
   letter-spacing:0.06em;}
@@ -620,7 +620,7 @@ function agoFrom(sd) {
 function card(c) {
   const vis = c.img
     ? '<div class="qs-newsimg" style="background-image:url(\\'' + esc(c.img) + '\\')"></div>'
-    : '<div class="qs-newsmono">' + esc((c.source || '•')[0].toUpperCase()) + '</div>';
+    : '<div class="qs-newsmono">' + esc(c.mono || (c.source || '•')[0].toUpperCase()) + '</div>';
   const meta = esc(c.source || '') + (c.ago ? ' · ' + esc(c.ago) : '');
   return '<a class="qs-newscard" href="' + esc(c.url) + '" target="_blank" rel="noopener">'
        + vis + '<div class="qs-newstxt"><span class="qs-newssrc">' + meta
@@ -761,16 +761,37 @@ def text_feeds():
         return {"headlines": [], "reports": []}
 
 
+def usgs_event_cards(live_df, n: int = 8):
+    """Cards built from the USGS live feed itself - the guaranteed fallback.
+    The feed always loads (it has a bundled offline snapshot), so the media
+    rail can never be empty."""
+    if live_df is None or live_df.empty:
+        return []
+    now = pd.Timestamp.now(tz="UTC")
+    out = []
+    for r in significant_events(live_df, n).itertuples():
+        hrs = int((now - r.time).total_seconds() // 3600)
+        ago = f"{hrs}h ago" if hrs < 48 else f"{hrs // 24}d ago"
+        out.append({"title": f"M{r.mag:.1f} earthquake — {r.place}",
+                    "url": r.url or "https://earthquake.usgs.gov/",
+                    "img": "", "mono": f"M{r.mag:.1f}",
+                    "source": "USGS · official record", "ago": ago})
+    return out
+
+
 @st.fragment(run_every=30)
-def media_section():
-    """Auto-refreshing media block: shows headline cards instantly and swaps
-    in the photo cards on its own as soon as they're available."""
+def media_section(live_df):
+    """Auto-refreshing media block. Content chain guarantees the rail is
+    never empty: world-media photo cards, else headlines, else official
+    USGS event cards from the always-available live feed."""
     cards = photo_cards()
     feeds = text_feeds()
     if not cards:
         cards = [{"title": h["title"], "url": h["link"], "img": "",
                   "source": h["source"], "ago": h["ago"]}
                  for h in feeds["headlines"]]
+    if not cards:
+        cards = usgs_event_cards(live_df)
     news_rail_component(cards)
 
     reports = feeds["reports"]
@@ -1510,7 +1531,7 @@ if page == "Live Now":
         st.subheader("📺 Global media coverage")
         st.caption("Latest earthquake coverage from world media — click a "
                    "card to read the full story.")
-        media_section()
+        media_section(live)
 
         quick_ask(f"Live Now world map (past 7 days); selected event: {pick}", live)
 
