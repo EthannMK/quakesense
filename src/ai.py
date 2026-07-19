@@ -516,7 +516,7 @@ def do_dont(context: str, language: str = "English",
 
 
 # =========================================================== smart router ===
-BOT_NAME = "Gemini"
+BOT_NAME = "Terra"
 
 APP_FACTS = """ABOUT QUAKESENSE (answer questions about the app itself from these facts):
 QuakeSense is a free web app by Team KODA, built for the Google Cloud Gen AI
@@ -699,7 +699,7 @@ def smart_ask(question: str, history: str = "", stream: bool = False,
 
 
 def prioritize_facilities(context: str, facilities: str) -> str:
-    """Gemini's short recommendation over a list of nearby facilities."""
+    """Terra's short recommendation over a list of nearby facilities."""
     prompt = (
         f"You are {BOT_NAME}, QuakeSense's assistant. Situation: {context}.\n"
         f"Nearby facilities (name | address | phone | distance km | open now):\n"

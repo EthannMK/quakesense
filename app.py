@@ -111,9 +111,8 @@ section[data-testid="stSidebar"] .stRadio label p {font-size: 0.90rem;}
 }
 .qs-credit-items {font-size: 0.76rem; color: #c3cede; line-height: 1.5; margin-bottom: 0.55rem;}
 .qs-sidebar-bottom {
-  position: fixed; bottom: 0; left: 0.9rem; width: 15rem;
-  padding: 0.7rem 0 1.0rem 0; background: #161e2e;
-  border-top: 1px solid #263145; z-index: 999;
+  margin-top: 2.2rem; padding: 0.8rem 0 0.4rem 0;
+  border-top: 1px solid #263145;
 }
 .qs-team {font-size: 0.72rem; color: #8fa0b5; margin-top: 0.4rem;}
 
@@ -184,6 +183,19 @@ div[data-testid="stPopoverBody"] {min-width: min(400px, 94vw);}
              letter-spacing: 0.06em;}
 .qs-newstitle {font-size: 0.8rem; color: #dbe2ec; line-height: 1.35;
                white-space: normal;}
+
+/* Chat input: light-blue send icon */
+[data-testid="stChatInput"] button {color: #45b3e6 !important;}
+[data-testid="stChatInput"] button svg {fill: #45b3e6 !important;}
+[data-testid="stChatInput"] button:hover {color: #e08850 !important;}
+[data-testid="stChatInput"] button:hover svg {fill: #e08850 !important;}
+
+/* GPS button (third-party component ships a white box - invert it into
+   the dark theme and round it) */
+iframe[title="streamlit_geolocation.streamlit_geolocation"] {
+  filter: invert(0.88) hue-rotate(180deg);
+  border-radius: 10px;
+}
 
 /* Grab-style help finder */
 .qs-fac {
@@ -298,7 +310,7 @@ def logo_b64() -> str:
 AVATARS = {"user": "🧑", "assistant": os.path.join("assets", "gemini.png")}
 
 BOT_INTRO = (
-    "Hi, I'm **Gemini** ✦ — QuakeSense's AI assistant, powered by Google's "
+    "Hi, I'm **Terra** ✦ — QuakeSense's AI assistant, powered by Google's "
     "Gemini 2.5 Flash on Vertex AI.\n\n"
     "I can help you with:\n"
     "- **What you're seeing** on this page — any event, number, or alert\n"
@@ -442,7 +454,7 @@ def google_places_section(trow, ev):
                 f'</div></div>')
         st.markdown("".join(rows), unsafe_allow_html=True)
 
-        if st.button("✦ Ask Gemini: where should I go first?",
+        if st.button("✦ Ask Terra: where should I go first?",
                      key=f"gm_gem_{trow['name']}", use_container_width=True):
             fac_lines = "\n".join(
                 f"{p['name']} | {p['addr']} | {p['phone'] or 'no phone'} | "
@@ -451,7 +463,7 @@ def google_places_section(trow, ev):
             ctx = (f"M{ev['mag']:.1f} earthquake near {ev['place']}; "
                    f"user is at {origin_label}"
                    if ev else f"user is at {origin_label}")
-            with st.spinner("Gemini weighing the options..."):
+            with st.spinner("Terra weighing the options..."):
                 st.markdown(prioritize_facilities(ctx, fac_lines))
 
         # -- 4. YOUR ROUTE (trip card) ------------------------------------
@@ -917,7 +929,7 @@ def quick_ask(context: str, live_df):
     and the model is told to name the location it is talking about."""
     hist = st.session_state.setdefault("quick_chat", [])
     with st.popover("💬 Ask QuakeSense"):
-        st.markdown("✦ **Gemini** — QuakeSense assistant · Gemini 2.5 Flash")
+        st.markdown("✦ **Terra** — QuakeSense assistant · powered by Gemini 2.5 Flash")
         st.caption(f"📍 Talking about: {context}")
         box = st.container(height=300)
         with box:
