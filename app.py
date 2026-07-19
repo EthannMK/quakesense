@@ -185,6 +185,41 @@ div[data-testid="stPopoverBody"] {min-width: min(400px, 94vw);}
 .qs-newstitle {font-size: 0.8rem; color: #dbe2ec; line-height: 1.35;
                white-space: normal;}
 
+/* Grab-style help finder */
+.qs-fac {
+  display: flex; gap: 12px; align-items: center; background: #161e2e;
+  border: 1px solid #263145; border-radius: 12px; padding: 10px 14px;
+  margin-bottom: 8px; transition: border-color 0.15s;
+}
+.qs-fac:hover {border-color: #e08850;}
+.qs-fac-ic {
+  width: 42px; height: 42px; border-radius: 50%; background: #263145;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; flex: 0 0 42px;
+}
+.qs-fac-main {flex: 1; min-width: 0;}
+.qs-fac-name {color: #dbe2ec; font-weight: 600; font-size: 0.92rem;}
+.qs-fac-addr {color: #8fa0b5; font-size: 0.78rem; margin-top: 1px;}
+.qs-fac-actions {display: flex; gap: 14px; margin-top: 5px;}
+.qs-fac-actions a {
+  font-size: 0.8rem; color: #45b3e6; text-decoration: none; font-weight: 600;
+}
+.qs-fac-actions a:hover {color: #e08850;}
+.qs-fac-meta {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 5px;
+  flex: 0 0 auto;
+}
+.qs-km {
+  background: #263145; color: #e08850; font-weight: 600;
+  border-radius: 999px; padding: 2px 10px; font-size: 0.76rem;
+  white-space: nowrap;
+}
+.qs-open {color: #6fae7f; font-size: 0.72rem; white-space: nowrap;}
+.qs-closed {color: #ff6b61; font-size: 0.72rem; white-space: nowrap;}
+.qs-trip {font-size: 0.85rem; color: #dbe2ec; line-height: 1.9;}
+.qs-trip .dotA {color: #6fae7f;} .qs-trip .dotB {color: #ff6b61;}
+.qs-trip .leg {color: #8fa0b5; padding-left: 0.32rem;}
+
 /* Small screens: tighten spacing so phones get a clean layout */
 @media (max-width: 640px) {
   .block-container {padding-left: 0.9rem; padding-right: 0.9rem;}
@@ -308,86 +343,119 @@ def places_search(query: str, lat: float, lon: float, n: int = 8):
     return out
 
 
+CAT_ICONS = {"Hospitals": "🏥", "Fire stations": "🚒", "Police": "👮",
+             "Pharmacies": "💊", "Shelters": "⛺", "Custom search": "🔍"}
+
+
+def _chip_pick(label, options, key, default=None):
+    """Grab-style chips (st.pills), selectbox fallback on old Streamlit."""
+    if hasattr(st, "pills"):
+        val = st.pills(label, options, key=key,
+                       default=default or options[0])
+        return val or default or options[0]
+    return st.selectbox(label, options, key=key)
+
+
 def google_places_section(trow, ev):
-    """Google Maps-powered help finder: routes start from the USER's real
-    device location (with permission) - or any typed starting point, like
-    Grab - never from the epicenter. Shows nearest facilities with contacts,
-    Gemini's recommendation, and an embedded route with ETA."""
+    """Grab-style help finder. Top to bottom, one decision per row:
+    where you are -> what you need -> pick from cards -> route with ETA."""
     from urllib.parse import quote
-    st.markdown("**Find help — powered by Google Maps**")
+    st.markdown("##### ⛑️ Find help")
+    st.caption("Powered by Google Maps — starts from you, not the epicenter.")
 
-    lc, sc = st.columns([0.22, 0.78])
-    with lc:
-        st.caption("📍 Use my location")
-        loc = None
-        try:
-            from streamlit_geolocation import streamlit_geolocation
-            loc = streamlit_geolocation()
-        except Exception:
-            pass
-    use_me = bool(loc and loc.get("latitude"))
-    if use_me:
-        lat, lon = float(loc["latitude"]), float(loc["longitude"])
-        origin = f"{lat},{lon}"
-        origin_label = "your current location"
-        with sc:
-            st.caption(f"✅ Using your device location — distances and routes "
-                       f"start from you.")
-    else:
-        with sc:
-            manual = st.text_input(
-                "Starting point", value=f"{trow['name']}, {trow['country']}",
-                key=f"gm_org_{trow['name']}",
-                help="Tap the location button to use your device position, or "
-                     "type any address or place — just like Google Maps.")
-        lat, lon = float(trow["latitude"]), float(trow["longitude"])
-        origin = (manual.strip() or f"{lat},{lon}") if manual else f"{lat},{lon}"
-        origin_label = manual.strip() if manual and manual.strip() else trow["name"]
+    # -- 1. WHERE YOU ARE (pickup-bar style) ------------------------------
+    with st.container(border=True):
+        lc, sc = st.columns([0.14, 0.86])
+        with lc:
+            loc = None
+            try:
+                from streamlit_geolocation import streamlit_geolocation
+                loc = streamlit_geolocation()
+            except Exception:
+                pass
+        use_me = bool(loc and loc.get("latitude"))
+        if use_me:
+            lat, lon = float(loc["latitude"]), float(loc["longitude"])
+            origin = f"{lat},{lon}"
+            origin_label = "your current location"
+            with sc:
+                st.markdown("🟢 **Your location** — found via GPS")
+                st.caption("Distances and routes below start from you.")
+        else:
+            with sc:
+                manual = st.text_input(
+                    "Starting point",
+                    value=f"{trow['name']}, {trow['country']}",
+                    key=f"gm_org_{trow['name']}",
+                    label_visibility="collapsed",
+                    help="Tap the target button for GPS, or type any address "
+                         "or place — like setting a pickup point.")
+            lat, lon = float(trow["latitude"]), float(trow["longitude"])
+            origin = (manual.strip() or f"{lat},{lon}") if manual else f"{lat},{lon}"
+            origin_label = (manual.strip() if manual and manual.strip()
+                            else trow["name"])
+            st.caption("⬅ Tap the button for your exact GPS position, or type "
+                       "a starting point above.")
 
-    k1, k2 = st.columns([0.4, 0.6])
-    with k1:
-        cat = st.selectbox("What do you need",
-                           ["Hospitals", "Fire stations", "Police",
-                            "Pharmacies", "Shelters", "Custom search"],
-                           key=f"gm_cat_{trow['name']}")
-    query = cat.lower()
-    if cat == "Custom search":
-        with k2:
-            query = st.text_input(
-                "Search like on Google Maps", value="emergency room",
-                key=f"gm_q_{trow['name']}",
-                help="Anything works: 'clinic open now', 'evacuation shelter', "
-                     "a facility name...")
+    # -- 2. WHAT YOU NEED (service chips) ---------------------------------
+    cat = _chip_pick("What do you need?",
+                     [f"{v} {k}" for k, v in CAT_ICONS.items()],
+                     key=f"gm_cat_{trow['name']}")
+    cat_name = cat.split(" ", 1)[1]
+    cat_icon = CAT_ICONS.get(cat_name, "📍")
+    query = cat_name.lower()
+    if cat_name == "Custom search":
+        query = st.text_input(
+            "Search like on Google Maps", value="emergency room",
+            key=f"gm_q_{trow['name']}",
+            help="Anything works: 'clinic open now', 'evacuation shelter', "
+                 "a facility name...")
 
-    if query.strip():
-        try:
-            places = places_search(query.strip(), lat, lon)
-        except Exception as e:
-            places = []
-            st.warning(f"Google Places unavailable ({str(e)[:80]}).")
-        if places:
-            for p in places[:6]:
-                open_tag = " · 🟢 open now" if p["open"] else (
-                    " · 🔴 closed" if p["open"] is False else "")
-                phone = f" · 📞 {p['phone']}" if p["phone"] else ""
-                dir_url = (f"https://www.google.com/maps/dir/?api=1"
-                           f"&destination={p['lat']},{p['lon']}")
-                st.markdown(
-                    f"**{p['name']}** — {p['km']:.1f} km{open_tag}{phone}  \n"
-                    f"{p['addr']} · [🧭 Open in Google Maps]({dir_url})")
-            if st.button("✦ Ask Gemini: where should I go first?",
-                         key=f"gm_gem_{trow['name']}"):
-                fac_lines = "\n".join(
-                    f"{p['name']} | {p['addr']} | {p['phone'] or 'no phone'} | "
-                    f"{p['km']:.1f} km | {'open' if p['open'] else 'unknown/closed'}"
-                    for p in places[:6])
-                ctx = (f"M{ev['mag']:.1f} earthquake near {ev['place']}; "
-                       f"user is at {origin_label}"
-                       if ev else f"user is at {origin_label}")
-                with st.spinner("Gemini weighing the options..."):
-                    st.markdown(prioritize_facilities(ctx, fac_lines))
+    if not query.strip():
+        return
+    try:
+        places = places_search(query.strip(), lat, lon)
+    except Exception as e:
+        places = []
+        st.warning(f"Google Places unavailable ({str(e)[:80]}).")
 
-            st.markdown("**Route & arrival time**")
+    # -- 3. NEAREST OPTIONS (ride-option cards) ---------------------------
+    if places:
+        rows = []
+        for p in places[:6]:
+            status = ('<span class="qs-open">● open now</span>' if p["open"]
+                      else ('<span class="qs-closed">● closed</span>'
+                            if p["open"] is False else ""))
+            tel = re.sub(r"[^\d+]", "", p["phone"] or "")
+            call = (f'<a href="tel:{tel}">📞 Call</a>' if tel else "")
+            nav = (f'<a href="https://www.google.com/maps/dir/?api=1'
+                   f'&destination={p["lat"]},{p["lon"]}" target="_blank" '
+                   f'rel="noopener">🧭 Navigate</a>')
+            rows.append(
+                f'<div class="qs-fac"><div class="qs-fac-ic">{cat_icon}</div>'
+                f'<div class="qs-fac-main">'
+                f'<div class="qs-fac-name">{html.escape(p["name"])}</div>'
+                f'<div class="qs-fac-addr">{html.escape(p["addr"])}</div>'
+                f'<div class="qs-fac-actions">{call}{nav}</div></div>'
+                f'<div class="qs-fac-meta">'
+                f'<span class="qs-km">{p["km"]:.1f} km</span>{status}'
+                f'</div></div>')
+        st.markdown("".join(rows), unsafe_allow_html=True)
+
+        if st.button("✦ Ask Gemini: where should I go first?",
+                     key=f"gm_gem_{trow['name']}", use_container_width=True):
+            fac_lines = "\n".join(
+                f"{p['name']} | {p['addr']} | {p['phone'] or 'no phone'} | "
+                f"{p['km']:.1f} km | {'open' if p['open'] else 'unknown/closed'}"
+                for p in places[:6])
+            ctx = (f"M{ev['mag']:.1f} earthquake near {ev['place']}; "
+                   f"user is at {origin_label}"
+                   if ev else f"user is at {origin_label}")
+            with st.spinner("Gemini weighing the options..."):
+                st.markdown(prioritize_facilities(ctx, fac_lines))
+
+        # -- 4. YOUR ROUTE (trip card) ------------------------------------
+        with st.container(border=True):
             r1, r2 = st.columns([0.62, 0.38])
             with r1:
                 dest_ix = st.selectbox(
@@ -396,24 +464,31 @@ def google_places_section(trow, ev):
                                           f"({places[i]['km']:.1f} km)",
                     key=f"gm_dest_{trow['name']}")
             with r2:
-                mode = st.selectbox("Travel mode",
-                                    ["driving", "walking", "bicycling"],
-                                    key=f"gm_mode_{trow['name']}")
+                mode_pick = _chip_pick("Travel mode",
+                                       ["🚗 Drive", "🚶 Walk", "🚴 Bike"],
+                                       key=f"gm_mode_{trow['name']}")
+            mode = {"🚗 Drive": "driving", "🚶 Walk": "walking",
+                    "🚴 Bike": "bicycling"}.get(mode_pick, "driving")
             dest = places[dest_ix]
+            st.markdown(
+                f'<div class="qs-trip">'
+                f'<span class="dotA">●</span> {html.escape(origin_label.title())}'
+                f'<br><span class="leg">┆</span><br>'
+                f'<span class="dotB">●</span> {html.escape(dest["name"])}'
+                f'</div>', unsafe_allow_html=True)
             components.iframe(
                 f"https://www.google.com/maps/embed/v1/directions"
                 f"?key={MAPS_API_KEY}&origin={quote(origin)}"
                 f"&destination={dest['lat']},{dest['lon']}&mode={mode}",
-                height=380)
-            st.caption("The map shows the route and estimated arrival time. "
-                       "For live turn-by-turn navigation, use the "
-                       "'Open in Google Maps' link on any result.")
-        else:
-            components.iframe(
-                f"https://www.google.com/maps/embed/v1/search"
-                f"?key={MAPS_API_KEY}&q={quote(query.strip())}"
-                f"&center={lat},{lon}&zoom=12",
-                height=380)
+                height=360)
+            st.caption("The map shows the route and estimated arrival time — "
+                       "tap 🧭 Navigate on any card for live turn-by-turn.")
+    else:
+        components.iframe(
+            f"https://www.google.com/maps/embed/v1/search"
+            f"?key={MAPS_API_KEY}&q={quote(query.strip())}"
+            f"&center={lat},{lon}&zoom=12",
+            height=360)
 
 
 @st.cache_data(show_spinner=False)
