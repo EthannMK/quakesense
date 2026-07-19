@@ -436,6 +436,53 @@ def places_search(query: str, lat: float, lon: float, n: int = 8):
     return out
 
 
+OFFLINE_DOCS = [
+    {"icon": "🧎", "title": "Drop, Cover, Hold On — visual poster",
+     "src": "FEMA / ShakeOut", "size": "0.3 MB",
+     "url": "https://www.shakeout.org/downloads/fema-529.pdf"},
+    {"icon": "📋", "title": "Earthquake Preparedness Checklist",
+     "src": "American Red Cross", "size": "PDF",
+     "url": "https://www.redcross.org/content/dam/redcross/get-help/pdfs/"
+            "earthquake/EN_Earthquake-Preparedness-Checklist.pdf"},
+    {"icon": "✅", "title": "Earthquake Safety Checklist",
+     "src": "American Red Cross", "size": "PDF",
+     "url": "https://www.redcross.org/content/dam/redcross/lp/"
+            "hfc-reporting-portal/Earthquake-Safety-Checklist.pdf"},
+    {"icon": "🪜", "title": "Seven Steps to Earthquake Safety",
+     "src": "Earthquake Country Alliance", "size": "0.3 MB",
+     "url": "https://www.earthquakecountry.org/library/"
+            "ShakeOut_Recommended_Earthquake_Safety_Actions.pdf"},
+    {"icon": "📖", "title": "Putting Down Roots in Earthquake Country",
+     "src": "USGS illustrated handbook", "size": "5.5 MB",
+     "url": "https://pubs.usgs.gov/gip/2005/15/gip-15.pdf"},
+]
+
+
+def offline_library():
+    """Curated official PDFs (visual guides: protection, first aid,
+    preparedness) - meant to be downloaded BEFORE disaster strikes, when
+    networks still work, then read offline."""
+    st.markdown("##### 📥 Offline library")
+    st.caption("Download these now, read them anytime — they work without "
+               "internet. Official illustrated guides from FEMA, the Red "
+               "Cross and USGS.")
+    rows = []
+    for d in OFFLINE_DOCS:
+        rows.append(
+            f'<a class="qs-fac" style="text-decoration:none" '
+            f'href="{d["url"]}" target="_blank" rel="noopener">'
+            f'<span class="qs-fac-ic">{d["icon"]}</span>'
+            f'<span class="qs-fac-main" style="display:block">'
+            f'<span class="qs-fac-name" style="display:block">'
+            f'{html.escape(d["title"])}</span>'
+            f'<span class="qs-fac-addr" style="display:block">'
+            f'{html.escape(d["src"])} · {d["size"]}</span></span>'
+            f'<span class="qs-km">⬇ PDF</span></a>')
+    st.markdown("".join(rows), unsafe_allow_html=True)
+    st.caption("Tip: on a phone, downloaded PDFs stay available in your "
+               "Files app even with no signal.")
+
+
 CAT_ICONS = {"Hospitals": "🏥", "Fire stations": "🚒", "Police": "👮",
              "Pharmacies": "💊", "Shelters": "⛺", "Custom search": "🔍"}
 
@@ -800,11 +847,10 @@ function render(cards) {
   const row = cards.map(card).join('');
   el.innerHTML = '<div class="qs-newsrail"><div class="qs-newsrail-inner">' + row + row + '</div></div>';
 }
-if (!FETCH) {
-  render(FALLBACK);
-} else {
+render(FALLBACK);
+if (FETCH) {
 fetch('https://api.gdeltproject.org/api/v2/doc/doc?query=earthquake%20sourcelang:english&mode=ArtList&format=json&maxrecords=50&sort=DateDesc',
-      {signal: AbortSignal.timeout(6000)})
+      {signal: AbortSignal.timeout(8000)})
   .then(function(r) {return r.json();})
   .then(function(d) {
     const arts = d.articles || [];
@@ -824,9 +870,9 @@ fetch('https://api.gdeltproject.org/api/v2/doc/doc?query=earthquake%20sourcelang
       out.push({title: t, url: u, img: img, source: dom, ago: agoFrom(a.seendate || '')});
       if (out.length >= 8) break;
     }
-    render(out.length ? out : FALLBACK);
+    if (out.length) {render(out);}
   })
-  .catch(function(e) {render(FALLBACK);});
+  .catch(function(e) {});
 }
 </script>""", height=215)
 
@@ -1732,23 +1778,30 @@ elif page == "Response Toolkit":
     st.caption("Practical tools for the hours after an earthquake - for residents "
                "waiting for help, and for the officials coordinating it.")
 
+    tk_main, tk_side = st.columns([0.63, 0.37], gap="large")
+
+    # ---- Offline library (right-hand side) ------------------------------
+    with tk_side:
+        offline_library()
+
     # ---- A: situation report -------------------------------------------
-    st.markdown("##### Situation report (SITREP)")
-    st.caption("A formal report in the format emergency operations centers use. "
-               "Pick an event, generate, download, distribute.")
-    if live.empty:
-        st.info("Live feed unavailable.")
-    else:
-        sig = significant_events(live)
-        labels_rt = [f"M{r.mag:.1f}  ·  {r.place}  ·  {r.time:%b %d %H:%M} UTC"
-                     for r in sig.itertuples()]
-        carry = st.session_state.get("sig_event")
-        default_rt = labels_rt.index(carry) if carry in labels_rt else 0
-        pick_rt = st.selectbox("Event (ranked by USGS significance)", labels_rt,
-                               index=default_rt, key="rt_event",
-                               help="Defaults to the event you picked on Live Now.")
-        ev = sig.iloc[labels_rt.index(pick_rt)].to_dict()
-        sitrep_block(ev, pick_rt, live)
+    with tk_main:
+        st.markdown("##### Situation report (SITREP)")
+        st.caption("A formal report in the format emergency operations centers "
+                   "use. Pick an event, generate, download, distribute.")
+        if live.empty:
+            st.info("Live feed unavailable.")
+        else:
+            sig = significant_events(live)
+            labels_rt = [f"M{r.mag:.1f}  ·  {r.place}  ·  {r.time:%b %d %H:%M} UTC"
+                         for r in sig.itertuples()]
+            carry = st.session_state.get("sig_event")
+            default_rt = labels_rt.index(carry) if carry in labels_rt else 0
+            pick_rt = st.selectbox("Event (ranked by USGS significance)", labels_rt,
+                                   index=default_rt, key="rt_event",
+                                   help="Defaults to the event you picked on Live Now.")
+            ev = sig.iloc[labels_rt.index(pick_rt)].to_dict()
+            sitrep_block(ev, pick_rt, live)
 
     # ---- B: do's and don'ts --------------------------------------------
     st.divider()
