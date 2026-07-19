@@ -251,15 +251,21 @@ div[data-testid="stPopoverBody"] {min-width: min(400px, 94vw);}
 [data-testid="stChatInput"] button:hover {color: #e08850 !important;}
 [data-testid="stChatInput"] button:hover svg {fill: #e08850 !important;}
 
-/* GPS button: the third-party component ships an unstyled white box.
-   Crop it to a circular locate-me control, invert into the dark theme,
-   and give it a proper border - reads like a native map FAB. */
+/* GPS button: sized here; its internal styling is injected directly into
+   the component (same-origin) by _style_gps_component() */
 iframe[title="streamlit_geolocation.streamlit_geolocation"] {
-  filter: invert(0.9) hue-rotate(180deg) saturate(0.6);
-  width: 52px !important; height: 52px !important;
-  border-radius: 14px !important; border: 1px solid #263145 !important;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  width: 48px !important; height: 48px !important;
 }
+
+/* Messenger panel: keep the input + send button side by side on every
+   screen size (Streamlit stacks columns on phones, hiding the send) */
+div[data-testid="stPopoverBody"] [data-testid="stHorizontalBlock"] {
+  flex-direction: row !important; flex-wrap: nowrap !important;
+}
+div[data-testid="stPopoverBody"] [data-testid="stColumn"] {
+  width: auto !important; min-width: 0 !important;
+}
+div[data-testid="stPopoverBody"] {max-height: 85vh; overflow-y: auto;}
 
 /* Grab-style help finder */
 .qs-fac {
@@ -443,12 +449,54 @@ def _chip_pick(label, options, key, default=None):
     return st.selectbox(label, options, key=key)
 
 
+def _style_gps_component():
+    """Restyle the third-party GPS button from the inside: the component
+    iframe is served by our own app (same origin), so a zero-height helper
+    frame can inject our design system into its document - dark card,
+    accent crosshair, hover state - instead of its stock white box."""
+    components.html("""
+<script>
+const css = `
+  html, body {margin:0; padding:0; background:transparent; overflow:hidden;
+              display:flex; align-items:center; justify-content:center;}
+  button {
+    width: 44px !important; height: 44px !important;
+    background: #161e2e !important; border: 1px solid #263145 !important;
+    border-radius: 12px !important; cursor: pointer !important;
+    display: flex !important; align-items: center !important;
+    justify-content: center !important; padding: 0 !important;
+    transition: border-color 0.15s !important;
+  }
+  button:hover {border-color: #e08850 !important; background: #1b2434 !important;}
+  button svg, button svg * {stroke: #e08850 !important; fill: #e08850 !important;}
+  button span, button div {color: #e08850 !important;}
+`;
+function inject() {
+  try {
+    const frames = window.parent.document.querySelectorAll(
+      'iframe[title="streamlit_geolocation.streamlit_geolocation"]');
+    for (const f of frames) {
+      const d = f.contentDocument;
+      if (d && d.head && !d.getElementById('qs-gps-style')) {
+        const s = d.createElement('style');
+        s.id = 'qs-gps-style'; s.textContent = css;
+        d.head.appendChild(s);
+      }
+    }
+  } catch (e) {}
+}
+inject();
+setInterval(inject, 700);
+</script>""", height=0)
+
+
 def google_places_section(trow, ev):
     """Grab-style help finder. Top to bottom, one decision per row:
     where you are -> what you need -> pick from cards -> route with ETA."""
     from urllib.parse import quote
     st.markdown("##### ⛑️ Find help")
     st.caption("Powered by Google Maps — starts from you, not the epicenter.")
+    _style_gps_component()
 
     # -- 1. WHERE YOU ARE (pickup-bar style) ------------------------------
     # Default: the affected-area town selected above. One tap on the locate
