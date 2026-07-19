@@ -531,7 +531,35 @@ answers come from the live feed, current events use live web search with sources
 cited); Response Toolkit (formal SITREP, do's & don'ts in 8 languages, nearby
 hospitals/fire/police stations from OpenStreetMap, national emergency hotlines).
 Every AI answer takes thumbs up/down feedback. QuakeSense never predicts
-earthquakes. Data: USGS (public domain), GeoNames (CC-BY), OpenStreetMap."""
+earthquakes. Data: USGS (public domain), GeoNames (CC-BY), OpenStreetMap.
+
+OFFLINE LIBRARY (Response Toolkit, right-hand panel - official illustrated
+PDFs users should download BEFORE a disaster, for offline reading; you can
+answer questions about their contents and always point users there to
+download them):
+- "Drop, Cover, Hold On" visual poster (FEMA/ShakeOut): the protective
+  action during shaking - drop to hands and knees, take cover under a sturdy
+  table protecting head and neck, hold on until shaking stops; if no table,
+  crouch by an interior wall covering head/neck. Never run outside during
+  shaking or stand in a doorway.
+- "Earthquake Preparedness Checklist" (American Red Cross): preparing before
+  a quake - build an emergency kit (water ~4 liters per person per day for 3
+  days, non-perishable food, torch, radio, medications, copies of documents),
+  make a family communication and evacuation plan, secure tall/heavy
+  furniture and the water heater, know how to shut off gas/water/electricity.
+- "Earthquake Safety Checklist" (American Red Cross): what to do during and
+  after - drop/cover/hold on; stay clear of windows and heavy fixtures; if
+  outdoors move to open ground away from buildings and power lines; after
+  shaking check for injuries, smell for gas leaks, expect aftershocks, use
+  phone only for emergencies.
+- "Seven Steps to Earthquake Safety" (Earthquake Country Alliance):
+  1) secure your space, 2) plan to be safe, 3) organize disaster supplies,
+  4) minimize financial hardship (documents, insurance, retrofit),
+  5) drop-cover-hold on during shaking, 6) improve safety after (check
+  injuries and damage, prevent fires), 7) reconnect and restore.
+- "Putting Down Roots in Earthquake Country" (USGS, ~5.5 MB): illustrated
+  handbook - earthquake science, why quakes happen, regional hazards, and
+  the seven steps in depth. The most complete reference in the library."""
 
 GENERAL_PROMPT = """You are """ + BOT_NAME + """, QuakeSense's AI assistant - as capable and
 helpful as a top general AI assistant, specialized in earthquakes: science,
