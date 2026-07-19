@@ -545,26 +545,122 @@ def _fetch_relief(n: int):
     return out
 
 
-def render_news_rail(cards):
-    """Auto-scrolling card carousel, pure CSS. Cards without an article photo
-    get a monogram tile so the rail stays a card view either way."""
-    pieces = []
-    for c in cards:
-        meta = " · ".join(x for x in (c["source"], c["ago"]) if x)
-        if c.get("img"):
-            visual = (f'<div class="qs-newsimg" style="background-image:'
-                      f'url(\'{html.escape(c["img"])}\')"></div>')
-        else:
-            initial = (c["source"][:1] or "•").upper()
-            visual = f'<div class="qs-newsmono">{html.escape(initial)}</div>'
-        pieces.append(
-            f'<a class="qs-newscard" href="{html.escape(c["url"])}" '
-            f'target="_blank" rel="noopener">{visual}'
-            f'<div class="qs-newstxt"><span class="qs-newssrc">{html.escape(meta)}</span>'
-            f'<span class="qs-newstitle">{html.escape(c["title"][:110])}</span></div></a>')
-    row = "".join(pieces)
-    st.markdown(f'<div class="qs-newsrail"><div class="qs-newsrail-inner">'
-                f'{row}{row}</div></div>', unsafe_allow_html=True)
+def _fetch_gdacs(n: int):
+    """Earthquake alerts from GDACS - the UN/EC Global Disaster Alert and
+    Coordination System (backup source for official statements)."""
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    r = _resilient_get("https://www.gdacs.org/xml/rss.xml", timeout=6)
+    root = ET.fromstring(r.content)
+    now = datetime.now(timezone.utc)
+    out = []
+    for it in root.iter("item"):
+        title = (it.findtext("title") or "").strip()
+        url = (it.findtext("link") or "").strip()
+        if "earthquake" not in title.lower() or not url:
+            continue
+        ago = ""
+        try:
+            dt = parsedate_to_datetime(it.findtext("pubDate") or "")
+            hrs = int((now - dt).total_seconds() // 3600)
+            ago = f"{hrs}h ago" if hrs < 48 else f"{hrs // 24}d ago"
+        except Exception:
+            pass
+        out.append({"title": title, "url": url, "source": "GDACS · UN/EC",
+                    "ago": ago})
+        if len(out) >= n:
+            break
+    return out
+
+
+def news_rail_component(server_cards):
+    """Card rail rendered by the USER's browser: it fetches GDELT directly
+    (residential IPs aren't bot-filtered like cloud egress IPs are) and falls
+    back to the server-fetched cards if that fails. Self-contained CSS - the
+    component renders in its own iframe."""
+    import json as _json
+    payload = _json.dumps(server_cards)
+    majors = _json.dumps(list(MAJOR_OUTLETS))
+    components.html("""
+<style>
+body {margin:0; background:transparent; font-family:-apple-system,"Segoe UI",Roboto,sans-serif;}
+.qs-newsrail {overflow:hidden;}
+.qs-newsrail-inner {display:flex; gap:12px; width:max-content;
+  animation: qs-rail 70s linear infinite;}
+.qs-newsrail:hover .qs-newsrail-inner {animation-play-state:paused;}
+@keyframes qs-rail {0% {transform:translateX(0);} 100% {transform:translateX(-50%);}}
+.qs-newscard {flex:0 0 250px; background:#161e2e; border:1px solid #263145;
+  border-radius:8px; overflow:hidden; text-decoration:none;
+  transition:border-color 0.15s;}
+.qs-newscard:hover {border-color:#e08850;}
+.qs-newsimg {height:118px; background-size:cover; background-position:center;
+  background-color:#263145;}
+.qs-newsmono {height:118px; display:flex; align-items:center;
+  justify-content:center; background:#263145; font-size:36px;
+  font-weight:600; color:#e08850;}
+.qs-newstxt {display:flex; flex-direction:column; gap:4px; padding:8px 10px 10px;}
+.qs-newssrc {font-size:11px; color:#8fa0b5; text-transform:uppercase;
+  letter-spacing:0.06em;}
+.qs-newstitle {font-size:13px; color:#dbe2ec; line-height:1.35;}
+.qs-empty {color:#8fa0b5; font-size:13px;}
+</style>
+<div id="rail"><span class="qs-empty">Loading headlines...</span></div>
+<script>
+const FALLBACK = """ + payload + """;
+const MAJORS = """ + majors + """;
+function esc(s) {const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML;}
+function agoFrom(sd) {
+  try {
+    const dt = new Date(sd.slice(0,4) + '-' + sd.slice(4,6) + '-' + sd.slice(6,8) + 'T'
+                        + sd.slice(9,11) + ':' + sd.slice(11,13) + ':' + sd.slice(13,15) + 'Z');
+    const h = Math.floor((Date.now() - dt.getTime()) / 3600000);
+    return h < 48 ? h + 'h ago' : Math.floor(h / 24) + 'd ago';
+  } catch (e) {return '';}
+}
+function card(c) {
+  const vis = c.img
+    ? '<div class="qs-newsimg" style="background-image:url(\\'' + esc(c.img) + '\\')"></div>'
+    : '<div class="qs-newsmono">' + esc((c.source || '•')[0].toUpperCase()) + '</div>';
+  const meta = esc(c.source || '') + (c.ago ? ' · ' + esc(c.ago) : '');
+  return '<a class="qs-newscard" href="' + esc(c.url) + '" target="_blank" rel="noopener">'
+       + vis + '<div class="qs-newstxt"><span class="qs-newssrc">' + meta
+       + '</span><span class="qs-newstitle">' + esc((c.title || '').slice(0, 110))
+       + '</span></div></a>';
+}
+function render(cards) {
+  const el = document.getElementById('rail');
+  if (!cards || !cards.length) {
+    el.innerHTML = '<span class="qs-empty">Headlines unavailable right now — check back shortly.</span>';
+    return;
+  }
+  const row = cards.map(card).join('');
+  el.innerHTML = '<div class="qs-newsrail"><div class="qs-newsrail-inner">' + row + row + '</div></div>';
+}
+fetch('https://api.gdeltproject.org/api/v2/doc/doc?query=earthquake%20sourcelang:english&mode=ArtList&format=json&maxrecords=50&sort=DateDesc',
+      {signal: AbortSignal.timeout(6000)})
+  .then(function(r) {return r.json();})
+  .then(function(d) {
+    const arts = d.articles || [];
+    arts.sort(function(a, b) {
+      const am = MAJORS.some(function(m) {return (a.domain || '').includes(m);}) ? 0 : 1;
+      const bm = MAJORS.some(function(m) {return (b.domain || '').includes(m);}) ? 0 : 1;
+      return am - bm;
+    });
+    const seenD = new Set(), seenT = new Set(), out = [];
+    for (const a of arts) {
+      const img = (a.socialimage || '').trim(), t = (a.title || '').trim();
+      const u = a.url, dom = a.domain || '';
+      if (!img.startsWith('http') || !t || !u) continue;
+      const tk = t.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 64);
+      if (seenD.has(dom) || seenT.has(tk)) continue;
+      seenD.add(dom); seenT.add(tk);
+      out.push({title: t, url: u, img: img, source: dom, ago: agoFrom(a.seendate || '')});
+      if (out.length >= 8) break;
+    }
+    render(out.length ? out : FALLBACK);
+  })
+  .catch(function(e) {render(FALLBACK);});
+</script>""", height=215)
 
 
 def _fetch_gnews(n: int):
@@ -638,10 +734,14 @@ def _text_feeds_bundle():
         except Exception:
             return []
 
-    with ThreadPoolExecutor(max_workers=2) as ex:
+    with ThreadPoolExecutor(max_workers=3) as ex:
         f_heads = ex.submit(safe, _fetch_gnews, 10)
         f_reps = ex.submit(safe, _fetch_relief, 5)
+        f_gdacs = ex.submit(safe, _fetch_gdacs, 5)
         heads, reps = f_heads.result(), f_reps.result()
+        gdacs = f_gdacs.result()
+    if not reps:
+        reps = gdacs
     if not (heads or reps):
         raise RuntimeError("feeds unavailable")
     return {"headlines": heads, "reports": reps}
@@ -671,10 +771,7 @@ def media_section():
         cards = [{"title": h["title"], "url": h["link"], "img": "",
                   "source": h["source"], "ago": h["ago"]}
                  for h in feeds["headlines"]]
-    if cards:
-        render_news_rail(cards)
-    else:
-        st.caption("Headlines unavailable right now — check back shortly.")
+    news_rail_component(cards)
 
     reports = feeds["reports"]
     if reports:
