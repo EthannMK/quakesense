@@ -502,7 +502,8 @@ def google_places_section(trow, ev):
     # Default: the affected-area town selected above. One tap on the locate
     # button switches everything to the user's real GPS position.
     with st.container(border=True):
-        lc, sc = st.columns([0.12, 0.88])
+        lc, sc = st.columns([0.07, 0.93], gap="small",
+                            vertical_alignment="center")
         with lc:
             loc = None
             try:
@@ -516,16 +517,14 @@ def google_places_section(trow, ev):
                 lat, lon = float(loc["latitude"]), float(loc["longitude"])
                 origin = f"{lat},{lon}"
                 origin_label = "your current location"
-                st.markdown("🟢 **Starting from your location** — found via GPS")
-                st.caption("Distances and routes below start from you.")
+                st.markdown("**Your location:** 🟢 device GPS")
             else:
                 lat, lon = float(trow["latitude"]), float(trow["longitude"])
                 origin = f"{lat},{lon}"
                 origin_label = f"{trow['name']}, {trow['country']}"
-                st.markdown(f"📍 **Starting from {trow['name']}** — the "
-                            f"affected-area town selected above")
-                st.caption("Tap the locate button to switch to your exact "
-                           "GPS position.")
+                st.markdown(f"**Your location:** {trow['name']}, "
+                            f"{trow['country']}")
+                st.caption("Tap ◎ to use your device GPS instead.")
 
     # -- 2. WHAT YOU NEED (service chips) ---------------------------------
     cat = _chip_pick("What do you need?",
@@ -735,14 +734,16 @@ def _fetch_gdacs(n: int):
     return out
 
 
-def news_rail_component(server_cards):
-    """Card rail rendered by the USER's browser: it fetches GDELT directly
-    (residential IPs aren't bot-filtered like cloud egress IPs are) and falls
-    back to the server-fetched cards if that fails. Self-contained CSS - the
-    component renders in its own iframe."""
+def news_rail_component(server_cards, fetch_photos=True):
+    """Card rail rendered by the USER's browser. With fetch_photos=True it
+    fetches GDELT directly (residential IPs aren't bot-filtered like cloud
+    egress IPs are), falling back to the server-fetched cards; with False it
+    renders the given cards as-is (static rails like Official updates).
+    Self-contained CSS - the component renders in its own iframe."""
     import json as _json
     payload = _json.dumps(server_cards)
     majors = _json.dumps(list(MAJOR_OUTLETS))
+    fetch_flag = "true" if fetch_photos else "false"
     components.html("""
 <style>
 body {margin:0; background:transparent; font-family:-apple-system,"Segoe UI",Roboto,sans-serif;}
@@ -770,6 +771,7 @@ body {margin:0; background:transparent; font-family:-apple-system,"Segoe UI",Rob
 <script>
 const FALLBACK = """ + payload + """;
 const MAJORS = """ + majors + """;
+const FETCH = """ + fetch_flag + """;
 function esc(s) {const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML;}
 function agoFrom(sd) {
   try {
@@ -798,6 +800,9 @@ function render(cards) {
   const row = cards.map(card).join('');
   el.innerHTML = '<div class="qs-newsrail"><div class="qs-newsrail-inner">' + row + row + '</div></div>';
 }
+if (!FETCH) {
+  render(FALLBACK);
+} else {
 fetch('https://api.gdeltproject.org/api/v2/doc/doc?query=earthquake%20sourcelang:english&mode=ArtList&format=json&maxrecords=50&sort=DateDesc',
       {signal: AbortSignal.timeout(6000)})
   .then(function(r) {return r.json();})
@@ -822,6 +827,7 @@ fetch('https://api.gdeltproject.org/api/v2/doc/doc?query=earthquake%20sourcelang
     render(out.length ? out : FALLBACK);
   })
   .catch(function(e) {render(FALLBACK);});
+}
 </script>""", height=215)
 
 
@@ -918,27 +924,29 @@ def usgs_event_cards(live_df, n: int = 8):
 
 @st.fragment(run_every=60)
 def media_section(live_df):
-    """Media block. Photos are fetched by the visitor's own browser inside
-    the rail component; the server only supplies instant fallback cards -
-    headlines when available, else official USGS event cards from the
-    always-loaded live feed. The rail can never be empty or slow."""
+    """Two card rails. (1) World media: photos fetched by the visitor's own
+    browser, instant headline cards as fallback. (2) Official updates:
+    magnitude-tile cards from the USGS record plus UN situation reports -
+    replaces the old plain link list. Neither rail can be empty or slow."""
     feeds = text_feeds()
-    cards = [{"title": h["title"], "url": h["link"], "img": "",
-              "source": h["source"], "ago": h["ago"]}
-             for h in feeds["headlines"]]
-    if not cards:
-        cards = usgs_event_cards(live_df)
-    news_rail_component(cards)
+    news_cards = [{"title": h["title"], "url": h["link"], "img": "",
+                   "source": h["source"], "ago": h["ago"]}
+                  for h in feeds["headlines"]]
+    if not news_cards:
+        news_cards = usgs_event_cards(live_df)
+    news_rail_component(news_cards)
 
-    reports = feeds["reports"]
-    if reports:
-        st.markdown("**Official statements & humanitarian updates**")
-        st.caption("Situation reports and statements from UN agencies, IFRC "
-                   "and governments — via ReliefWeb (UN OCHA).")
-        for rep in reports:
-            meta = " · ".join(x for x in (rep["source"], rep["ago"]) if x)
-            st.markdown(f"- [{rep['title']}]({rep['url']})"
-                        + (f" — *{meta}*" if meta else ""))
+    official = usgs_event_cards(live_df)
+    for rep in feeds["reports"][:4]:
+        official.append({"title": rep["title"], "url": rep["url"], "img": "",
+                         "mono": "UN", "source": rep["source"],
+                         "ago": rep["ago"]})
+    if official:
+        st.subheader("🌐 Official updates")
+        st.caption("Significant events from the official USGS record and "
+                   "situation reports from UN agencies — tap a card to open "
+                   "the source.")
+        news_rail_component(official, fetch_photos=False)
 
 
 def render_ticker(live_df):
