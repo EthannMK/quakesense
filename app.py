@@ -49,6 +49,65 @@ st.set_page_config(page_title="QuakeSense - Global real-time earthquake intellig
 # ------------------------------------------------------------------ style --
 st.markdown("""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* ============ Enterprise design system ============ */
+/* One professional typeface everywhere (flags-only font first - its
+   unicode-range means it only ever renders flag glyphs) */
+html, body, .stApp, [data-testid="stAppViewContainer"] *,
+section[data-testid="stSidebar"] * {
+  font-family: "Twemoji Country Flags", "Inter", "Segoe UI", system-ui, sans-serif;
+}
+/* Protect glyph fonts from the global override */
+code, pre, kbd, code *, pre * {
+  font-family: "Source Code Pro", Consolas, monospace !important;
+}
+span[class*="material-symbols"], [class*="material-icons"] {
+  font-family: "Material Symbols Rounded" !important;
+}
+.qs-wordmark, .qs-subline, .qs-ticker-inner, [data-testid="stMetricValue"] {
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace !important;
+}
+
+/* Type scale */
+h1, h2, h3 {font-weight: 600; letter-spacing: -0.01em;}
+.block-container h2 {font-size: 1.3rem;}
+.block-container h3 {font-size: 1.08rem;}
+[data-testid="stCaptionContainer"], .stCaption {line-height: 1.45;}
+
+/* Controls: uniform radius, weight, focus */
+.stButton button, [data-testid="stBaseButton-secondary"] {
+  border-radius: 8px; font-weight: 600;
+}
+[data-testid="stButtonGroup"] button {border-radius: 999px; font-weight: 600;}
+hr {margin: 1.1rem 0 0.9rem 0;}
+
+/* Chat: card-style message bubbles */
+[data-testid="stChatMessage"] {
+  background: #141b28; border: 1px solid #1d2637; border-radius: 12px;
+  padding: 0.85rem 1rem; margin-bottom: 0.45rem;
+}
+
+/* Sidebar nav: hover + active states */
+section[data-testid="stSidebar"] .stRadio label {
+  padding: 5px 8px; border-radius: 8px; transition: background 0.12s;
+}
+section[data-testid="stSidebar"] .stRadio label:hover {background: #161e2e;}
+section[data-testid="stSidebar"] .stRadio label:has(input:checked) {
+  background: #161e2e;
+}
+
+/* Messenger panel send button: light blue, filled on hover */
+div[data-testid="stPopoverBody"] [data-testid="stBaseButton-secondaryFormSubmit"] {
+  color: #45b3e6 !important; border-color: #2a3c52 !important;
+  border-radius: 10px; font-weight: 700; font-size: 1.05rem;
+}
+div[data-testid="stPopoverBody"] [data-testid="stBaseButton-secondaryFormSubmit"]:hover {
+  background: #45b3e6 !important; color: #0d1321 !important;
+  border-color: #45b3e6 !important;
+}
+/* ================================================== */
+
 /* Flag-only emoji font: Windows browsers can't render country-flag emoji
    natively; this webfont covers ONLY the flag codepoints (unicode-range),
    so all other text falls through to the normal font stack. */
@@ -190,11 +249,15 @@ div[data-testid="stPopoverBody"] {min-width: min(400px, 94vw);}
 [data-testid="stChatInput"] button:hover {color: #e08850 !important;}
 [data-testid="stChatInput"] button:hover svg {fill: #e08850 !important;}
 
-/* GPS button (third-party component ships a white box - invert it into
-   the dark theme and round it) */
+/* GPS button: the third-party component ships an unstyled white box.
+   Crop it to a circular locate-me control, invert into the dark theme,
+   and give it a proper border - reads like a native map FAB. */
 iframe[title="streamlit_geolocation.streamlit_geolocation"] {
-  filter: invert(0.88) hue-rotate(180deg);
-  border-radius: 10px;
+  filter: invert(0.9) hue-rotate(180deg) saturate(0.6);
+  width: 46px !important; height: 46px !important;
+  border-radius: 50% !important; border: 1px solid #263145 !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
 }
 
 /* Grab-style help finder */
@@ -239,8 +302,19 @@ iframe[title="streamlit_geolocation.streamlit_geolocation"] {
   .qs-subline {font-size: 0.58rem; letter-spacing: 0.12em;}
   [data-testid="stMetric"] {padding: 8px 10px 6px 10px;}
   [data-testid="stMetricValue"] {font-size: 1.2rem !important;}
-  h2, h3 {font-size: 1.15rem;}
+  h2, h3 {font-size: 1.1rem;}
   div[data-testid="stPopover"] {bottom: 0.9rem; right: 0.9rem;}
+  .stButton button {min-height: 44px;}
+  [data-testid="stChatMessage"] {padding: 0.7rem 0.75rem;}
+  .qs-fac {flex-wrap: wrap; padding: 10px 12px;}
+  .qs-fac-meta {
+    flex-direction: row; width: 100%; order: 3;
+    justify-content: flex-start; gap: 10px; margin-top: 2px;
+  }
+  .qs-fac-actions a {padding: 4px 0; display: inline-block;}
+  .qs-newscard {flex: 0 0 210px;}
+  .qs-newsimg, .qs-newsmono {height: 100px;}
+  iframe {max-width: 100%;}
 }
 </style>
 """, unsafe_allow_html=True)
