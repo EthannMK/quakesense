@@ -444,20 +444,35 @@ def _title_key(title: str) -> str:
     return re.sub(r"[^a-z0-9]", "", title.lower())[:64]
 
 
-# Realistic browser UA: bot filters on shared Cloud Run egress IPs reject
-# bare python/appname agents.
+# Different hosts filter differently: some reject bare python agents,
+# others flag browser agents coming from datacenter IPs. Try both.
 BROWSER_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                             "AppleWebKit/537.36 (KHTML, like Gecko) "
                             "Chrome/126.0 Safari/537.36"}
+FEED_UA = {"User-Agent": "QuakeSense/1.0 (earthquake information service; "
+                         "+https://github.com/EthannMK/quakesense)"}
+
+
+def _resilient_get(url, params=None, timeout=8):
+    """GET with one UA, retry once with the other on any failure."""
+    try:
+        r = requests.get(url, params=params, timeout=timeout, headers=FEED_UA)
+        r.raise_for_status()
+        return r
+    except Exception as e:
+        print(f"[feeds] {url.split('/')[2]} failed with feed UA ({e}); "
+              f"retrying with browser UA")
+        r = requests.get(url, params=params, timeout=timeout, headers=BROWSER_UA)
+        r.raise_for_status()
+        return r
 
 
 def _fetch_gdelt_cards(n: int):
-    r = requests.get(
+    r = _resilient_get(
         "https://api.gdeltproject.org/api/v2/doc/doc",
         params={"query": "earthquake sourcelang:english", "mode": "ArtList",
                 "format": "json", "maxrecords": 75, "sort": "DateDesc"},
-        timeout=8, headers=BROWSER_UA)
-    r.raise_for_status()
+        timeout=8)
     body = r.content.decode("utf-8", errors="replace").strip()
     if not body.startswith("{"):  # GDELT rate-limit notices are plain text
         raise RuntimeError("GDELT rate limited")
@@ -500,9 +515,8 @@ def _fetch_relief(n: int):
     OCHA humanitarian information service (public RSS)."""
     import xml.etree.ElementTree as ET
     from email.utils import parsedate_to_datetime
-    r = requests.get("https://reliefweb.int/updates/rss.xml?search=earthquake",
-                     timeout=6, headers=BROWSER_UA)
-    r.raise_for_status()
+    r = _resilient_get("https://reliefweb.int/updates/rss.xml?search=earthquake",
+                       timeout=6)
     root = ET.fromstring(r.content)
     now = datetime.now(timezone.utc)
     out, seen = [], set()
@@ -558,10 +572,9 @@ def _fetch_gnews(n: int):
     aggregator (carries Reuters, AP, BBC, CNN, etc.)."""
     import xml.etree.ElementTree as ET
     from email.utils import parsedate_to_datetime
-    r = requests.get(
+    r = _resilient_get(
         "https://news.google.com/rss/search?q=earthquake&hl=en-US&gl=US&ceid=US:en",
-        timeout=6, headers=BROWSER_UA)
-    r.raise_for_status()
+        timeout=6)
     root = ET.fromstring(r.content)
     items, seen = [], set()
     now = datetime.now(timezone.utc)
