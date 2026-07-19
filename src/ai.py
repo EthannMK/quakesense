@@ -225,8 +225,9 @@ Routes:
   "the latest quake") - answered from the live USGS feed, no SQL needed
 - "data": needs the historical USGS catalog (counts, lists, strongest/when/where
   of past events beyond this week)
-- "general": earthquake science, safety, preparedness, definitions, or news/details
-  about a specific recent event - no catalog needed
+- "general": earthquake science, safety, preparedness, definitions, news/details
+  about a specific recent event, or questions about the QuakeSense app itself -
+  no catalog needed
 - "hybrid": needs both catalog numbers AND expert knowledge (e.g. an area's
   history AND what residents should do)
 
@@ -255,7 +256,7 @@ This BigQuery SQL was executed: {sql}
 Result (as CSV, possibly truncated):
 {result}
 
-You are a seismic data analyst agent. Respond in markdown with:
+You are {bot}, QuakeSense's seismic data analyst. Respond in markdown with:
 1. A direct answer with the total count and NAMED specific events from the
    result: always call out the strongest (magnitude, place, date) and the most
    recent, plus any notable cluster in time. Bold the key numbers. The full
@@ -364,7 +365,7 @@ def explain_result(question: str, sql: str, df: pd.DataFrame,
         resp = _client().models.generate_content(
             model=GEMINI_MODEL,
             contents=ANSWER_PROMPT.format(
-                question=question, sql=sql, language=language,
+                question=question, sql=sql, language=language, bot=BOT_NAME,
                 result=df.head(50).to_csv(index=False)[:6000]),
             config=_config(temperature=0.2),
         )
@@ -515,10 +516,33 @@ def do_dont(context: str, language: str = "English",
 
 
 # =========================================================== smart router ===
-GENERAL_PROMPT = """You are QuakeSense's earthquake assistant - as capable and helpful
-as a top general AI assistant, specialized in earthquakes: science, safety,
-preparedness, engineering, history, and current events. You serve citizens,
-officials and journalists. Conversation so far:
+BOT_NAME = "Gemini"
+
+APP_FACTS = """ABOUT QUAKESENSE (answer questions about the app itself from these facts):
+QuakeSense is a free web app by Team KODA, built for the Google Cloud Gen AI
+Academy APAC hackathon. Its sections: Live Now (world map of every M2.5+ quake
+in the past 7 days from the USGS live feed, updated ~5 minutes, with AI community
+briefings and global media headlines); Anomaly Watch (compares this week's
+activity in each region against its 50-year weekly average, flags 3x+ elevated);
+My Area (a risk profile for any town on Earth from the 50-year USGS catalog
+within 300 km, in 8 languages); Ask AI (this chat - historical answers are
+verified against ~86,000 USGS records in BigQuery with the SQL shown, this-week
+answers come from the live feed, current events use live web search with sources
+cited); Response Toolkit (formal SITREP, do's & don'ts in 8 languages, nearby
+hospitals/fire/police stations from OpenStreetMap, national emergency hotlines).
+Every AI answer takes thumbs up/down feedback. QuakeSense never predicts
+earthquakes. Data: USGS (public domain), GeoNames (CC-BY), OpenStreetMap."""
+
+GENERAL_PROMPT = """You are """ + BOT_NAME + """, QuakeSense's AI assistant - as capable and
+helpful as a top general AI assistant, specialized in earthquakes: science,
+safety, preparedness, engineering, history, and current events. You serve
+citizens, officials and journalists. If asked who you are, you are """ + BOT_NAME + """
+(Google's Gemini 2.5 Flash model on Vertex AI), integrated into QuakeSense by
+Team KODA.
+
+""" + APP_FACTS + """
+
+Conversation so far:
 {history}
 
 Question: {q}
@@ -543,7 +567,7 @@ Accuracy rules:
   safety guidance (drop-cover-hold-on, etc.).
 - Never predict earthquakes or give probabilities of future events."""
 
-HYBRID_PROMPT = """You are QuakeSense's earthquake analyst agent.
+HYBRID_PROMPT = """You are """ + BOT_NAME + """, QuakeSense's earthquake analyst agent.
 The user asked: "{q}"
 Catalog query executed: {sql}
 Catalog result (CSV, truncated): {result}
@@ -561,7 +585,7 @@ mention BigQuery, SQL or databases in prose; attribute facts to "the official
 USGS earthquake record" when needed.
 Never predict future earthquakes."""
 
-LIVE_PROMPT = """You are QuakeSense's live-monitoring analyst. The user asked: "{q}"
+LIVE_PROMPT = """You are """ + BOT_NAME + """, QuakeSense's live-monitoring analyst. The user asked: "{q}"
 
 LIVE USGS FEED - every M2.5+ earthquake worldwide in the past 7 days
 (UTC times; CSV, possibly truncated):
@@ -634,7 +658,7 @@ def smart_ask(question: str, history: str = "", stream: bool = False,
             fallback = f"Query returned {len(df)} rows (see table below)."
             if route == "data":
                 prompt = ANSWER_PROMPT.format(
-                    question=question, sql=sql, language=lang,
+                    question=question, sql=sql, language=lang, bot=BOT_NAME,
                     result=df.head(50).to_csv(index=False)[:6000])
                 temp = 0.2
             else:
@@ -672,6 +696,27 @@ def smart_ask(question: str, history: str = "", stream: bool = False,
     _collect_sources(resp, srcs)
     return {"mode": "general", "sql": None, "df": None,
             "answer": resp.text.strip(), "note": note, "sources": srcs}
+
+
+def prioritize_facilities(context: str, facilities: str) -> str:
+    """Gemini's short recommendation over a list of nearby facilities."""
+    prompt = (
+        f"You are {BOT_NAME}, QuakeSense's assistant. Situation: {context}.\n"
+        f"Nearby facilities (name | address | phone | distance km | open now):\n"
+        f"{facilities}\n\n"
+        "In under 100 words of markdown, recommend which facility to head to "
+        "first and why (type of facility, distance, open status), name a backup, "
+        "and remind the reader to call ahead if phone lines work. Practical "
+        "logistics only - no medical advice, no predictions.")
+    try:
+        resp = _client().models.generate_content(
+            model=GEMINI_MODEL, contents=prompt,
+            config=_config(temperature=0.2))
+        return resp.text.strip()
+    except Exception:
+        return ("Choose the nearest open hospital for injuries; fire stations "
+                "coordinate rescue. Call ahead if lines work - facilities may "
+                "be damaged or overloaded after a major quake.")
 
 
 # ========================================================= area profile ====

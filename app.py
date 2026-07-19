@@ -8,16 +8,19 @@ import base64
 import html
 import math
 import os
+import re
 from datetime import datetime, timezone
 
 import pandas as pd
 import pydeck as pdk
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 from src.ai import (situation_briefing, smart_ask, explain_anomaly,
                     area_profile, sitrep, do_dont, run_bigquery, TABLE_FQN,
-                    log_feedback)
+                    log_feedback, prioritize_facilities)
+from src.config import MAPS_API_KEY
 from src.anomaly import detect
 from src.live_feed import fetch_live, significant_events, PAGER_LABEL
 
@@ -46,23 +49,39 @@ st.set_page_config(page_title="QuakeSense - Global real-time earthquake intellig
 # ------------------------------------------------------------------ style --
 st.markdown("""
 <style>
+/* Flag-only emoji font: Windows browsers can't render country-flag emoji
+   natively; this webfont covers ONLY the flag codepoints (unicode-range),
+   so all other text falls through to the normal font stack. */
+@font-face {
+  font-family: "Twemoji Country Flags";
+  src: url("https://cdn.jsdelivr.net/npm/country-flag-emoji-polyfill@0.1.8/dist/TwemojiCountryFlags.woff2") format("woff2");
+  unicode-range: U+1F1E6-1F1FF, U+1F3F4, U+E0062-E007F;
+  font-display: swap;
+}
+[data-baseweb="select"] div, [data-baseweb="popover"] li,
+[data-baseweb="popover"] li div, [data-testid="stMarkdownContainer"],
+[data-testid="stMarkdownContainer"] p, [data-testid="stChatMessage"] p {
+  font-family: "Twemoji Country Flags", "Source Sans Pro", "Source Sans 3",
+               -apple-system, "Segoe UI", sans-serif;
+}
+
 #MainMenu, footer {visibility: hidden;}
 .block-container {padding-top: 1.0rem; padding-bottom: 1.5rem;}
 
 .qs-header {
-  border-bottom: 1px solid #29313c;
+  border-bottom: 1px solid #263145;
   padding: 0 0 0.8rem 0; margin-bottom: 0.3rem;
 }
 .qs-wordmark {
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
   font-size: 1.6rem; font-weight: 600; letter-spacing: 0.10em;
-  color: #d7dce2; margin: 0;
+  color: #dbe2ec; margin: 0;
 }
-.qs-wordmark span {color: #d97e4a;}
+.qs-wordmark span {color: #e08850;}
 .qs-subline {
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
   font-size: 0.70rem; letter-spacing: 0.18em; text-transform: uppercase;
-  color: #93a0af; margin-top: 0.25rem;
+  color: #8fa0b5; margin-top: 0.25rem;
 }
 .qs-live {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%;
@@ -70,33 +89,33 @@ st.markdown("""
 }
 
 [data-testid="stMetric"] {
-  background: #1a2029; border: 1px solid #29313c; border-radius: 6px;
+  background: #161e2e; border: 1px solid #263145; border-radius: 6px;
   padding: 12px 14px 9px 14px;
 }
 [data-testid="stMetricLabel"] p {
   font-size: 0.67rem !important; letter-spacing: 0.12em;
-  text-transform: uppercase; color: #93a0af !important;
+  text-transform: uppercase; color: #8fa0b5 !important;
 }
 [data-testid="stMetricValue"] {
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
   font-variant-numeric: tabular-nums; font-size: 1.65rem !important;
 }
 
-h2, h3 {letter-spacing: 0.01em; color: #d7dce2;}
-section[data-testid="stSidebar"] {border-right: 1px solid #29313c;}
+h2, h3 {letter-spacing: 0.01em; color: #dbe2ec;}
+section[data-testid="stSidebar"] {border-right: 1px solid #263145;}
 section[data-testid="stSidebar"] .stRadio label p {font-size: 0.90rem;}
 
 .qs-credit {
   font-size: 0.68rem; letter-spacing: 0.10em; text-transform: uppercase;
-  color: #93a0af; margin-bottom: 0.15rem;
+  color: #8fa0b5; margin-bottom: 0.15rem;
 }
-.qs-credit-items {font-size: 0.76rem; color: #b6c0cc; line-height: 1.5; margin-bottom: 0.55rem;}
+.qs-credit-items {font-size: 0.76rem; color: #c3cede; line-height: 1.5; margin-bottom: 0.55rem;}
 .qs-sidebar-bottom {
   position: fixed; bottom: 0; left: 0.9rem; width: 15rem;
-  padding: 0.7rem 0 1.0rem 0; background: #1a2029;
-  border-top: 1px solid #29313c; z-index: 999;
+  padding: 0.7rem 0 1.0rem 0; background: #161e2e;
+  border-top: 1px solid #263145; z-index: 999;
 }
-.qs-team {font-size: 0.72rem; color: #93a0af; margin-top: 0.4rem;}
+.qs-team {font-size: 0.72rem; color: #8fa0b5; margin-top: 0.4rem;}
 
 .stButton button[kind="primary"] {
   letter-spacing: 0.06em; font-weight: 600; border-radius: 4px;
@@ -110,33 +129,61 @@ div[data-testid="stPopover"] {
 button[data-testid="stPopoverButton"] {
   width: auto !important; border-radius: 999px !important;
   padding: 0.5rem 1.15rem; font-weight: 600;
-  background: #d97e4a !important; color: #12161d !important;
+  background: #e08850 !important; color: #0d1321 !important;
   border: none !important; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
 }
 button[data-testid="stPopoverButton"]:hover {
-  background: #e08c5c !important; color: #12161d !important;
+  background: #eda06b !important; color: #0d1321 !important;
 }
-div[data-testid="stPopoverBody"] {min-width: min(380px, 94vw);}
+div[data-testid="stPopoverBody"] {min-width: min(400px, 94vw);}
+[data-stale="true"] div[data-testid="stPopover"] {display: none !important;}
 
 /* Live event ticker under the header */
 .qs-ticker {
-  overflow: hidden; white-space: nowrap; border: 1px solid #29313c;
-  border-radius: 6px; background: #1a2029; padding: 0.35rem 0;
+  overflow: hidden; white-space: nowrap; border: 1px solid #263145;
+  border-radius: 6px; background: #161e2e; padding: 0.35rem 0;
   margin: 0.35rem 0 0.75rem 0; position: relative;
 }
 .qs-ticker-inner {
   display: inline-block; padding-left: 100%;
   animation: qs-scroll 60s linear infinite;
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
-  font-size: 0.78rem; color: #b6c0cc;
+  font-size: 0.78rem; color: #c3cede;
 }
 .qs-ticker:hover .qs-ticker-inner {animation-play-state: paused;}
-.qs-ticker .m6 {color: #d97e4a; font-weight: 600;}
-.qs-ticker .tsu {color: #40aadc; font-weight: 600;}
+.qs-ticker .m6 {color: #e08850; font-weight: 600;}
+.qs-ticker .alrt {color: #ff6b61; font-weight: 700;}
+.qs-ticker .tsu {color: #45b3e6; font-weight: 600;}
 @keyframes qs-scroll {
   0% {transform: translateX(0);}
   100% {transform: translateX(-100%);}
 }
+
+/* Auto-scrolling news card rail */
+.qs-newsrail {overflow: hidden; margin: 0.4rem 0 0.2rem 0;}
+.qs-newsrail-inner {
+  display: flex; gap: 12px; width: max-content;
+  animation: qs-rail 70s linear infinite;
+}
+.qs-newsrail:hover .qs-newsrail-inner {animation-play-state: paused;}
+@keyframes qs-rail {0% {transform: translateX(0);} 100% {transform: translateX(-50%);}}
+.qs-newscard {
+  flex: 0 0 250px; background: #161e2e; border: 1px solid #263145;
+  border-radius: 8px; overflow: hidden; text-decoration: none !important;
+  transition: border-color 0.15s;
+}
+.qs-newscard:hover {border-color: #e08850;}
+.qs-newsimg {height: 118px; background-size: cover; background-position: center;
+             background-color: #263145;}
+.qs-newsmono {height: 118px; display: flex; align-items: center;
+              justify-content: center; background: #263145;
+              font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+              font-size: 36px; font-weight: 600; color: #e08850;}
+.qs-newstxt {display: flex; flex-direction: column; gap: 4px; padding: 8px 10px 10px 10px;}
+.qs-newssrc {font-size: 0.66rem; color: #8fa0b5; text-transform: uppercase;
+             letter-spacing: 0.06em;}
+.qs-newstitle {font-size: 0.8rem; color: #dbe2ec; line-height: 1.35;
+               white-space: normal;}
 
 /* Small screens: tighten spacing so phones get a clean layout */
 @media (max-width: 640px) {
@@ -213,6 +260,304 @@ def logo_b64() -> str:
         return base64.b64encode(f.read()).decode()
 
 
+AVATARS = {"user": "🧑", "assistant": os.path.join("assets", "gemini.png")}
+
+BOT_INTRO = (
+    "Hi, I'm **Gemini** ✦ — QuakeSense's AI assistant, powered by Google's "
+    "Gemini 2.5 Flash on Vertex AI.\n\n"
+    "I can help you with:\n"
+    "- **What you're seeing** on this page — any event, number, or alert\n"
+    "- **Any earthquake question**, in your own language\n"
+    "- **Finding help**: nearest hospitals, fire & police stations and national "
+    "emergency numbers are in the **Response Toolkit**\n\n"
+    "What would you like to know?")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def places_search(query: str, lat: float, lon: float, n: int = 8):
+    """Live place results (name, address, phone, open-now) from the Google
+    Places API, biased around the affected town."""
+    r = requests.post(
+        "https://places.googleapis.com/v1/places:searchText",
+        json={"textQuery": query,
+              "locationBias": {"circle": {"center": {"latitude": lat,
+                                                     "longitude": lon},
+                               "radius": 40000.0}},
+              "maxResultCount": n},
+        headers={"X-Goog-Api-Key": MAPS_API_KEY,
+                 "X-Goog-FieldMask":
+                     "places.displayName,places.formattedAddress,"
+                     "places.internationalPhoneNumber,places.location,"
+                     "places.currentOpeningHours.openNow"},
+        timeout=12)
+    r.raise_for_status()
+    out = []
+    for p in r.json().get("places", []):
+        loc = p.get("location", {})
+        plat, plon = loc.get("latitude"), loc.get("longitude")
+        if plat is None:
+            continue
+        oh = p.get("currentOpeningHours", {})
+        out.append({"name": p.get("displayName", {}).get("text", "(unnamed)"),
+                    "addr": p.get("formattedAddress", ""),
+                    "phone": p.get("internationalPhoneNumber", ""),
+                    "lat": plat, "lon": plon,
+                    "open": oh.get("openNow"),
+                    "km": haversine_km(lat, lon, plat, plon)})
+    out.sort(key=lambda x: x["km"])
+    return out
+
+
+def google_places_section(trow, ev):
+    """Google Maps-powered help finder: free-text search like on Google Maps,
+    Gemini's prioritization, and per-result live Directions/ETA links."""
+    from urllib.parse import quote
+    lat, lon = float(trow["latitude"]), float(trow["longitude"])
+    st.markdown("**Find help — powered by Google Maps**")
+    query = st.text_input(
+        "Search like on Google Maps",
+        value=f"hospitals near {trow['name']}",
+        key=f"gm_q_{trow['name']}",
+        help="Anything works: 'emergency room', 'pharmacy open now', "
+             "'evacuation shelter', a facility name...")
+    if query.strip():
+        try:
+            places = places_search(query.strip(), lat, lon)
+        except Exception as e:
+            places = []
+            st.warning(f"Google Places unavailable ({str(e)[:60]}).")
+        if places:
+            for p in places[:6]:
+                open_tag = " · 🟢 open now" if p["open"] else (
+                    " · 🔴 closed" if p["open"] is False else "")
+                phone = f" · 📞 {p['phone']}" if p["phone"] else ""
+                dir_url = (f"https://www.google.com/maps/dir/?api=1"
+                           f"&destination={p['lat']},{p['lon']}")
+                st.markdown(
+                    f"**{p['name']}** — {p['km']:.1f} km{open_tag}{phone}  \n"
+                    f"{p['addr']} · [🧭 Directions & live ETA]({dir_url})")
+            st.caption("Directions open in Google Maps with your real location "
+                       "and live-traffic arrival time.")
+            if st.button("✦ Ask Gemini: where should I go first?",
+                         key=f"gm_terra_{trow['name']}"):
+                fac_lines = "\n".join(
+                    f"{p['name']} | {p['addr']} | {p['phone'] or 'no phone'} | "
+                    f"{p['km']:.1f} km | {'open' if p['open'] else 'unknown/closed'}"
+                    for p in places[:6])
+                ctx = (f"M{ev['mag']:.1f} earthquake near {ev['place']}; "
+                       f"user is in {trow['name']}, {trow['country']}"
+                       if ev else f"user is in {trow['name']}")
+                with st.spinner("Gemini weighing the options..."):
+                    st.markdown(prioritize_facilities(ctx, fac_lines))
+        components.iframe(
+            f"https://www.google.com/maps/embed/v1/search?key={MAPS_API_KEY}"
+            f"&q={quote(query.strip())}&center={lat},{lon}&zoom=12",
+            height=380)
+
+
+@st.cache_data(show_spinner=False)
+def country_flag(name: str) -> str:
+    """Emoji flag for a country name (GeoNames names mostly match pycountry)."""
+    try:
+        import pycountry
+        c = pycountry.countries.lookup(name)
+        return "".join(chr(0x1F1E6 + ord(ch) - 65) for ch in c.alpha_2)
+    except Exception:
+        return "🌐"
+
+
+# Recognized global/regional outlets - ranked above unknown domains because
+# content farms republish wire stories verbatim under many domains.
+MAJOR_OUTLETS = (
+    "reuters.com", "apnews.com", "bbc.co", "cnn.com", "theguardian.com",
+    "aljazeera.com", "nytimes.com", "washingtonpost.com", "abc.net.au",
+    "npr.org", "france24.com", "dw.com", "nhk.or.jp", "japantimes.co.jp",
+    "cbsnews.com", "nbcnews.com", "abcnews.go.com", "news.sky.com",
+    "usatoday.com", "latimes.com", "time.com", "straitstimes.com",
+    "channelnewsasia.com", "scmp.com", "thehindu.com", "indianexpress.com",
+    "bangkokpost.com", "irrawaddy.com", "rappler.com", "usgs.gov")
+
+
+def _title_key(title: str) -> str:
+    """Normalized fingerprint so the same wire story counts once."""
+    return re.sub(r"[^a-z0-9]", "", title.lower())[:64]
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _news_cards_cached(n: int):
+    """Raises on failure so empty results are never cached for 30 minutes."""
+    r = requests.get(
+        "https://api.gdeltproject.org/api/v2/doc/doc",
+        params={"query": "earthquake sourcelang:english", "mode": "ArtList",
+                "format": "json", "maxrecords": 75, "sort": "DateDesc"},
+        timeout=12, headers={"User-Agent": "QuakeSense/1.0"})
+    r.raise_for_status()
+    body = r.content.decode("utf-8", errors="replace").strip()
+    if not body.startswith("{"):  # GDELT rate-limit notices are plain text
+        raise RuntimeError("GDELT rate limited")
+    import json
+    arts = json.loads(body).get("articles", [])
+    # Major outlets first, keeping GDELT's newest-first order within each tier
+    arts.sort(key=lambda a: not any(m in (a.get("domain") or "")
+                                    for m in MAJOR_OUTLETS))
+    now = datetime.now(timezone.utc)
+    seen_dom, seen_title, out = set(), set(), []
+    for a in arts:
+        img = (a.get("socialimage") or "").strip()
+        title = (a.get("title") or "").strip()
+        url = (a.get("url") or "").strip()
+        dom = (a.get("domain") or "").strip()
+        if not (img.startswith("http") and title and url):
+            continue
+        tkey = _title_key(title)
+        if dom in seen_dom or tkey in seen_title:
+            continue
+        seen_dom.add(dom)
+        seen_title.add(tkey)
+        ago = ""
+        try:
+            dt = datetime.strptime(a["seendate"], "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc)
+            hrs = int((now - dt).total_seconds() // 3600)
+            ago = f"{hrs}h ago" if hrs < 48 else f"{hrs // 24}d ago"
+        except Exception:
+            pass
+        out.append({"title": title, "url": url, "img": img,
+                    "source": dom, "ago": ago})
+        if len(out) >= n:
+            break
+    if not out:
+        raise RuntimeError("no illustrated articles")
+    return out
+
+
+_NEWS_BACKOFF = {"until": 0.0}
+
+
+def quake_news_cards(n: int = 8):
+    """Latest earthquake articles WITH images, from the GDELT global news
+    index (free, no key). One card per outlet; cached 30 minutes.
+
+    Failures back off for 2 minutes - GDELT rate-limits at one request per
+    5 seconds, so instant retries on every rerun would stay throttled forever."""
+    import time
+    if time.time() < _NEWS_BACKOFF["until"]:
+        return []
+    try:
+        return _news_cards_cached(n)
+    except Exception:
+        _NEWS_BACKOFF["until"] = time.time() + 120
+        return []
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _relief_reports_cached(n: int):
+    """Latest earthquake situation reports/statements from ReliefWeb, the UN
+    OCHA humanitarian information service (public RSS)."""
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    r = requests.get("https://reliefweb.int/updates/rss.xml?search=earthquake",
+                     timeout=15, headers={"User-Agent": "QuakeSense/1.0"})
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
+    now = datetime.now(timezone.utc)
+    out, seen = [], set()
+    for it in root.iter("item"):
+        title = (it.findtext("title") or "").strip()
+        url = (it.findtext("link") or "").strip()
+        if not title or not url:
+            continue
+        if any(ch in title for ch in "áéíóúñ¿"):  # skip Spanish duplicates
+            continue
+        tkey = _title_key(title)
+        if tkey in seen:
+            continue
+        seen.add(tkey)
+        ago = ""
+        try:
+            dt = parsedate_to_datetime(it.findtext("pubDate") or "")
+            hrs = int((now - dt).total_seconds() // 3600)
+            ago = f"{hrs}h ago" if hrs < 48 else f"{hrs // 24}d ago"
+        except Exception:
+            pass
+        out.append({"title": title, "url": url, "source": "ReliefWeb / UN OCHA",
+                    "ago": ago})
+        if len(out) >= n:
+            break
+    if not out:
+        raise RuntimeError("no reports")
+    return out
+
+
+def relief_reports(n: int = 5):
+    try:
+        return _relief_reports_cached(n)
+    except Exception:
+        return []
+
+
+def render_news_rail(cards):
+    """Auto-scrolling card carousel, pure CSS. Cards without an article photo
+    get a monogram tile so the rail stays a card view either way."""
+    pieces = []
+    for c in cards:
+        meta = " · ".join(x for x in (c["source"], c["ago"]) if x)
+        if c.get("img"):
+            visual = (f'<div class="qs-newsimg" style="background-image:'
+                      f'url(\'{html.escape(c["img"])}\')"></div>')
+        else:
+            initial = (c["source"][:1] or "•").upper()
+            visual = f'<div class="qs-newsmono">{html.escape(initial)}</div>'
+        pieces.append(
+            f'<a class="qs-newscard" href="{html.escape(c["url"])}" '
+            f'target="_blank" rel="noopener">{visual}'
+            f'<div class="qs-newstxt"><span class="qs-newssrc">{html.escape(meta)}</span>'
+            f'<span class="qs-newstitle">{html.escape(c["title"][:110])}</span></div></a>')
+    row = "".join(pieces)
+    st.markdown(f'<div class="qs-newsrail"><div class="qs-newsrail-inner">'
+                f'{row}{row}</div></div>', unsafe_allow_html=True)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def quake_headlines(n: int = 6):
+    """Top earthquake headlines from global media, via the Google News RSS
+    aggregator (carries Reuters, AP, BBC, CNN, etc.). Cached 30 minutes."""
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    try:
+        r = requests.get(
+            "https://news.google.com/rss/search?q=earthquake&hl=en-US&gl=US&ceid=US:en",
+            timeout=10, headers={"User-Agent": "QuakeSense/1.0"})
+        r.raise_for_status()
+        root = ET.fromstring(r.content)
+    except Exception:
+        return []
+    items, seen = [], set()
+    now = datetime.now(timezone.utc)
+    for it in root.iter("item"):
+        title = (it.findtext("title") or "").strip()
+        link = (it.findtext("link") or "").strip()
+        source = (it.findtext("source") or "").strip()
+        if source and title.endswith(f" - {source}"):
+            title = title[: -len(source) - 3].strip()
+        tkey = _title_key(title)
+        if not title or not link or tkey in seen:
+            continue
+        seen.add(tkey)
+        ago = ""
+        try:
+            pub = parsedate_to_datetime(it.findtext("pubDate") or "")
+            hrs = int((now - pub).total_seconds() // 3600)
+            ago = f"{hrs}h ago" if hrs < 48 else f"{hrs // 24}d ago"
+        except Exception:
+            pass
+        items.append({"title": title, "link": link,
+                      "source": source, "ago": ago})
+        if len(items) >= n:
+            break
+    return items
+
+
 def render_ticker(live_df):
     """CNN-style scrolling strip of this week's significant events."""
     if live_df is None or live_df.empty:
@@ -225,49 +570,77 @@ def render_ticker(live_df):
     for r in top.itertuples():
         hrs = int((now - r.time).total_seconds() // 3600)
         ago = f"{hrs}h ago" if hrs < 48 else f"{hrs // 24}d ago"
-        cls = "tsu" if r.tsunami_flag else ("m6" if r.mag >= 6 else "")
-        tag = " ⚠ tsunami flag" if r.tsunami_flag else ""
+        if r.tsunami_flag:
+            cls, tag = "tsu", " ⚠ tsunami flag"
+        elif r.mag >= 6.5:
+            cls, tag = "alrt", " ⚠ ALERT"
+        elif r.mag >= 6:
+            cls, tag = "m6", ""
+        else:
+            cls, tag = "", ""
         bits.append(f'<span class="{cls}">M{r.mag:.1f}</span> '
                     f'{html.escape(str(r.place))}{tag} · {ago}')
     items = " &nbsp;&nbsp;···&nbsp;&nbsp; ".join(bits)
     st.markdown(f'<div class="qs-ticker"><div class="qs-ticker-inner">'
-                f'THIS WEEK M5+ &nbsp;&nbsp;···&nbsp;&nbsp; {items}'
+                f'🛰️ LIVE · THIS WEEK M5+ &nbsp;&nbsp;···&nbsp;&nbsp; {items}'
                 f'</div></div>', unsafe_allow_html=True)
 
 
 @st.fragment
 def quick_ask(context: str, live_df):
-    """Floating quick-question popup for pages other than the full chat.
+    """Floating messenger-style chat panel (like LinkedIn messaging).
 
-    Page context travels with the question so answers refer to what the
-    user is actually looking at."""
+    Keeps its own mini conversation; the on-screen context (which event /
+    which location) travels with every question and is shown in the header,
+    and the model is told to name the location it is talking about."""
+    hist = st.session_state.setdefault("quick_chat", [])
     with st.popover("💬 Ask QuakeSense"):
-        st.caption("Quick question about what you're seeing? For the full agent "
-                   "with SQL evidence and follow-ups, open **Ask the Data**.")
-        q = st.text_input("Your question", key="quick_q",
-                          placeholder="e.g. Should people nearby be worried?",
-                          label_visibility="collapsed")
-        if st.button("Ask", key="quick_go", type="primary") and q.strip():
-            hist = (f"[Quick popup question. Page context: {context}. "
-                    f"Answer concisely - under 120 words.]")
-            try:
-                with st.spinner("Thinking..."):
-                    res = smart_ask(q.strip(), hist, live_df=live_df)
-                st.session_state.quick = {"q": q.strip(), "a": res["answer"],
-                                          "mode": res.get("mode"),
-                                          "sources": res.get("sources") or []}
-            except Exception as e:
-                st.session_state.quick = {"q": q.strip(), "sources": [],
-                                          "a": f"Unavailable right now ({str(e)[:60]}). "
-                                               f"Try the Ask the Data page.",
-                                          "mode": None}
-        qa = st.session_state.get("quick")
-        if qa:
-            st.markdown(f"**You:** {qa['q']}")
-            st.markdown(qa["a"])
-            if qa.get("sources"):
-                st.caption("Sources: " + " · ".join(
-                    f"[{s['title']}]({s['uri']})" for s in qa["sources"][:3]))
+        st.markdown("✦ **Gemini** — QuakeSense assistant · Gemini 2.5 Flash")
+        st.caption(f"📍 Talking about: {context}")
+        box = st.container(height=300)
+        with box:
+            if not hist:
+                with st.chat_message("assistant", avatar=AVATARS["assistant"]):
+                    st.markdown(BOT_INTRO)
+            for m in hist:
+                with st.chat_message(m["role"], avatar=AVATARS.get(m["role"])):
+                    st.markdown(m["content"])
+                    if m.get("sources"):
+                        st.caption("Sources: " + " · ".join(
+                            f"[{s['title']}]({s['uri']})" for s in m["sources"][:3]))
+        with st.form("quick_form", clear_on_submit=True, border=False):
+            c1, c2 = st.columns([0.82, 0.18])
+            q = c1.text_input("Message", label_visibility="collapsed",
+                              placeholder="Type a message...")
+            send = c2.form_submit_button("➤", use_container_width=True)
+        if send and q.strip():
+            q = q.strip()
+            recent = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in hist[-4:])
+            ctx_hist = (f"[Floating mini-chat. The user is looking at: {context}. "
+                        f"Answer in under 120 words and ALWAYS name the specific "
+                        f"location/event you are referring to, so there is no "
+                        f"ambiguity.]\n{recent}")
+            hist.append({"role": "user", "content": q})
+            with box:
+                with st.chat_message("user", avatar=AVATARS["user"]):
+                    st.markdown(q)
+                with st.chat_message("assistant", avatar=AVATARS["assistant"]):
+                    try:
+                        with st.spinner("Thinking..."):
+                            res = smart_ask(q, ctx_hist, live_df=live_df)
+                        st.markdown(res["answer"])
+                        srcs = res.get("sources") or []
+                        if srcs:
+                            st.caption("Sources: " + " · ".join(
+                                f"[{s['title']}]({s['uri']})" for s in srcs[:3]))
+                        hist.append({"role": "assistant", "content": res["answer"],
+                                     "sources": srcs})
+                    except Exception as e:
+                        msg = (f"Unavailable right now ({str(e)[:60]}). "
+                               f"Try the Ask AI page.")
+                        st.markdown(msg)
+                        hist.append({"role": "assistant", "content": msg,
+                                     "sources": []})
 
 
 @st.fragment
@@ -332,9 +705,9 @@ def chat_agent(live):
     ]
     pending = None
     if not st.session_state.chat:
-        st.markdown("&nbsp;")
-        st.markdown("<p style='text-align:center;color:#93a0af;'>Ask anything about "
-                    "earthquakes — past events, science, or safety. Try one of these:</p>",
+        with st.chat_message("assistant", avatar=AVATARS["assistant"]):
+            st.markdown(BOT_INTRO)
+        st.markdown("<p style='text-align:center;color:#8fa0b5;'>Try one of these:</p>",
                     unsafe_allow_html=True)
         r1 = st.columns(2)
         r2 = st.columns(2)
@@ -344,7 +717,7 @@ def chat_agent(live):
                 pending = ex
 
     for i, m in enumerate(st.session_state.chat):
-        with st.chat_message(m["role"]):
+        with st.chat_message(m["role"], avatar=AVATARS.get(m["role"])):
             st.markdown(m["content"])
             if m.get("mode"):
                 st.caption(MODE_BADGE.get(m["mode"], ""))
@@ -376,7 +749,7 @@ def chat_agent(live):
     question = pending or typed
     if question:
         st.session_state.chat.append({"role": "user", "content": question})
-        with st.chat_message("user"):
+        with st.chat_message("user", avatar=AVATARS["user"]):
             st.markdown(question)
         history = "\n".join(f"{m['role']}: {m['content'][:250]}"
                             for m in st.session_state.chat[-7:-1])
@@ -387,7 +760,7 @@ def chat_agent(live):
                        f"(~{ar['hist']['per_decade']}/decade). Strongest: {ar['hist']['strongest']}. "
                        f"This week within 500 km: {ar['live']['count']}. "
                        f"Profile headline: {ar['prof']['headline']}\n" + history)
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar=AVATARS["assistant"]):
             try:
                 with st.spinner("Checking the USGS record..."):
                     res = smart_ask(question, history, stream=True, live_df=live)
@@ -426,7 +799,8 @@ def my_area_block(tdb, live):
         with a0:
             countries = sorted(tdb["country"].dropna().unique().tolist())
             default_ix = countries.index("Thailand") if "Thailand" in countries else 0
-            country = st.selectbox("Country", countries, index=default_ix)
+            country = st.selectbox("Country", countries, index=default_ix,
+                                   format_func=lambda c: f"{country_flag(c)} {c}")
         with a1:
             towns = tdb[tdb["country"] == country]
             labels2 = [f"{r.name_}, {r.admin1}" if pd.notna(r.admin1) and str(r.admin1) != ""
@@ -516,18 +890,18 @@ def my_area_block(tdb, live):
             g1, g2 = st.columns(2)
             with g1:
                 st.markdown("**Events per decade near you**")
-                st.bar_chart(hd.groupby("decade").size(), color="#d97e4a")
+                st.bar_chart(hd.groupby("decade").size(), color="#e08850")
                 st.caption("Taller recent bars often reflect better instruments, "
                            "not necessarily more earthquakes.")
             with g2:
                 st.markdown("**How strong they were**")
-                st.bar_chart(hd.groupby("strength", observed=False).size(), color="#d97e4a")
+                st.bar_chart(hd.groupby("strength", observed=False).size(), color="#e08850")
                 st.caption("Most events cluster at the lower magnitudes - "
                            "the big ones are rare but matter most.")
             with st.expander("Map: every M5+ epicenter within 300 km since 1975",
                              expanded=True):
                 hist_map = ar["df"].rename(columns={"latitude": "lat", "longitude": "lon"})
-                st.map(hist_map[["lat", "lon"]], zoom=5, color="#d97e4a", size=8000)
+                st.map(hist_map[["lat", "lon"]], zoom=5, color="#e08850", size=8000)
 
 
 @st.fragment
@@ -582,12 +956,12 @@ def anomaly_explain_block(flagged, live_cells):
             st.markdown("**When they struck this week**")
             daily = evs.set_index(evs["time"].dt.floor("D")).groupby(level=0).size()
             daily.index = daily.index.strftime("%b %d")
-            st.bar_chart(daily, color="#d97e4a")
+            st.bar_chart(daily, color="#e08850")
             st.caption("A tight burst suggests an aftershock sequence; "
                        "spread-out days suggest a swarm.")
         with v2:
             st.markdown("**Where they struck**")
-            st.map(evs[["lat", "lon"]], zoom=4, color="#d97e4a")
+            st.map(evs[["lat", "lon"]], zoom=4, color="#e08850")
 
 
 @st.fragment
@@ -642,8 +1016,9 @@ def guidance_block(context: str):
 
 
 @st.fragment
-def facilities_block(top):
-    """Town picker + OSM facility search, isolated from the page."""
+def facilities_block(top, ev=None):
+    """Town picker + facility finder (Google Maps when a key is configured,
+    OpenStreetMap otherwise), isolated from the page."""
     lab3 = [f"{r['name']} ({r['country']}) — {r['km']:.0f} km from epicenter"
             for _, r in top.iterrows()]
     tix = st.selectbox("Affected-area town (nearest first)", range(len(lab3)),
@@ -655,6 +1030,10 @@ def facilities_block(top):
                     f"{EMERGENCY_NUMBERS[country2]}")
         st.caption("From public sources - verify locally. "
                    "Numbers can differ by region.")
+
+    if MAPS_API_KEY:
+        google_places_section(trow, ev)
+        return
 
     if st.button("Find hospitals, fire & police stations within 20 km"):
         try:
@@ -735,8 +1114,13 @@ render_ticker(live)
 st.sidebar.markdown("##### MENU")
 page = st.sidebar.radio(
     "Navigation",
-    ["Live Monitor", "Ask the Data", "Anomaly Watch", "Response Toolkit", "How to Use"],
+    ["🛰️ Live Now", "📈 Anomaly Watch", "📍 My Area", "✦ Ask AI",
+     "⛑️ Response Toolkit", "📖 Guide"],
+    captions=["World map · briefings · media", "Is this week normal?",
+              "Your town's risk profile", "Any question, any language",
+              "SITREP · guidance · facilities", "How it all fits"],
     label_visibility="collapsed")
+page = page.split(" ", 1)[1]
 
 if st.sidebar.button("Refresh live feed", use_container_width=True):
     get_live.clear()
@@ -758,8 +1142,8 @@ st.sidebar.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ============================================================ LIVE MONITOR ==
-if page == "Live Monitor":
+# ================================================================ LIVE NOW ==
+if page == "Live Now":
     if not feed_ok or live.empty:
         st.warning("No live data available right now.")
     else:
@@ -804,7 +1188,7 @@ if page == "Live Monitor":
             min_mag = st.slider("Minimum magnitude", 2.5, 8.0, 4.5, 0.1,
                                 disabled=(preset != "Custom"))
         with s3:
-            show_plates = st.toggle("Plate boundaries", value=True,
+            show_plates = st.toggle("Plate boundaries", value=False,
                                     help="Overlay tectonic plate boundaries (Bird 2003 dataset) - "
                                          "most earthquakes happen along these lines.")
 
@@ -839,7 +1223,7 @@ if page == "Live Monitor":
             if gj:
                 layers.append(pdk.Layer(
                     "GeoJsonLayer", data=gj, stroked=True, filled=False,
-                    get_line_color=[125, 135, 155, 80], line_width_min_pixels=1))
+                    get_line_color=[190, 70, 60, 110], line_width_min_pixels=1))
         layers.append(pdk.Layer(
             "ScatterplotLayer", data=map_data,
             get_position=["lon", "lat"],
@@ -874,8 +1258,10 @@ if page == "Live Monitor":
         labels = [f"M{r.mag:.1f}  ·  {r.place}  ·  {r.time:%b %d %H:%M} UTC"
                   for r in sig.itertuples()]
         pick = st.selectbox("Event (ranked by USGS significance)", labels,
+                            key="sig_event",
                             help="Significance is USGS's newsworthiness score - it combines "
-                                 "magnitude, felt reports, and estimated impact.")
+                                 "magnitude, felt reports, and estimated impact. Your pick "
+                                 "carries over to the Response Toolkit.")
         ev = sig.iloc[labels.index(pick)].to_dict()
 
         a, b, c, d = st.columns(4)
@@ -894,24 +1280,54 @@ if page == "Live Monitor":
 
         briefing_block(ev, pick)
 
-        quick_ask(f"Live Monitor world map (past 7 days); selected event: {pick}", live)
+        # ------------------------------------------- global media coverage
+        st.divider()
+        st.subheader("📺 Global media coverage")
+        st.caption("Latest earthquake stories from world media, one card per "
+                   "outlet — hover to pause, click to read. Refreshes every "
+                   "30 minutes.")
+        cards = quake_news_cards()
+        if not cards:
+            cards = [{"title": h["title"], "url": h["link"], "img": "",
+                      "source": h["source"], "ago": h["ago"]}
+                     for h in quake_headlines(10)]
+        if cards:
+            render_news_rail(cards)
+        else:
+            st.caption("Headlines unavailable right now — check back shortly.")
 
-# ============================================================ ASK THE DATA ==
-elif page == "Ask the Data":
-    # ---------------------------------------------------- My Area section --
+        reports = relief_reports()
+        if reports:
+            st.markdown("**Official statements & humanitarian updates**")
+            st.caption("From ReliefWeb (UN OCHA) — situation reports and "
+                       "statements by UN agencies, IFRC, and governments.")
+            for rep in reports:
+                meta = " · ".join(x for x in (rep["source"], rep["ago"]) if x)
+                st.markdown(f"- [{rep['title']}]({rep['url']})"
+                            + (f" — *{meta}*" if meta else ""))
+
+        quick_ask(f"Live Now world map (past 7 days); selected event: {pick}", live)
+
+# ================================================================= MY AREA ==
+elif page == "My Area":
     st.subheader("My Area — community seismic risk profile")
     st.caption("Select your country and town - the agent combines your area's 50-year record "
                "with this week's live activity into a personal risk profile, in your language.")
 
     my_area_block(towns_db(), live)
 
-    # ------------------------------------------------------- agent section --
-    st.divider()
+    area_ctx = (f"My Area risk profile for {st.session_state.area['city']}"
+                if st.session_state.get("area") else
+                "My Area page (no town profiled yet)")
+    quick_ask(area_ctx, live)
+
+# ================================================================== ASK AI ==
+elif page == "Ask AI":
     st.subheader("Ask about Earthquakes — AI agent")
     st.caption("Ask anything, in any language — it replies in yours. Historical numbers "
                "come from 50 years of USGS data (SQL shown), this week's events from the "
                "live feed, and current news with web sources cited. It remembers "
-               "follow-ups and can discuss your My Area analysis above.")
+               "follow-ups and can discuss your My Area analysis (from the My Area page).")
 
     chat_agent(live)
 
@@ -955,8 +1371,11 @@ elif page == "Response Toolkit":
         sig = significant_events(live)
         labels_rt = [f"M{r.mag:.1f}  ·  {r.place}  ·  {r.time:%b %d %H:%M} UTC"
                      for r in sig.itertuples()]
+        carry = st.session_state.get("sig_event")
+        default_rt = labels_rt.index(carry) if carry in labels_rt else 0
         pick_rt = st.selectbox("Event (ranked by USGS significance)", labels_rt,
-                               key="rt_event")
+                               index=default_rt, key="rt_event",
+                               help="Defaults to the event you picked on Live Now.")
         ev = sig.iloc[labels_rt.index(pick_rt)].to_dict()
         sitrep_block(ev, pick_rt, live)
 
@@ -995,7 +1414,7 @@ elif page == "Response Toolkit":
             st.info("No towns within 150 km of this epicenter - it is likely offshore "
                     "or in a remote area. Select a different event above.")
         else:
-            facilities_block(near_towns.head(15).reset_index(drop=True))
+            facilities_block(near_towns.head(15).reset_index(drop=True), ev)
 
     quick_ask(f"Response Toolkit; selected event: {pick_rt}" if not live.empty
               else "Response Toolkit page", live)
@@ -1005,43 +1424,52 @@ else:
     st.subheader("How to use QuakeSense")
     st.markdown("""
 QuakeSense answers three questions after an earthquake: **what just happened,
-what does it mean for my community, and is this pattern normal?**
+what does it mean for my community, and is this pattern normal?** The menu is
+organized around those moments:
 
-It works with two datasets — knowing which page uses which saves confusion:
-
-| | Data scope | Updated |
+| Section | Purpose | Data behind it |
 |---|---|---|
-| **Live Monitor · Anomaly Watch** | Past **7 days**, magnitude 2.5+ (USGS live feed) | Every 5 minutes |
-| **Ask the Data (agent + My Area)** | Past **50 years**, magnitude 5+, worldwide (USGS catalog in BigQuery) | Historical archive |
+| **Live Now** | What's happening right now, worldwide | USGS live feed (7 days, M2.5+), every 5 min |
+| **Anomaly Watch** | Is this week normal for each region? | Live feed vs 50-year baseline |
+| **My Area** | What's the risk where *I* live? | 50-year USGS catalog (BigQuery) |
+| **Ask AI** | Any earthquake question, any language | Catalog + live feed + web search |
+| **Response Toolkit** | The hours after a quake | All of the above + OpenStreetMap |
 
-#### Live Monitor
-The world map of every earthquake in the last 7 days: magnitude slider (0.1 steps),
-quick presets, location filter (type *Japan*, press **Enter**), tectonic plate
-boundaries, tsunami auto-flagging, CSV export. Below the map, **AI Situation
-Briefings**: pick any significant event and generate a plain-language community
-briefing with recommended actions, downloadable for sharing.
+The scrolling strip under the header shows this week's M5+ events everywhere in
+the app — orange for M6+, **red for M6.5+ alerts**, blue for tsunami-flagged.
+On most pages a **💬 Ask QuakeSense** chat bubble floats bottom-right: quick
+questions about what's on screen, answered with the exact event/location named.
 
-#### Ask the Data
-Two tools on one page. The **AI agent**: ask anything about earthquakes, in any
-language — it answers in yours. Historical questions ("how many M6+ in Myanmar
-since 1990?") are answered from 50 years of USGS records in BigQuery with the
-SQL shown; this-week questions come from the live feed; science and safety from
-Gemini's expertise; and questions about current events are answered with live
-web search, **sources cited**. Every answer takes a 👍/👎 so we can keep
-improving. It remembers follow-ups (*"and for Japan?"*). Below it, **My Area**:
-pick your country and town from verified dropdowns, choose from 8 languages
-(English, Burmese, Thai, Hindi, Bengali, Telugu, Marathi, Tamil), and get a
-community risk profile grounded in your area's real 50-year record.
+#### Live Now
+The world map of every earthquake in the last 7 days: magnitude presets and
+slider, location filter, tectonic plate boundaries (red lines — that's where
+quakes happen), tsunami auto-flagging, CSV export. Below the map: **AI Situation
+Briefings** for any significant event, and **global media coverage** — top
+earthquake headlines from world media.
 
 #### Anomaly Watch
 Compares this week's activity in every region against its 50-year average and
 flags what's unusual — swarms, aftershock sequences — with calm AI explanations.
 
+#### My Area
+Pick your country and town from verified dropdowns, choose from 8 languages
+(English, Burmese, Thai, Hindi, Bengali, Telugu, Marathi, Tamil), and get a
+community risk profile grounded in your area's real 50-year record — with
+charts and a map of every M5+ epicenter near you.
+
+#### Ask AI
+Ask anything about earthquakes, in any language — it answers in yours.
+Historical questions are answered from 50 years of USGS records with the SQL
+shown; this-week questions from the live feed; current events with live web
+search, **sources cited**. Every answer takes a 👍/👎 so we keep improving.
+It remembers follow-ups (*"and for Japan?"*) and can discuss your My Area profile.
+
 #### Response Toolkit
-For the hours after a quake: generate a formal **situation report (SITREP)** for
-any significant event, get **do's and don'ts** for people waiting for rescue
-(in 8 languages, based on FEMA/Red Cross guidance), and find **hospitals, fire
-and police stations** near any town, with national emergency hotlines.
+For the hours after a quake: a formal **situation report (SITREP)** with
+web-verified external reports, **do's and don'ts** for people waiting for
+rescue (8 languages, FEMA/Red Cross guidance), and **hospitals, fire and
+police stations** near any affected town, with national emergency hotlines.
+The event you picked on Live Now carries over automatically.
 
 ---
 *Earthquakes cannot be predicted. QuakeSense supports awareness, communication,

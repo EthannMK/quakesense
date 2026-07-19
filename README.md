@@ -67,6 +67,13 @@ streamlit run app.py
 Project id and region are set in `src/config.py` (or via GCP_PROJECT /
 GCP_LOCATION environment variables).
 
+Optional but recommended: set `GOOGLE_MAPS_API_KEY` to upgrade the Response
+Toolkit's facility finder to live Google Maps data — free-text place search,
+addresses, phone numbers, open-now status, an embedded results map, and
+per-result Directions links that open Google Maps with live ETA. Enable
+**Maps Embed API** (free) and **Places API (New)** on the GCP project and
+create an API key. Without the key the app falls back to OpenStreetMap.
+
 ## Deploying
 
 ```bash
