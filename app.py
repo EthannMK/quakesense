@@ -383,14 +383,19 @@ def _title_key(title: str) -> str:
     return re.sub(r"[^a-z0-9]", "", title.lower())[:64]
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def _news_cards_cached(n: int):
-    """Raises on failure so empty results are never cached for 30 minutes."""
+# Realistic browser UA: bot filters on shared Cloud Run egress IPs reject
+# bare python/appname agents.
+BROWSER_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/126.0 Safari/537.36"}
+
+
+def _fetch_gdelt_cards(n: int):
     r = requests.get(
         "https://api.gdeltproject.org/api/v2/doc/doc",
         params={"query": "earthquake sourcelang:english", "mode": "ArtList",
                 "format": "json", "maxrecords": 75, "sort": "DateDesc"},
-        timeout=12, headers={"User-Agent": "QuakeSense/1.0"})
+        timeout=6, headers=BROWSER_UA)
     r.raise_for_status()
     body = r.content.decode("utf-8", errors="replace").strip()
     if not body.startswith("{"):  # GDELT rate-limit notices are plain text
@@ -426,38 +431,16 @@ def _news_cards_cached(n: int):
                     "source": dom, "ago": ago})
         if len(out) >= n:
             break
-    if not out:
-        raise RuntimeError("no illustrated articles")
     return out
 
 
-_NEWS_BACKOFF = {"until": 0.0}
-
-
-def quake_news_cards(n: int = 8):
-    """Latest earthquake articles WITH images, from the GDELT global news
-    index (free, no key). One card per outlet; cached 30 minutes.
-
-    Failures back off for 2 minutes - GDELT rate-limits at one request per
-    5 seconds, so instant retries on every rerun would stay throttled forever."""
-    import time
-    if time.time() < _NEWS_BACKOFF["until"]:
-        return []
-    try:
-        return _news_cards_cached(n)
-    except Exception:
-        _NEWS_BACKOFF["until"] = time.time() + 120
-        return []
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _relief_reports_cached(n: int):
+def _fetch_relief(n: int):
     """Latest earthquake situation reports/statements from ReliefWeb, the UN
     OCHA humanitarian information service (public RSS)."""
     import xml.etree.ElementTree as ET
     from email.utils import parsedate_to_datetime
     r = requests.get("https://reliefweb.int/updates/rss.xml?search=earthquake",
-                     timeout=15, headers={"User-Agent": "QuakeSense/1.0"})
+                     timeout=6, headers=BROWSER_UA)
     r.raise_for_status()
     root = ET.fromstring(r.content)
     now = datetime.now(timezone.utc)
@@ -484,16 +467,7 @@ def _relief_reports_cached(n: int):
                     "ago": ago})
         if len(out) >= n:
             break
-    if not out:
-        raise RuntimeError("no reports")
     return out
-
-
-def relief_reports(n: int = 5):
-    try:
-        return _relief_reports_cached(n)
-    except Exception:
-        return []
 
 
 def render_news_rail(cards):
@@ -518,20 +492,16 @@ def render_news_rail(cards):
                 f'{row}{row}</div></div>', unsafe_allow_html=True)
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def quake_headlines(n: int = 6):
+def _fetch_gnews(n: int):
     """Top earthquake headlines from global media, via the Google News RSS
-    aggregator (carries Reuters, AP, BBC, CNN, etc.). Cached 30 minutes."""
+    aggregator (carries Reuters, AP, BBC, CNN, etc.)."""
     import xml.etree.ElementTree as ET
     from email.utils import parsedate_to_datetime
-    try:
-        r = requests.get(
-            "https://news.google.com/rss/search?q=earthquake&hl=en-US&gl=US&ceid=US:en",
-            timeout=10, headers={"User-Agent": "QuakeSense/1.0"})
-        r.raise_for_status()
-        root = ET.fromstring(r.content)
-    except Exception:
-        return []
+    r = requests.get(
+        "https://news.google.com/rss/search?q=earthquake&hl=en-US&gl=US&ceid=US:en",
+        timeout=6, headers=BROWSER_UA)
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
     items, seen = [], set()
     now = datetime.now(timezone.utc)
     for it in root.iter("item"):
@@ -556,6 +526,43 @@ def quake_headlines(n: int = 6):
         if len(items) >= n:
             break
     return items
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _feeds_bundle():
+    """All three media feeds fetched IN PARALLEL (6s timeouts) so a slow or
+    blocked source never stalls the page for its full timeout serially.
+    Raises when everything failed, so a total outage is never cached."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def safe(fn, *a):
+        try:
+            return fn(*a)
+        except Exception:
+            return []
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_cards = ex.submit(safe, _fetch_gdelt_cards, 8)
+        f_heads = ex.submit(safe, _fetch_gnews, 10)
+        f_reps = ex.submit(safe, _fetch_relief, 5)
+        cards, heads, reps = f_cards.result(), f_heads.result(), f_reps.result()
+    if not (cards or heads or reps):
+        raise RuntimeError("all feeds unavailable")
+    return {"cards": cards, "headlines": heads, "reports": reps}
+
+
+_FEEDS_BACKOFF = {"until": 0.0}
+
+
+def get_feeds():
+    import time
+    if time.time() < _FEEDS_BACKOFF["until"]:
+        return {"cards": [], "headlines": [], "reports": []}
+    try:
+        return _feeds_bundle()
+    except Exception:
+        _FEEDS_BACKOFF["until"] = time.time() + 120
+        return {"cards": [], "headlines": [], "reports": []}
 
 
 def render_ticker(live_df):
@@ -1286,17 +1293,18 @@ if page == "Live Now":
         st.caption("Latest earthquake stories from world media, one card per "
                    "outlet — hover to pause, click to read. Refreshes every "
                    "30 minutes.")
-        cards = quake_news_cards()
+        feeds = get_feeds()
+        cards = feeds["cards"]
         if not cards:
             cards = [{"title": h["title"], "url": h["link"], "img": "",
                       "source": h["source"], "ago": h["ago"]}
-                     for h in quake_headlines(10)]
+                     for h in feeds["headlines"]]
         if cards:
             render_news_rail(cards)
         else:
             st.caption("Headlines unavailable right now — check back shortly.")
 
-        reports = relief_reports()
+        reports = feeds["reports"]
         if reports:
             st.markdown("**Official statements & humanitarian updates**")
             st.caption("From ReliefWeb (UN OCHA) — situation reports and "
