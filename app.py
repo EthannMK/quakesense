@@ -62,8 +62,10 @@ section[data-testid="stSidebar"] * {
 code, pre, kbd, code *, pre * {
   font-family: "Source Code Pro", Consolas, monospace !important;
 }
-span[class*="material-symbols"], [class*="material-icons"] {
+span[class*="material-symbols"], [class*="material-icons"],
+[data-testid="stIconMaterial"] {
   font-family: "Material Symbols Rounded" !important;
+  font-weight: normal !important;
 }
 .qs-wordmark, .qs-subline, .qs-ticker-inner, [data-testid="stMetricValue"] {
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace !important;
@@ -254,10 +256,9 @@ div[data-testid="stPopoverBody"] {min-width: min(400px, 94vw);}
    and give it a proper border - reads like a native map FAB. */
 iframe[title="streamlit_geolocation.streamlit_geolocation"] {
   filter: invert(0.9) hue-rotate(180deg) saturate(0.6);
-  width: 46px !important; height: 46px !important;
-  border-radius: 50% !important; border: 1px solid #263145 !important;
+  width: 52px !important; height: 52px !important;
+  border-radius: 14px !important; border: 1px solid #263145 !important;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-  overflow: hidden;
 }
 
 /* Grab-style help finder */
@@ -450,8 +451,10 @@ def google_places_section(trow, ev):
     st.caption("Powered by Google Maps — starts from you, not the epicenter.")
 
     # -- 1. WHERE YOU ARE (pickup-bar style) ------------------------------
+    # Default: the affected-area town selected above. One tap on the locate
+    # button switches everything to the user's real GPS position.
     with st.container(border=True):
-        lc, sc = st.columns([0.14, 0.86])
+        lc, sc = st.columns([0.12, 0.88])
         with lc:
             loc = None
             try:
@@ -460,28 +463,21 @@ def google_places_section(trow, ev):
             except Exception:
                 pass
         use_me = bool(loc and loc.get("latitude"))
-        if use_me:
-            lat, lon = float(loc["latitude"]), float(loc["longitude"])
-            origin = f"{lat},{lon}"
-            origin_label = "your current location"
-            with sc:
-                st.markdown("🟢 **Your location** — found via GPS")
+        with sc:
+            if use_me:
+                lat, lon = float(loc["latitude"]), float(loc["longitude"])
+                origin = f"{lat},{lon}"
+                origin_label = "your current location"
+                st.markdown("🟢 **Starting from your location** — found via GPS")
                 st.caption("Distances and routes below start from you.")
-        else:
-            with sc:
-                manual = st.text_input(
-                    "Starting point",
-                    value=f"{trow['name']}, {trow['country']}",
-                    key=f"gm_org_{trow['name']}",
-                    label_visibility="collapsed",
-                    help="Tap the target button for GPS, or type any address "
-                         "or place — like setting a pickup point.")
-            lat, lon = float(trow["latitude"]), float(trow["longitude"])
-            origin = (manual.strip() or f"{lat},{lon}") if manual else f"{lat},{lon}"
-            origin_label = (manual.strip() if manual and manual.strip()
-                            else trow["name"])
-            st.caption("⬅ Tap the button for your exact GPS position, or type "
-                       "a starting point above.")
+            else:
+                lat, lon = float(trow["latitude"]), float(trow["longitude"])
+                origin = f"{lat},{lon}"
+                origin_label = f"{trow['name']}, {trow['country']}"
+                st.markdown(f"📍 **Starting from {trow['name']}** — the "
+                            f"affected-area town selected above")
+                st.caption("Tap the locate button to switch to your exact "
+                           "GPS position.")
 
     # -- 2. WHAT YOU NEED (service chips) ---------------------------------
     cat = _chip_pick("What do you need?",
@@ -626,49 +622,6 @@ def _resilient_get(url, params=None, timeout=8):
         r = requests.get(url, params=params, timeout=timeout, headers=BROWSER_UA)
         r.raise_for_status()
         return r
-
-
-def _fetch_gdelt_cards(n: int):
-    r = _resilient_get(
-        "https://api.gdeltproject.org/api/v2/doc/doc",
-        params={"query": "earthquake sourcelang:english", "mode": "ArtList",
-                "format": "json", "maxrecords": 75, "sort": "DateDesc"},
-        timeout=8)
-    body = r.content.decode("utf-8", errors="replace").strip()
-    if not body.startswith("{"):  # GDELT rate-limit notices are plain text
-        raise RuntimeError("GDELT rate limited")
-    import json
-    arts = json.loads(body).get("articles", [])
-    # Major outlets first, keeping GDELT's newest-first order within each tier
-    arts.sort(key=lambda a: not any(m in (a.get("domain") or "")
-                                    for m in MAJOR_OUTLETS))
-    now = datetime.now(timezone.utc)
-    seen_dom, seen_title, out = set(), set(), []
-    for a in arts:
-        img = (a.get("socialimage") or "").strip()
-        title = (a.get("title") or "").strip()
-        url = (a.get("url") or "").strip()
-        dom = (a.get("domain") or "").strip()
-        if not (img.startswith("http") and title and url):
-            continue
-        tkey = _title_key(title)
-        if dom in seen_dom or tkey in seen_title:
-            continue
-        seen_dom.add(dom)
-        seen_title.add(tkey)
-        ago = ""
-        try:
-            dt = datetime.strptime(a["seendate"], "%Y%m%dT%H%M%SZ").replace(
-                tzinfo=timezone.utc)
-            hrs = int((now - dt).total_seconds() // 3600)
-            ago = f"{hrs}h ago" if hrs < 48 else f"{hrs // 24}d ago"
-        except Exception:
-            pass
-        out.append({"title": title, "url": url, "img": img,
-                    "source": dom, "ago": ago})
-        if len(out) >= n:
-            break
-    return out
 
 
 def _fetch_relief(n: int):
@@ -860,31 +813,6 @@ def _fetch_gnews(n: int):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _photo_cards_cached():
-    """Photo cards cache; raises on failure so misses are never cached."""
-    out = _fetch_gdelt_cards(8)
-    if not out:
-        raise RuntimeError("no illustrated articles")
-    return out
-
-
-_PHOTO_BACKOFF = {"until": 0.0}
-
-
-def photo_cards():
-    """Photo cards with a short retry backoff - the auto-refreshing media
-    section keeps retrying until photos arrive, then they stick for 30 min."""
-    import time
-    if time.time() < _PHOTO_BACKOFF["until"]:
-        return []
-    try:
-        return _photo_cards_cached()
-    except Exception:
-        _PHOTO_BACKOFF["until"] = time.time() + 20
-        return []
-
-
-@st.cache_data(ttl=1800, show_spinner=False)
 def _text_feeds_bundle():
     """Headlines + UN reports fetched in parallel; never caches a total miss."""
     from concurrent.futures import ThreadPoolExecutor
@@ -940,17 +868,16 @@ def usgs_event_cards(live_df, n: int = 8):
     return out
 
 
-@st.fragment(run_every=30)
+@st.fragment(run_every=60)
 def media_section(live_df):
-    """Auto-refreshing media block. Content chain guarantees the rail is
-    never empty: world-media photo cards, else headlines, else official
-    USGS event cards from the always-available live feed."""
-    cards = photo_cards()
+    """Media block. Photos are fetched by the visitor's own browser inside
+    the rail component; the server only supplies instant fallback cards -
+    headlines when available, else official USGS event cards from the
+    always-loaded live feed. The rail can never be empty or slow."""
     feeds = text_feeds()
-    if not cards:
-        cards = [{"title": h["title"], "url": h["link"], "img": "",
-                  "source": h["source"], "ago": h["ago"]}
-                 for h in feeds["headlines"]]
+    cards = [{"title": h["title"], "url": h["link"], "img": "",
+              "source": h["source"], "ago": h["ago"]}
+             for h in feeds["headlines"]]
     if not cards:
         cards = usgs_event_cards(live_df)
     news_rail_component(cards)
