@@ -395,7 +395,7 @@ def _fetch_gdelt_cards(n: int):
         "https://api.gdeltproject.org/api/v2/doc/doc",
         params={"query": "earthquake sourcelang:english", "mode": "ArtList",
                 "format": "json", "maxrecords": 75, "sort": "DateDesc"},
-        timeout=6, headers=BROWSER_UA)
+        timeout=8, headers=BROWSER_UA)
     r.raise_for_status()
     body = r.content.decode("utf-8", errors="replace").strip()
     if not body.startswith("{"):  # GDELT rate-limit notices are plain text
@@ -529,10 +529,33 @@ def _fetch_gnews(n: int):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _feeds_bundle():
-    """All three media feeds fetched IN PARALLEL (6s timeouts) so a slow or
-    blocked source never stalls the page for its full timeout serially.
-    Raises when everything failed, so a total outage is never cached."""
+def _photo_cards_cached():
+    """Photo cards cache; raises on failure so misses are never cached."""
+    out = _fetch_gdelt_cards(8)
+    if not out:
+        raise RuntimeError("no illustrated articles")
+    return out
+
+
+_PHOTO_BACKOFF = {"until": 0.0}
+
+
+def photo_cards():
+    """Photo cards with a short retry backoff - the auto-refreshing media
+    section keeps retrying until photos arrive, then they stick for 30 min."""
+    import time
+    if time.time() < _PHOTO_BACKOFF["until"]:
+        return []
+    try:
+        return _photo_cards_cached()
+    except Exception:
+        _PHOTO_BACKOFF["until"] = time.time() + 20
+        return []
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _text_feeds_bundle():
+    """Headlines + UN reports fetched in parallel; never caches a total miss."""
     from concurrent.futures import ThreadPoolExecutor
 
     def safe(fn, *a):
@@ -541,28 +564,53 @@ def _feeds_bundle():
         except Exception:
             return []
 
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        f_cards = ex.submit(safe, _fetch_gdelt_cards, 8)
+    with ThreadPoolExecutor(max_workers=2) as ex:
         f_heads = ex.submit(safe, _fetch_gnews, 10)
         f_reps = ex.submit(safe, _fetch_relief, 5)
-        cards, heads, reps = f_cards.result(), f_heads.result(), f_reps.result()
-    if not (cards or heads or reps):
-        raise RuntimeError("all feeds unavailable")
-    return {"cards": cards, "headlines": heads, "reports": reps}
+        heads, reps = f_heads.result(), f_reps.result()
+    if not (heads or reps):
+        raise RuntimeError("feeds unavailable")
+    return {"headlines": heads, "reports": reps}
 
 
-_FEEDS_BACKOFF = {"until": 0.0}
+_TEXT_BACKOFF = {"until": 0.0}
 
 
-def get_feeds():
+def text_feeds():
     import time
-    if time.time() < _FEEDS_BACKOFF["until"]:
-        return {"cards": [], "headlines": [], "reports": []}
+    if time.time() < _TEXT_BACKOFF["until"]:
+        return {"headlines": [], "reports": []}
     try:
-        return _feeds_bundle()
+        return _text_feeds_bundle()
     except Exception:
-        _FEEDS_BACKOFF["until"] = time.time() + 120
-        return {"cards": [], "headlines": [], "reports": []}
+        _TEXT_BACKOFF["until"] = time.time() + 60
+        return {"headlines": [], "reports": []}
+
+
+@st.fragment(run_every=30)
+def media_section():
+    """Auto-refreshing media block: shows headline cards instantly and swaps
+    in the photo cards on its own as soon as they're available."""
+    cards = photo_cards()
+    feeds = text_feeds()
+    if not cards:
+        cards = [{"title": h["title"], "url": h["link"], "img": "",
+                  "source": h["source"], "ago": h["ago"]}
+                 for h in feeds["headlines"]]
+    if cards:
+        render_news_rail(cards)
+    else:
+        st.caption("Headlines unavailable right now — check back shortly.")
+
+    reports = feeds["reports"]
+    if reports:
+        st.markdown("**Official statements & humanitarian updates**")
+        st.caption("Situation reports and statements from UN agencies, IFRC "
+                   "and governments — via ReliefWeb (UN OCHA).")
+        for rep in reports:
+            meta = " · ".join(x for x in (rep["source"], rep["ago"]) if x)
+            st.markdown(f"- [{rep['title']}]({rep['url']})"
+                        + (f" — *{meta}*" if meta else ""))
 
 
 def render_ticker(live_df):
@@ -1246,8 +1294,7 @@ if page == "Live Now":
 
         cap, dl = st.columns([4, 1])
         cap.caption(f"{len(view)} events shown · size and color scale with magnitude · "
-                    f"faded markers are older · teal markers carry a tsunami flag · "
-                    f"feed refreshes every 5 minutes")
+                    f"faded markers are older · teal markers carry a tsunami flag")
         dl.download_button("Export CSV",
                            view.drop(columns=["color_r", "color_g", "color_b",
                                               "alpha", "radius"]).to_csv(index=False),
@@ -1290,29 +1337,9 @@ if page == "Live Now":
         # ------------------------------------------- global media coverage
         st.divider()
         st.subheader("📺 Global media coverage")
-        st.caption("Latest earthquake stories from world media, one card per "
-                   "outlet — hover to pause, click to read. Refreshes every "
-                   "30 minutes.")
-        feeds = get_feeds()
-        cards = feeds["cards"]
-        if not cards:
-            cards = [{"title": h["title"], "url": h["link"], "img": "",
-                      "source": h["source"], "ago": h["ago"]}
-                     for h in feeds["headlines"]]
-        if cards:
-            render_news_rail(cards)
-        else:
-            st.caption("Headlines unavailable right now — check back shortly.")
-
-        reports = feeds["reports"]
-        if reports:
-            st.markdown("**Official statements & humanitarian updates**")
-            st.caption("From ReliefWeb (UN OCHA) — situation reports and "
-                       "statements by UN agencies, IFRC, and governments.")
-            for rep in reports:
-                meta = " · ".join(x for x in (rep["source"], rep["ago"]) if x)
-                st.markdown(f"- [{rep['title']}]({rep['url']})"
-                            + (f" — *{meta}*" if meta else ""))
+        st.caption("Latest earthquake coverage from world media — click a "
+                   "card to read the full story.")
+        media_section()
 
         quick_ask(f"Live Now world map (past 7 days); selected event: {pick}", live)
 
