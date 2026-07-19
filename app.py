@@ -309,23 +309,62 @@ def places_search(query: str, lat: float, lon: float, n: int = 8):
 
 
 def google_places_section(trow, ev):
-    """Google Maps-powered help finder: free-text search like on Google Maps,
-    Gemini's prioritization, and per-result live Directions/ETA links."""
+    """Google Maps-powered help finder: routes start from the USER's real
+    device location (with permission) - or any typed starting point, like
+    Grab - never from the epicenter. Shows nearest facilities with contacts,
+    Gemini's recommendation, and an embedded route with ETA."""
     from urllib.parse import quote
-    lat, lon = float(trow["latitude"]), float(trow["longitude"])
     st.markdown("**Find help — powered by Google Maps**")
-    query = st.text_input(
-        "Search like on Google Maps",
-        value=f"hospitals near {trow['name']}",
-        key=f"gm_q_{trow['name']}",
-        help="Anything works: 'emergency room', 'pharmacy open now', "
-             "'evacuation shelter', a facility name...")
+
+    lc, sc = st.columns([0.22, 0.78])
+    with lc:
+        st.caption("📍 Use my location")
+        loc = None
+        try:
+            from streamlit_geolocation import streamlit_geolocation
+            loc = streamlit_geolocation()
+        except Exception:
+            pass
+    use_me = bool(loc and loc.get("latitude"))
+    if use_me:
+        lat, lon = float(loc["latitude"]), float(loc["longitude"])
+        origin = f"{lat},{lon}"
+        origin_label = "your current location"
+        with sc:
+            st.caption(f"✅ Using your device location — distances and routes "
+                       f"start from you.")
+    else:
+        with sc:
+            manual = st.text_input(
+                "Starting point", value=f"{trow['name']}, {trow['country']}",
+                key=f"gm_org_{trow['name']}",
+                help="Tap the location button to use your device position, or "
+                     "type any address or place — just like Google Maps.")
+        lat, lon = float(trow["latitude"]), float(trow["longitude"])
+        origin = (manual.strip() or f"{lat},{lon}") if manual else f"{lat},{lon}"
+        origin_label = manual.strip() if manual and manual.strip() else trow["name"]
+
+    k1, k2 = st.columns([0.4, 0.6])
+    with k1:
+        cat = st.selectbox("What do you need",
+                           ["Hospitals", "Fire stations", "Police",
+                            "Pharmacies", "Shelters", "Custom search"],
+                           key=f"gm_cat_{trow['name']}")
+    query = cat.lower()
+    if cat == "Custom search":
+        with k2:
+            query = st.text_input(
+                "Search like on Google Maps", value="emergency room",
+                key=f"gm_q_{trow['name']}",
+                help="Anything works: 'clinic open now', 'evacuation shelter', "
+                     "a facility name...")
+
     if query.strip():
         try:
             places = places_search(query.strip(), lat, lon)
         except Exception as e:
             places = []
-            st.warning(f"Google Places unavailable ({str(e)[:60]}).")
+            st.warning(f"Google Places unavailable ({str(e)[:80]}).")
         if places:
             for p in places[:6]:
                 open_tag = " · 🟢 open now" if p["open"] else (
@@ -335,24 +374,46 @@ def google_places_section(trow, ev):
                            f"&destination={p['lat']},{p['lon']}")
                 st.markdown(
                     f"**{p['name']}** — {p['km']:.1f} km{open_tag}{phone}  \n"
-                    f"{p['addr']} · [🧭 Directions & live ETA]({dir_url})")
-            st.caption("Directions open in Google Maps with your real location "
-                       "and live-traffic arrival time.")
+                    f"{p['addr']} · [🧭 Open in Google Maps]({dir_url})")
             if st.button("✦ Ask Gemini: where should I go first?",
-                         key=f"gm_terra_{trow['name']}"):
+                         key=f"gm_gem_{trow['name']}"):
                 fac_lines = "\n".join(
                     f"{p['name']} | {p['addr']} | {p['phone'] or 'no phone'} | "
                     f"{p['km']:.1f} km | {'open' if p['open'] else 'unknown/closed'}"
                     for p in places[:6])
                 ctx = (f"M{ev['mag']:.1f} earthquake near {ev['place']}; "
-                       f"user is in {trow['name']}, {trow['country']}"
-                       if ev else f"user is in {trow['name']}")
+                       f"user is at {origin_label}"
+                       if ev else f"user is at {origin_label}")
                 with st.spinner("Gemini weighing the options..."):
                     st.markdown(prioritize_facilities(ctx, fac_lines))
-        components.iframe(
-            f"https://www.google.com/maps/embed/v1/search?key={MAPS_API_KEY}"
-            f"&q={quote(query.strip())}&center={lat},{lon}&zoom=12",
-            height=380)
+
+            st.markdown("**Route & arrival time**")
+            r1, r2 = st.columns([0.62, 0.38])
+            with r1:
+                dest_ix = st.selectbox(
+                    "Destination", range(len(places[:6])),
+                    format_func=lambda i: f"{places[i]['name']} "
+                                          f"({places[i]['km']:.1f} km)",
+                    key=f"gm_dest_{trow['name']}")
+            with r2:
+                mode = st.selectbox("Travel mode",
+                                    ["driving", "walking", "bicycling"],
+                                    key=f"gm_mode_{trow['name']}")
+            dest = places[dest_ix]
+            components.iframe(
+                f"https://www.google.com/maps/embed/v1/directions"
+                f"?key={MAPS_API_KEY}&origin={quote(origin)}"
+                f"&destination={dest['lat']},{dest['lon']}&mode={mode}",
+                height=380)
+            st.caption("The map shows the route and estimated arrival time. "
+                       "For live turn-by-turn navigation, use the "
+                       "'Open in Google Maps' link on any result.")
+        else:
+            components.iframe(
+                f"https://www.google.com/maps/embed/v1/search"
+                f"?key={MAPS_API_KEY}&q={quote(query.strip())}"
+                f"&center={lat},{lon}&zoom=12",
+                height=380)
 
 
 @st.cache_data(show_spinner=False)
