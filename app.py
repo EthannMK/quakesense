@@ -22,6 +22,7 @@ from src.ai import (situation_briefing, smart_ask, explain_anomaly,
                     log_feedback, prioritize_facilities)
 from src.config import MAPS_API_KEY
 from src.anomaly import detect
+from src.i18n import t, LANGS, NATIVE_NAME, ensure_language
 from src.live_feed import fetch_live, significant_events, PAGER_LABEL
 
 EMERGENCY_NUMBERS = {
@@ -45,6 +46,108 @@ EMERGENCY_NUMBERS = {
 
 st.set_page_config(page_title="QuakeSense - Global real-time earthquake intelligence",
                    page_icon=":material/earthquake:", layout="wide")
+
+# ----------------------------------------------------------------- themes --
+# Three complete palettes. Every color in the CSS below reads from the CSS
+# variables injected here, and Streamlit's own widget theme is kept in sync
+# at runtime - so switching the mode restyles the entire app instantly.
+THEMES = {
+    "dark": {
+        "base": "dark", "bg": "#0d1321", "panel": "#161e2e",
+        "panel_hi": "#1a2333", "panel_deep": "#141b28",
+        "border": "#263145", "border_hi": "#34435c",
+        "text": "#dbe2ec", "muted": "#8fa0b5",
+        "accent": "#e08850", "accent_hi": "#eda06b", "on_accent": "#0d1321",
+        "blue": "#45b3e6", "green": "#6fae7f", "red": "#ff6b61",
+        "accent_soft": "rgba(224,136,80,0.13)",
+        "glow1": "rgba(224,136,80,0.07)", "glow2": "rgba(69,179,230,0.05)",
+        "shadow": "0 6px 20px rgba(0,0,0,0.35)", "map_style": "dark",
+    },
+    "light": {
+        "base": "light", "bg": "#f6f7fa", "panel": "#ffffff",
+        "panel_hi": "#fbfcfe", "panel_deep": "#eef1f6",
+        "border": "#dfe4ed", "border_hi": "#c2cbda",
+        "text": "#22293a", "muted": "#5f6b7e",
+        "accent": "#cf6b2a", "accent_hi": "#b95c1e", "on_accent": "#ffffff",
+        "blue": "#1d7fb5", "green": "#3d8a52", "red": "#cf4338",
+        "accent_soft": "rgba(207,107,42,0.12)",
+        "glow1": "rgba(207,107,42,0.06)", "glow2": "rgba(29,127,181,0.05)",
+        "shadow": "0 6px 18px rgba(25,35,60,0.10)", "map_style": "light",
+    },
+    "warm": {
+        "base": "light", "bg": "#f1eadb", "panel": "#faf5e9",
+        "panel_hi": "#fffdf4", "panel_deep": "#eae1cd",
+        "border": "#d8cbae", "border_hi": "#bfad8a",
+        "text": "#3d3428", "muted": "#7d6f59",
+        "accent": "#9c6237", "accent_hi": "#7f4c26", "on_accent": "#fffdf4",
+        "blue": "#4a7d8c", "green": "#6d7f4e", "red": "#b0563c",
+        "accent_soft": "rgba(156,98,55,0.14)",
+        "glow1": "rgba(156,98,55,0.08)", "glow2": "rgba(74,125,140,0.06)",
+        "shadow": "0 6px 18px rgba(80,60,30,0.12)", "map_style": "light",
+    },
+}
+
+# First visit: read prefs from the URL (?theme=...&lang=...) so a refresh or
+# a shared link keeps the choice; otherwise defaults + the welcome dialog.
+if "ui_theme" not in st.session_state:
+    _qp_theme = st.query_params.get("theme", "")
+    _qp_lang = st.query_params.get("lang", "")
+    st.session_state.ui_theme = _qp_theme if _qp_theme in THEMES else "dark"
+    st.session_state.ui_lang = _qp_lang or "English"
+    st.session_state.onboarded = bool(_qp_theme or _qp_lang)
+    # Carried across the hard reload a theme/language change triggers below,
+    # so switching the display mode doesn't also bounce you back to Live Now.
+    st.session_state.ui_page = st.query_params.get("page", "")
+
+PAL = THEMES.get(st.session_state.ui_theme, THEMES["dark"])
+
+# Keep Streamlit's own widget theme (inputs, menus, dataframes, chat) in
+# sync. Each key is set independently - one failing must not silently skip
+# the rest (they used to share one try/except). NOTE: this only reliably
+# reaches the CURRENT connection on this same rerun; it does NOT retroactively
+# restyle native widgets that the browser already painted with the old theme,
+# which is why an explicit theme/language change forces a real reload below
+# (_hard_reload) instead of a plain st.rerun().
+try:
+    from streamlit import config as _st_config
+except Exception:
+    _st_config = None
+if _st_config is not None:
+    for _k, _v in (("theme.base", PAL["base"]),
+                   ("theme.backgroundColor", PAL["bg"]),
+                   ("theme.secondaryBackgroundColor", PAL["panel"]),
+                   ("theme.textColor", PAL["text"]),
+                   ("theme.primaryColor", PAL["accent"])):
+        try:
+            if _st_config.get_option(_k) != _v:
+                _st_config.set_option(_k, _v)
+        except Exception:
+            pass
+
+
+def _hard_reload():
+    """Force a full browser reconnect (new WebSocket session) instead of a
+    same-connection st.rerun(). Streamlit bakes native widget colors -
+    selectbox highlights, checkboxes, chat input, dataframe accents - into
+    the browser tab once, at the first connection; changing theme.* config
+    mid-session doesn't reliably repaint them, so they snap back to the
+    original theme the moment anything else re-renders (e.g. switching
+    sections). The preference was already written to st.query_params by
+    _set_pref(), so the fresh connection reads it straight back on boot."""
+    components.html(
+        "<script>parent.window.location.reload();</script>", height=0)
+    st.stop()
+
+st.markdown("<style>:root {" + "".join(
+    f"--qs-{k.replace('_', '-')}: {v};" for k, v in PAL.items()
+    if k not in ("base", "map_style")) + "}</style>", unsafe_allow_html=True)
+
+# Custom (non-core) language chosen? Batch-translate the UI once via Gemini.
+if st.session_state.ui_lang not in LANGS:
+    with st.spinner(f"Translating interface to {st.session_state.ui_lang}..."):
+        if not ensure_language(st.session_state.ui_lang):
+            st.toast(f"Could not translate to {st.session_state.ui_lang} - "
+                     "showing English.", icon="⚠️")
 
 # ------------------------------------------------------------------ style --
 st.markdown("""
@@ -71,6 +174,30 @@ span[class*="material-symbols"], [class*="material-icons"],
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace !important;
 }
 
+/* Layered atmosphere: faint warm + cool glows over the base color */
+[data-testid="stAppViewContainer"] {
+  background:
+    radial-gradient(1100px 480px at 85% -12%, var(--qs-glow1), transparent 60%),
+    radial-gradient(900px 420px at 8% -10%, var(--qs-glow2), transparent 55%),
+    var(--qs-bg);
+}
+
+/* Themed scrollbars */
+::-webkit-scrollbar {width: 10px; height: 10px;}
+::-webkit-scrollbar-track {background: transparent;}
+::-webkit-scrollbar-thumb {
+  background: var(--qs-border); border-radius: 8px;
+  border: 2px solid var(--qs-bg);
+}
+::-webkit-scrollbar-thumb:hover {background: var(--qs-border-hi);}
+
+/* Gentle page entrance */
+.block-container {animation: qs-fade 0.35s ease-out;}
+@keyframes qs-fade {
+  from {opacity: 0; transform: translateY(5px);}
+  to {opacity: 1; transform: none;}
+}
+
 /* Type scale */
 h1, h2, h3 {font-weight: 600; letter-spacing: -0.01em;}
 .block-container h2 {font-size: 1.3rem;}
@@ -78,35 +205,53 @@ h1, h2, h3 {font-weight: 600; letter-spacing: -0.01em;}
 [data-testid="stCaptionContainer"], .stCaption {line-height: 1.45;}
 
 /* Controls: uniform radius, weight, focus */
-.stButton button, [data-testid="stBaseButton-secondary"] {
+.stButton button, [data-testid="stBaseButton-secondary"],
+[data-testid="stDownloadButton"] button {
   border-radius: 8px; font-weight: 600;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s,
+              transform 0.15s;
+}
+.stButton button:hover, [data-testid="stDownloadButton"] button:hover {
+  border-color: var(--qs-accent);
 }
 [data-testid="stButtonGroup"] button {border-radius: 999px; font-weight: 600;}
-hr {margin: 1.1rem 0 0.9rem 0;}
+hr {margin: 1.1rem 0 0.9rem 0; border-color: var(--qs-border);}
+
+/* Surfaces: expanders, dataframes, alerts share one card language */
+[data-testid="stExpander"] {
+  border: 1px solid var(--qs-border); border-radius: 10px;
+  background: var(--qs-panel);
+}
+[data-testid="stExpander"] summary {border-radius: 10px;}
+[data-testid="stDataFrame"] {
+  border: 1px solid var(--qs-border); border-radius: 10px; overflow: hidden;
+}
+[data-testid="stAlert"] {border-radius: 10px;}
 
 /* Chat: card-style message bubbles */
 [data-testid="stChatMessage"] {
-  background: #141b28; border: 1px solid #1d2637; border-radius: 12px;
-  padding: 0.85rem 1rem; margin-bottom: 0.45rem;
+  background: var(--qs-panel-deep); border: 1px solid var(--qs-border);
+  border-radius: 14px; padding: 0.85rem 1rem; margin-bottom: 0.45rem;
 }
 
 /* Sidebar nav: hover + active states */
 section[data-testid="stSidebar"] .stRadio label {
   padding: 5px 8px; border-radius: 8px; transition: background 0.12s;
 }
-section[data-testid="stSidebar"] .stRadio label:hover {background: #161e2e;}
+section[data-testid="stSidebar"] .stRadio label:hover {background: var(--qs-panel);}
 section[data-testid="stSidebar"] .stRadio label:has(input:checked) {
-  background: #161e2e;
+  background: linear-gradient(90deg, var(--qs-accent-soft), transparent 85%);
+  box-shadow: inset 3px 0 0 var(--qs-accent);
 }
 
-/* Messenger panel send button: light blue, filled on hover */
+/* Messenger panel send button: accent-blue, filled on hover */
 div[data-testid="stPopoverBody"] [data-testid="stBaseButton-secondaryFormSubmit"] {
-  color: #45b3e6 !important; border-color: #2a3c52 !important;
+  color: var(--qs-blue) !important; border-color: var(--qs-border-hi) !important;
   border-radius: 10px; font-weight: 700; font-size: 1.05rem;
 }
 div[data-testid="stPopoverBody"] [data-testid="stBaseButton-secondaryFormSubmit"]:hover {
-  background: #45b3e6 !important; color: #0d1321 !important;
-  border-color: #45b3e6 !important;
+  background: var(--qs-blue) !important; color: var(--qs-bg) !important;
+  border-color: var(--qs-blue) !important;
 }
 /* ================================================== */
 
@@ -130,55 +275,86 @@ div[data-testid="stPopoverBody"] [data-testid="stBaseButton-secondaryFormSubmit"
 .block-container {padding-top: 1.0rem; padding-bottom: 1.5rem;}
 
 .qs-header {
-  border-bottom: 1px solid #263145;
+  border-bottom: 1px solid var(--qs-border); position: relative;
   padding: 0 0 0.8rem 0; margin-bottom: 0.3rem;
+}
+.qs-header::after {
+  content: ""; position: absolute; bottom: -1px; left: 0;
+  width: 190px; height: 2px;
+  background: linear-gradient(90deg, var(--qs-accent), transparent);
 }
 .qs-wordmark {
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
   font-size: 1.6rem; font-weight: 600; letter-spacing: 0.10em;
-  color: #dbe2ec; margin: 0;
+  color: var(--qs-text); margin: 0;
 }
-.qs-wordmark span {color: #e08850;}
+.qs-wordmark span {
+  background: linear-gradient(120deg, var(--qs-accent), var(--qs-accent-hi));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
 .qs-subline {
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
   font-size: 0.70rem; letter-spacing: 0.18em; text-transform: uppercase;
-  color: #8fa0b5; margin-top: 0.25rem;
+  color: var(--qs-muted); margin-top: 0.25rem;
 }
 .qs-live {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-  background: #6fae7f; margin-right: 6px;
+  background: var(--qs-green); margin-right: 6px;
+  animation: qs-pulse 2.2s ease-out infinite;
+}
+@keyframes qs-pulse {
+  0% {box-shadow: 0 0 0 0 rgba(111, 174, 127, 0.5);}
+  70% {box-shadow: 0 0 0 7px rgba(111, 174, 127, 0);}
+  100% {box-shadow: 0 0 0 0 rgba(111, 174, 127, 0);}
 }
 
 [data-testid="stMetric"] {
-  background: #161e2e; border: 1px solid #263145; border-radius: 6px;
-  padding: 12px 14px 9px 14px;
+  background: linear-gradient(180deg, var(--qs-panel-hi), var(--qs-panel));
+  border: 1px solid var(--qs-border); border-radius: 10px;
+  padding: 12px 14px 9px 14px; position: relative; overflow: hidden;
+  transition: border-color 0.15s;
 }
+[data-testid="stMetric"]::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--qs-accent-soft) 30%,
+              var(--qs-accent) 50%, var(--qs-accent-soft) 70%, transparent);
+  opacity: 0.7;
+}
+[data-testid="stMetric"]:hover {border-color: var(--qs-border-hi);}
 [data-testid="stMetricLabel"] p {
   font-size: 0.67rem !important; letter-spacing: 0.12em;
-  text-transform: uppercase; color: #8fa0b5 !important;
+  text-transform: uppercase; color: var(--qs-muted) !important;
 }
 [data-testid="stMetricValue"] {
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
   font-variant-numeric: tabular-nums; font-size: 1.65rem !important;
 }
 
-h2, h3 {letter-spacing: 0.01em; color: #dbe2ec;}
-section[data-testid="stSidebar"] {border-right: 1px solid #263145;}
+h2, h3 {letter-spacing: 0.01em; color: var(--qs-text);}
+section[data-testid="stSidebar"] {border-right: 1px solid var(--qs-border);}
 section[data-testid="stSidebar"] .stRadio label p {font-size: 0.90rem;}
 
 .qs-credit {
   font-size: 0.68rem; letter-spacing: 0.10em; text-transform: uppercase;
-  color: #8fa0b5; margin-bottom: 0.15rem;
+  color: var(--qs-muted); margin-bottom: 0.15rem;
 }
-.qs-credit-items {font-size: 0.76rem; color: #c3cede; line-height: 1.5; margin-bottom: 0.55rem;}
+.qs-credit-items {font-size: 0.76rem; color: var(--qs-text); opacity: 0.85;
+                  line-height: 1.5; margin-bottom: 0.55rem;}
 .qs-sidebar-bottom {
   margin-top: 2.2rem; padding: 0.8rem 0 0.4rem 0;
-  border-top: 1px solid #263145;
+  border-top: 1px solid var(--qs-border);
 }
-.qs-team {font-size: 0.72rem; color: #8fa0b5; margin-top: 0.4rem;}
+.qs-team {font-size: 0.72rem; color: var(--qs-muted); margin-top: 0.4rem;}
 
 .stButton button[kind="primary"] {
-  letter-spacing: 0.06em; font-weight: 600; border-radius: 4px;
+  letter-spacing: 0.06em; font-weight: 600; border-radius: 8px;
+  background: linear-gradient(135deg, var(--qs-accent), var(--qs-accent-hi));
+  border: none; color: var(--qs-on-accent);
+  box-shadow: 0 2px 10px var(--qs-accent-soft);
+}
+.stButton button[kind="primary"]:hover {
+  filter: brightness(1.07); transform: translateY(-1px);
+  box-shadow: 0 4px 16px var(--qs-accent-soft);
 }
 
 /* Floating quick-ask popup (bottom-right on every relevant page) */
@@ -189,31 +365,40 @@ div[data-testid="stPopover"] {
 button[data-testid="stPopoverButton"] {
   width: auto !important; border-radius: 999px !important;
   padding: 0.5rem 1.15rem; font-weight: 600;
-  background: #e08850 !important; color: #0d1321 !important;
-  border: none !important; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  background: linear-gradient(135deg, var(--qs-accent), var(--qs-accent-hi)) !important;
+  color: var(--qs-on-accent) !important;
+  border: none !important; box-shadow: var(--qs-shadow);
+  transition: transform 0.15s, box-shadow 0.15s;
 }
 button[data-testid="stPopoverButton"]:hover {
-  background: #eda06b !important; color: #0d1321 !important;
+  color: var(--qs-on-accent) !important; filter: brightness(1.08);
+  transform: translateY(-2px);
 }
 div[data-testid="stPopoverBody"] {min-width: min(400px, 94vw);}
 [data-stale="true"] div[data-testid="stPopover"] {display: none !important;}
 
 /* Live event ticker under the header */
 .qs-ticker {
-  overflow: hidden; white-space: nowrap; border: 1px solid #263145;
-  border-radius: 6px; background: #161e2e; padding: 0.35rem 0;
+  overflow: hidden; white-space: nowrap; border: 1px solid var(--qs-border);
+  border-radius: 8px; background: var(--qs-panel); padding: 0.35rem 0;
   margin: 0.35rem 0 0.75rem 0; position: relative;
 }
+.qs-ticker::before, .qs-ticker::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 34px;
+  z-index: 1; pointer-events: none;
+}
+.qs-ticker::before {left: 0; background: linear-gradient(90deg, var(--qs-panel), transparent);}
+.qs-ticker::after {right: 0; background: linear-gradient(270deg, var(--qs-panel), transparent);}
 .qs-ticker-inner {
   display: inline-block; padding-left: 100%;
   animation: qs-scroll 60s linear infinite;
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
-  font-size: 0.78rem; color: #c3cede;
+  font-size: 0.78rem; color: var(--qs-text);
 }
 .qs-ticker:hover .qs-ticker-inner {animation-play-state: paused;}
-.qs-ticker .m6 {color: #e08850; font-weight: 600;}
-.qs-ticker .alrt {color: #ff6b61; font-weight: 700;}
-.qs-ticker .tsu {color: #45b3e6; font-weight: 600;}
+.qs-ticker .m6 {color: var(--qs-accent); font-weight: 600;}
+.qs-ticker .alrt {color: var(--qs-red); font-weight: 700;}
+.qs-ticker .tsu {color: var(--qs-blue); font-weight: 600;}
 @keyframes qs-scroll {
   0% {transform: translateX(0);}
   100% {transform: translateX(-100%);}
@@ -228,28 +413,30 @@ div[data-testid="stPopoverBody"] {min-width: min(400px, 94vw);}
 .qs-newsrail:hover .qs-newsrail-inner {animation-play-state: paused;}
 @keyframes qs-rail {0% {transform: translateX(0);} 100% {transform: translateX(-50%);}}
 .qs-newscard {
-  flex: 0 0 250px; background: #161e2e; border: 1px solid #263145;
-  border-radius: 8px; overflow: hidden; text-decoration: none !important;
-  transition: border-color 0.15s;
+  flex: 0 0 250px; background: var(--qs-panel); border: 1px solid var(--qs-border);
+  border-radius: 10px; overflow: hidden; text-decoration: none !important;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
 }
-.qs-newscard:hover {border-color: #e08850;}
+.qs-newscard:hover {border-color: var(--qs-accent); transform: translateY(-2px);
+                    box-shadow: var(--qs-shadow);}
 .qs-newsimg {height: 118px; background-size: cover; background-position: center;
-             background-color: #263145;}
+             background-color: var(--qs-panel-deep); transition: transform 0.25s;}
+.qs-newscard:hover .qs-newsimg {transform: scale(1.04);}
 .qs-newsmono {height: 118px; display: flex; align-items: center;
-              justify-content: center; background: #263145;
+              justify-content: center; background: var(--qs-panel-deep);
               font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
-              font-size: 36px; font-weight: 600; color: #e08850;}
+              font-size: 36px; font-weight: 600; color: var(--qs-accent);}
 .qs-newstxt {display: flex; flex-direction: column; gap: 4px; padding: 8px 10px 10px 10px;}
-.qs-newssrc {font-size: 0.66rem; color: #8fa0b5; text-transform: uppercase;
+.qs-newssrc {font-size: 0.66rem; color: var(--qs-muted); text-transform: uppercase;
              letter-spacing: 0.06em;}
-.qs-newstitle {font-size: 0.8rem; color: #dbe2ec; line-height: 1.35;
+.qs-newstitle {font-size: 0.8rem; color: var(--qs-text); line-height: 1.35;
                white-space: normal;}
 
-/* Chat input: light-blue send icon */
-[data-testid="stChatInput"] button {color: #45b3e6 !important;}
-[data-testid="stChatInput"] button svg {fill: #45b3e6 !important;}
-[data-testid="stChatInput"] button:hover {color: #e08850 !important;}
-[data-testid="stChatInput"] button:hover svg {fill: #e08850 !important;}
+/* Chat input: accent-blue send icon */
+[data-testid="stChatInput"] button {color: var(--qs-blue) !important;}
+[data-testid="stChatInput"] button svg {fill: var(--qs-blue) !important;}
+[data-testid="stChatInput"] button:hover {color: var(--qs-accent) !important;}
+[data-testid="stChatInput"] button:hover svg {fill: var(--qs-accent) !important;}
 
 /* GPS button: sized here; its internal styling is injected directly into
    the component (same-origin) by _style_gps_component() */
@@ -269,38 +456,40 @@ div[data-testid="stPopoverBody"] {max-height: 85vh; overflow-y: auto;}
 
 /* Grab-style help finder */
 .qs-fac {
-  display: flex; gap: 12px; align-items: center; background: #161e2e;
-  border: 1px solid #263145; border-radius: 12px; padding: 10px 14px;
-  margin-bottom: 8px; transition: border-color 0.15s;
+  display: flex; gap: 12px; align-items: center; background: var(--qs-panel);
+  border: 1px solid var(--qs-border); border-radius: 12px; padding: 10px 14px;
+  margin-bottom: 8px;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
 }
-.qs-fac:hover {border-color: #e08850;}
+.qs-fac:hover {border-color: var(--qs-accent); transform: translateY(-1px);
+               box-shadow: var(--qs-shadow);}
 .qs-fac-ic {
-  width: 42px; height: 42px; border-radius: 50%; background: #263145;
+  width: 42px; height: 42px; border-radius: 50%; background: var(--qs-panel-deep);
   display: flex; align-items: center; justify-content: center;
   font-size: 20px; flex: 0 0 42px;
 }
 .qs-fac-main {flex: 1; min-width: 0;}
-.qs-fac-name {color: #dbe2ec; font-weight: 600; font-size: 0.92rem;}
-.qs-fac-addr {color: #8fa0b5; font-size: 0.78rem; margin-top: 1px;}
+.qs-fac-name {color: var(--qs-text); font-weight: 600; font-size: 0.92rem;}
+.qs-fac-addr {color: var(--qs-muted); font-size: 0.78rem; margin-top: 1px;}
 .qs-fac-actions {display: flex; gap: 14px; margin-top: 5px;}
 .qs-fac-actions a {
-  font-size: 0.8rem; color: #45b3e6; text-decoration: none; font-weight: 600;
+  font-size: 0.8rem; color: var(--qs-blue); text-decoration: none; font-weight: 600;
 }
-.qs-fac-actions a:hover {color: #e08850;}
+.qs-fac-actions a:hover {color: var(--qs-accent);}
 .qs-fac-meta {
   display: flex; flex-direction: column; align-items: flex-end; gap: 5px;
   flex: 0 0 auto;
 }
 .qs-km {
-  background: #263145; color: #e08850; font-weight: 600;
+  background: var(--qs-accent-soft); color: var(--qs-accent); font-weight: 600;
   border-radius: 999px; padding: 2px 10px; font-size: 0.76rem;
   white-space: nowrap;
 }
-.qs-open {color: #6fae7f; font-size: 0.72rem; white-space: nowrap;}
-.qs-closed {color: #ff6b61; font-size: 0.72rem; white-space: nowrap;}
-.qs-trip {font-size: 0.85rem; color: #dbe2ec; line-height: 1.9;}
-.qs-trip .dotA {color: #6fae7f;} .qs-trip .dotB {color: #ff6b61;}
-.qs-trip .leg {color: #8fa0b5; padding-left: 0.32rem;}
+.qs-open {color: var(--qs-green); font-size: 0.72rem; white-space: nowrap;}
+.qs-closed {color: var(--qs-red); font-size: 0.72rem; white-space: nowrap;}
+.qs-trip {font-size: 0.85rem; color: var(--qs-text); line-height: 1.9;}
+.qs-trip .dotA {color: var(--qs-green);} .qs-trip .dotB {color: var(--qs-red);}
+.qs-trip .leg {color: var(--qs-muted); padding-left: 0.32rem;}
 
 /* Small screens: tighten spacing so phones get a clean layout */
 @media (max-width: 640px) {
@@ -322,6 +511,13 @@ div[data-testid="stPopoverBody"] {max-height: 85vh; overflow-y: auto;}
   .qs-newscard {flex: 0 0 210px;}
   .qs-newsimg, .qs-newsmono {height: 100px;}
   iframe {max-width: 100%;}
+}
+
+/* Respect users who ask for less motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important; transition: none !important;
+  }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -390,16 +586,6 @@ def logo_b64() -> str:
 
 AVATARS = {"user": "🧑", "assistant": os.path.join("assets", "gemini.png")}
 
-BOT_INTRO = (
-    "Hi, I'm **Terra** ✦ — QuakeSense's AI assistant, powered by Google's "
-    "Gemini 2.5 Flash on Vertex AI.\n\n"
-    "I can help you with:\n"
-    "- **What you're seeing** on this page — any event, number, or alert\n"
-    "- **Any earthquake question**, in your own language\n"
-    "- **Finding help**: nearest hospitals, fire & police stations and national "
-    "emergency numbers are in the **Response Toolkit**\n\n"
-    "What would you like to know?")
-
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def places_search(query: str, lat: float, lon: float, n: int = 8):
@@ -466,11 +652,8 @@ def offline_library():
     """Curated official PDFs (visual guides: protection, first aid,
     preparedness) - meant to be downloaded BEFORE disaster strikes, when
     networks still work, then read offline. Two-column responsive grid."""
-    st.markdown("##### 📥 Offline library — download before you need it")
-    st.caption("Official illustrated publications from the American Red "
-               "Cross, FEMA, USGS, Ready.gov and the Earthquake Country "
-               "Alliance. Save them to your phone now — they open without "
-               "internet when networks go down.")
+    st.markdown(f"##### {t('offline_h')}")
+    st.caption(t("offline_cap"))
     rows = []
     for d in OFFLINE_DOCS:
         rows.append(
@@ -492,13 +675,15 @@ CAT_ICONS = {"Hospitals": "🏥", "Fire stations": "🚒", "Police": "👮",
              "Pharmacies": "💊", "Shelters": "⛺", "Custom search": "🔍"}
 
 
-def _chip_pick(label, options, key, default=None):
-    """Grab-style chips (st.pills), selectbox fallback on old Streamlit."""
+def _chip_pick(label, options, key, default=None, fmt=None):
+    """Grab-style chips (st.pills), selectbox fallback on old Streamlit.
+    `fmt` renders translated labels while the returned value stays canonical."""
+    fmt = fmt or (lambda o: o)
     if hasattr(st, "pills"):
         val = st.pills(label, options, key=key,
-                       default=default or options[0])
+                       default=default or options[0], format_func=fmt)
         return val or default or options[0]
-    return st.selectbox(label, options, key=key)
+    return st.selectbox(label, options, key=key, format_func=fmt)
 
 
 def _style_gps_component():
@@ -513,15 +698,15 @@ const css = `
               display:flex; align-items:center; justify-content:center;}
   button {
     width: 44px !important; height: 44px !important;
-    background: #161e2e !important; border: 1px solid #263145 !important;
+    background: __PANEL__ !important; border: 1px solid __BORDER__ !important;
     border-radius: 12px !important; cursor: pointer !important;
     display: flex !important; align-items: center !important;
     justify-content: center !important; padding: 0 !important;
     transition: border-color 0.15s !important;
   }
-  button:hover {border-color: #e08850 !important; background: #1b2434 !important;}
-  button svg, button svg * {stroke: #e08850 !important; fill: #e08850 !important;}
-  button span, button div {color: #e08850 !important;}
+  button:hover {border-color: __ACCENT__ !important; background: __PANELHI__ !important;}
+  button svg, button svg * {stroke: __ACCENT__ !important; fill: __ACCENT__ !important;}
+  button span, button div {color: __ACCENT__ !important;}
 `;
 function inject() {
   try {
@@ -539,15 +724,18 @@ function inject() {
 }
 inject();
 setInterval(inject, 700);
-</script>""", height=0)
+</script>""".replace("__PANEL__", PAL["panel"])
+   .replace("__PANELHI__", PAL["panel_hi"])
+   .replace("__BORDER__", PAL["border"])
+   .replace("__ACCENT__", PAL["accent"]), height=0)
 
 
 def google_places_section(trow, ev):
     """Grab-style help finder. Top to bottom, one decision per row:
     where you are -> what you need -> pick from cards -> route with ETA."""
     from urllib.parse import quote
-    st.markdown("##### ⛑️ Find help")
-    st.caption("Powered by Google Maps — starts from you, not the epicenter.")
+    st.markdown(f"##### {t('find_h')}")
+    st.caption(t("find_cap"))
     _style_gps_component()
 
     # -- 1. WHERE YOU ARE (pickup-bar style) ------------------------------
@@ -569,25 +757,25 @@ def google_places_section(trow, ev):
                 lat, lon = float(loc["latitude"]), float(loc["longitude"])
                 origin = f"{lat},{lon}"
                 origin_label = "your current location"
-                st.markdown("**Your location:** 🟢 device GPS")
+                st.markdown(f"**{t('your_loc')}** {t('gps_dev')}")
             else:
                 lat, lon = float(trow["latitude"]), float(trow["longitude"])
                 origin = f"{lat},{lon}"
                 origin_label = f"{trow['name']}, {trow['country']}"
-                st.markdown(f"**Your location:** {trow['name']}, "
+                st.markdown(f"**{t('your_loc')}** {trow['name']}, "
                             f"{trow['country']}")
-                st.caption("Tap ◎ to use your device GPS instead.")
+                st.caption(t("gps_hint"))
 
     # -- 2. WHAT YOU NEED (service chips) ---------------------------------
-    cat = _chip_pick("What do you need?",
-                     [f"{v} {k}" for k, v in CAT_ICONS.items()],
-                     key=f"gm_cat_{trow['name']}")
-    cat_name = cat.split(" ", 1)[1]
+    # canonical English keys drive the Places query; labels are translated
+    cat_name = _chip_pick(t("need_q"), list(CAT_ICONS.keys()),
+                          key=f"gm_cat_{trow['name']}",
+                          fmt=lambda k: f"{CAT_ICONS[k]} {t('cat_' + k)}")
     cat_icon = CAT_ICONS.get(cat_name, "📍")
     query = cat_name.lower()
     if cat_name == "Custom search":
         query = st.text_input(
-            "Search like on Google Maps", value="emergency room",
+            t("custom_ph"), value="emergency room",
             key=f"gm_q_{trow['name']}",
             help="Anything works: 'clinic open now', 'evacuation shelter', "
                  "a facility name...")
@@ -623,7 +811,7 @@ def google_places_section(trow, ev):
                 f'</div></div>')
         st.markdown("".join(rows), unsafe_allow_html=True)
 
-        if st.button("✦ Ask Terra: where should I go first?",
+        if st.button(t("ask_terra"),
                      key=f"gm_gem_{trow['name']}", use_container_width=True):
             fac_lines = "\n".join(
                 f"{p['name']} | {p['addr']} | {p['phone'] or 'no phone'} | "
@@ -640,16 +828,17 @@ def google_places_section(trow, ev):
             r1, r2 = st.columns([0.62, 0.38])
             with r1:
                 dest_ix = st.selectbox(
-                    "Destination", range(len(places[:6])),
+                    t("dest"), range(len(places[:6])),
                     format_func=lambda i: f"{places[i]['name']} "
                                           f"({places[i]['km']:.1f} km)",
                     key=f"gm_dest_{trow['name']}")
             with r2:
-                mode_pick = _chip_pick("Travel mode",
-                                       ["🚗 Drive", "🚶 Walk", "🚴 Bike"],
-                                       key=f"gm_mode_{trow['name']}")
-            mode = {"🚗 Drive": "driving", "🚶 Walk": "walking",
-                    "🚴 Bike": "bicycling"}.get(mode_pick, "driving")
+                mode = _chip_pick(t("mode_q"),
+                                  ["driving", "walking", "bicycling"],
+                                  key=f"gm_mode_{trow['name']}",
+                                  fmt=lambda m: t({"driving": "mode_drive",
+                                                   "walking": "mode_walk",
+                                                   "bicycling": "mode_bike"}[m]))
             dest = places[dest_ix]
             st.markdown(
                 f'<div class="qs-trip">'
@@ -662,8 +851,7 @@ def google_places_section(trow, ev):
                 f"?key={MAPS_API_KEY}&origin={quote(origin)}"
                 f"&destination={dest['lat']},{dest['lon']}&mode={mode}",
                 height=360)
-            st.caption("The map shows the route and estimated arrival time — "
-                       "tap 🧭 Navigate on any card for live turn-by-turn.")
+            st.caption(t("route_cap"))
     else:
         components.iframe(
             f"https://www.google.com/maps/embed/v1/search"
@@ -796,28 +984,30 @@ def news_rail_component(server_cards, fetch_photos=True):
     payload = _json.dumps(server_cards)
     majors = _json.dumps(list(MAJOR_OUTLETS))
     fetch_flag = "true" if fetch_photos else "false"
-    components.html("""
+    html_src = ("""
 <style>
 body {margin:0; background:transparent; font-family:-apple-system,"Segoe UI",Roboto,sans-serif;}
-.qs-newsrail {overflow:hidden;}
+.qs-newsrail {overflow:hidden; padding:4px 0 8px 0;}
 .qs-newsrail-inner {display:flex; gap:12px; width:max-content;
   animation: qs-rail 70s linear infinite;}
 .qs-newsrail:hover .qs-newsrail-inner {animation-play-state:paused;}
 @keyframes qs-rail {0% {transform:translateX(0);} 100% {transform:translateX(-50%);}}
-.qs-newscard {flex:0 0 250px; background:#161e2e; border:1px solid #263145;
-  border-radius:8px; overflow:hidden; text-decoration:none;
-  transition:border-color 0.15s;}
-.qs-newscard:hover {border-color:#e08850;}
+.qs-newscard {flex:0 0 250px; background:__PANEL__; border:1px solid __BORDER__;
+  border-radius:10px; overflow:hidden; text-decoration:none;
+  transition:border-color 0.15s, transform 0.15s, box-shadow 0.15s;}
+.qs-newscard:hover {border-color:__ACCENT__; transform:translateY(-2px);
+  box-shadow:__SHADOW__;}
 .qs-newsimg {height:118px; background-size:cover; background-position:center;
-  background-color:#263145;}
+  background-color:__PANELDEEP__; transition:transform 0.25s;}
+.qs-newscard:hover .qs-newsimg {transform:scale(1.04);}
 .qs-newsmono {height:118px; display:flex; align-items:center;
-  justify-content:center; background:#263145; font-size:30px;
-  font-weight:600; color:#e08850; letter-spacing:0.02em;}
+  justify-content:center; background:__PANELDEEP__; font-size:30px;
+  font-weight:600; color:__ACCENT__; letter-spacing:0.02em;}
 .qs-newstxt {display:flex; flex-direction:column; gap:4px; padding:8px 10px 10px;}
-.qs-newssrc {font-size:11px; color:#8fa0b5; text-transform:uppercase;
+.qs-newssrc {font-size:11px; color:__MUTED__; text-transform:uppercase;
   letter-spacing:0.06em;}
-.qs-newstitle {font-size:13px; color:#dbe2ec; line-height:1.35;}
-.qs-empty {color:#8fa0b5; font-size:13px;}
+.qs-newstitle {font-size:13px; color:__TEXT__; line-height:1.35;}
+.qs-empty {color:__MUTED__; font-size:13px;}
 </style>
 <div id="rail"><span class="qs-empty">Loading headlines...</span></div>
 <script>
@@ -879,7 +1069,16 @@ fetch('https://api.gdeltproject.org/api/v2/doc/doc?query=earthquake%20sourcelang
   })
   .catch(function(e) {});
 }
-</script>""", height=215)
+</script>""")
+    for _tok, _val in (("__PANEL__", PAL["panel"]),
+                       ("__PANELDEEP__", PAL["panel_deep"]),
+                       ("__BORDER__", PAL["border"]),
+                       ("__ACCENT__", PAL["accent"]),
+                       ("__TEXT__", PAL["text"]),
+                       ("__MUTED__", PAL["muted"]),
+                       ("__SHADOW__", PAL["shadow"])):
+        html_src = html_src.replace(_tok, _val)
+    components.html(html_src, height=215)
 
 
 def _fetch_gnews(n: int):
@@ -993,10 +1192,8 @@ def media_section(live_df):
                          "mono": "UN", "source": rep["source"],
                          "ago": rep["ago"]})
     if official:
-        st.subheader("🌐 Official updates")
-        st.caption("Significant events from the official USGS record and "
-                   "situation reports from UN agencies — tap a card to open "
-                   "the source.")
+        st.subheader(t("official_h"))
+        st.caption(t("official_cap"))
         news_rail_component(official, fetch_photos=False)
 
 
@@ -1024,7 +1221,7 @@ def render_ticker(live_df):
                     f'{html.escape(str(r.place))}{tag} · {ago}')
     items = " &nbsp;&nbsp;···&nbsp;&nbsp; ".join(bits)
     st.markdown(f'<div class="qs-ticker"><div class="qs-ticker-inner">'
-                f'🛰️ LIVE · THIS WEEK M5+ &nbsp;&nbsp;···&nbsp;&nbsp; {items}'
+                f'🛰️ {t("ticker_label")} &nbsp;&nbsp;···&nbsp;&nbsp; {items}'
                 f'</div></div>', unsafe_allow_html=True)
 
 
@@ -1036,14 +1233,14 @@ def quick_ask(context: str, live_df):
     which location) travels with every question and is shown in the header,
     and the model is told to name the location it is talking about."""
     hist = st.session_state.setdefault("quick_chat", [])
-    with st.popover("💬 Ask QuakeSense"):
+    with st.popover(t("qa_btn")):
         st.markdown("✦ **Terra** — QuakeSense assistant · powered by Gemini 2.5 Flash")
-        st.caption(f"📍 Talking about: {context}")
+        st.caption(f"{t('qa_about')} {context}")
         box = st.container(height=300)
         with box:
             if not hist:
                 with st.chat_message("assistant", avatar=AVATARS["assistant"]):
-                    st.markdown(BOT_INTRO)
+                    st.markdown(t("bot_intro"))
             for m in hist:
                 with st.chat_message(m["role"], avatar=AVATARS.get(m["role"])):
                     st.markdown(m["content"])
@@ -1053,7 +1250,7 @@ def quick_ask(context: str, live_df):
         with st.form("quick_form", clear_on_submit=True, border=False):
             c1, c2 = st.columns([0.82, 0.18])
             q = c1.text_input("Message", label_visibility="collapsed",
-                              placeholder="Type a message...")
+                              placeholder=t("qa_ph"))
             send = c2.form_submit_button("➤", use_container_width=True)
         if send and q.strip():
             q = q.strip()
@@ -1088,7 +1285,7 @@ def quick_ask(context: str, live_df):
 @st.fragment
 def briefing_block(ev: dict, pick: str):
     """Generate + display the community briefing; reruns alone, not the page."""
-    if st.button("Generate community briefing", type="primary"):
+    if st.button(t("gen_brief"), type="primary"):
         with st.spinner("Gemini drafting briefing..."):
             st.session_state.briefing = situation_briefing(ev)
             st.session_state.briefing_event = pick
@@ -1096,9 +1293,9 @@ def briefing_block(ev: dict, pick: str):
     if st.session_state.get("briefing") and st.session_state.get("briefing_event") == pick:
         br = st.session_state.briefing
         st.success(f"### {br['headline']}")
-        st.markdown(f"**What happened.** {br['what_happened']}")
-        st.markdown(f"**Who is affected.** {br['who_is_affected']}")
-        st.markdown("**Recommended actions.**")
+        st.markdown(f"**{t('what_h')}** {br['what_happened']}")
+        st.markdown(f"**{t('who_h')}** {br['who_is_affected']}")
+        st.markdown(f"**{t('act_h')}**")
         for act in br["recommended_actions"]:
             st.markdown(f"- {act}")
         st.info(br["caveats"])
@@ -1108,7 +1305,7 @@ def briefing_block(ev: dict, pick: str):
                f"WHO IS AFFECTED\n{br['who_is_affected']}\n\nRECOMMENDED ACTIONS\n"
                + "\n".join(f"- {a}" for a in br["recommended_actions"])
                + f"\n\nNOTES\n{br['caveats']}\n\nGenerated by QuakeSense from USGS data.")
-        st.download_button("Download briefing (.txt)", txt,
+        st.download_button(t("dl_brief"), txt,
                            "quakesense_briefing.txt", "text/plain")
 
 
@@ -1139,18 +1336,13 @@ def chat_agent(live):
     if "chat" not in st.session_state:
         st.session_state.chat = []
 
-    examples = [
-        "How many M6+ earthquakes hit Myanmar since 1990?",
-        "Why does Myanmar get so many big earthquakes?",
-        "What should my family do during strong shaking?",
-        "Strongest quake ever near Japan - and what made it so deadly?",
-    ]
+    examples = [t("ex1"), t("ex2"), t("ex3"), t("ex4")]
     pending = None
     if not st.session_state.chat:
         with st.chat_message("assistant", avatar=AVATARS["assistant"]):
-            st.markdown(BOT_INTRO)
-        st.markdown("<p style='text-align:center;color:#8fa0b5;'>Try one of these:</p>",
-                    unsafe_allow_html=True)
+            st.markdown(t("bot_intro"))
+        st.markdown(f"<p style='text-align:center;color:var(--qs-muted);'>"
+                    f"{t('try_these')}</p>", unsafe_allow_html=True)
         r1 = st.columns(2)
         r2 = st.columns(2)
         for i, ex in enumerate(examples):
@@ -1186,8 +1378,7 @@ def chat_agent(live):
         st.caption(f"The agent can see your current My Area analysis "
                    f"({st.session_state.area['city']}) — ask about it here.")
 
-    typed = st.chat_input("Ask anything about earthquakes — events, science, safety, "
-                          "or your area's analysis...")
+    typed = st.chat_input(t("chat_ph"))
     question = pending or typed
     if question:
         st.session_state.chat.append({"role": "user", "content": question})
@@ -1222,7 +1413,7 @@ def chat_agent(live):
                                f"BigQuery and Vertex AI are reachable."})
         st.rerun(scope="fragment")
 
-    if st.session_state.chat and st.button("Clear conversation"):
+    if st.session_state.chat and st.button(t("clear_conv")):
         st.session_state.chat = []
         st.rerun(scope="fragment")
 
@@ -1241,26 +1432,31 @@ def my_area_block(tdb, live):
         with a0:
             countries = sorted(tdb["country"].dropna().unique().tolist())
             default_ix = countries.index("Thailand") if "Thailand" in countries else 0
-            country = st.selectbox("Country", countries, index=default_ix,
+            country = st.selectbox(t("country"), countries, index=default_ix,
                                    format_func=lambda c: f"{country_flag(c)} {c}")
         with a1:
             towns = tdb[tdb["country"] == country]
             labels2 = [f"{r.name_}, {r.admin1}" if pd.notna(r.admin1) and str(r.admin1) != ""
                        else str(r.name_)
                        for r in towns.rename(columns={"name": "name_"}).itertuples()]
-            pick_ix = st.selectbox("Town (type to search the list)", range(len(labels2)),
+            pick_ix = st.selectbox(t("town"), range(len(labels2)),
                                    format_func=lambda i: labels2[i],
                                    help="Sorted by population - start typing to jump "
                                         "to your town. Exact coordinates come from the "
                                         "GeoNames database, no guessing.")
         with a2:
-            lang = st.selectbox("Language", ["English", "Myanmar (Burmese)", "Thai",
-                                             "Hindi", "Bengali", "Telugu",
-                                             "Marathi", "Tamil"])
+            # defaults to the global interface language (incl. custom ones)
+            lang_opts = list(LANGS)
+            _g = st.session_state.get("ui_lang", "English")
+            if _g not in lang_opts:
+                lang_opts.insert(0, _g)
+            lang = st.selectbox(t("language"), lang_opts,
+                                index=lang_opts.index(_g),
+                                format_func=lambda l: NATIVE_NAME.get(l, l))
         row = towns.iloc[pick_ix]
         sel = f"{row['name']}, {country}"
 
-    if st.button("Generate risk profile", type="primary", disabled=sel is None) and sel:
+    if st.button(t("gen_profile"), type="primary", disabled=sel is None) and sel:
         lat, lon, display = float(row["latitude"]), float(row["longitude"]), sel
         try:
             with st.spinner("Reading 50 years of records for your area..."):
@@ -1296,28 +1492,28 @@ def my_area_block(tdb, live):
 
     if st.session_state.get("area") and st.session_state.area["city"] == sel:
         ar = st.session_state.area
-        st.caption(f"Profile for: **{ar.get('display', sel)}** "
+        st.caption(f"{t('profile_for')} **{ar.get('display', sel)}** "
                    f"({ar['lat']:.3f}, {ar['lon']:.3f})")
         m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("M5+ since 1975", ar["hist"]["count"],
+        m1.metric(t("m5_since"), ar["hist"]["count"],
                   help="All magnitude 5+ earthquakes within 300 km of your town "
                        "in the official USGS record since 1975.")
-        m2.metric("Per decade", ar["hist"]["per_decade"],
+        m2.metric(t("per_decade"), ar["hist"]["per_decade"],
                   help="Average number of M5+ events per 10 years within 300 km - "
                        "a rough measure of how seismically active your area is.")
-        m3.metric("Strongest ever",
+        m3.metric(t("strongest_ever"),
                   str(ar["hist"]["strongest"]).split(" - ")[0],
                   help=f"The most powerful event on record near you: {ar['hist']['strongest']}")
-        m4.metric("Most recent M5+",
+        m4.metric(t("recent_m5"),
                   str(ar["hist"]["latest"]).rsplit("(", 1)[-1].rstrip(")"),
                   help=f"The last M5+ event within 300 km: {ar['hist']['latest']}")
-        m5.metric("This week · 500 km", ar["live"]["count"],
+        m5.metric(t("week500"), ar["live"]["count"],
                   help="Live count of M2.5+ events within 500 km in the past 7 days.")
         prof = ar["prof"]
         st.success(f"### {prof['headline']}")
-        st.markdown(f"**Seismic history.** {prof['seismic_context']}")
-        st.markdown(f"**Right now.** {prof['this_week']}")
-        st.markdown("**Be prepared.**")
+        st.markdown(f"**{t('seis_h')}** {prof['seismic_context']}")
+        st.markdown(f"**{t('now_h')}** {prof['this_week']}")
+        st.markdown(f"**{t('prep_h')}**")
         for act in prof["preparedness_actions"]:
             st.markdown(f"- {act}")
         st.info(prof["caveats"])
@@ -1331,32 +1527,30 @@ def my_area_block(tdb, live):
                                             "M6.5-6.9", "M7.0+"], right=False)
             g1, g2 = st.columns(2)
             with g1:
-                st.markdown("**Events per decade near you**")
-                st.bar_chart(hd.groupby("decade").size(), color="#e08850")
-                st.caption("Taller recent bars often reflect better instruments, "
-                           "not necessarily more earthquakes.")
+                st.markdown(f"**{t('chart_decade')}**")
+                st.bar_chart(hd.groupby("decade").size(), color=PAL["accent"])
+                st.caption(t("chart_decade_cap"))
             with g2:
-                st.markdown("**How strong they were**")
-                st.bar_chart(hd.groupby("strength", observed=False).size(), color="#e08850")
-                st.caption("Most events cluster at the lower magnitudes - "
-                           "the big ones are rare but matter most.")
-            with st.expander("Map: every M5+ epicenter within 300 km since 1975",
-                             expanded=True):
+                st.markdown(f"**{t('chart_strength')}**")
+                st.bar_chart(hd.groupby("strength", observed=False).size(),
+                             color=PAL["accent"])
+                st.caption(t("chart_strength_cap"))
+            with st.expander(t("map_exp"), expanded=True):
                 hist_map = ar["df"].rename(columns={"latitude": "lat", "longitude": "lon"})
-                st.map(hist_map[["lat", "lon"]], zoom=5, color="#e08850", size=8000)
+                st.map(hist_map[["lat", "lon"]], zoom=5, color=PAL["accent"], size=8000)
 
 
 @st.fragment
 def anomaly_explain_block(flagged, live_cells):
     """Region explainer - selectbox + AI analysis rerun without the page."""
     idx = st.selectbox(
-        "Explain a flagged region",
+        t("explain_sel"),
         range(len(flagged)),
         format_func=lambda i: f"{flagged.iloc[i]['sample_place']}  "
                               f"({flagged.iloc[i]['ratio']:.0f}x normal)",
         help="Pick a region and generate a plain-language explanation of why "
              "its activity is unusual and what nearby communities should know.")
-    if st.button("Generate AI analysis", type="primary"):
+    if st.button(t("gen_analysis"), type="primary"):
         cell = flagged.iloc[idx].to_dict()
         evs = live_cells[(live_cells["cell_lat"] == cell["cell_lat"]) &
                          (live_cells["cell_lon"] == cell["cell_lon"])]
@@ -1380,14 +1574,14 @@ def anomaly_explain_block(flagged, live_cells):
             and st.session_state.get("anomaly_idx") == idx):
         cellm = flagged.iloc[idx]
         n1, n2, n3, n4 = st.columns(4)
-        n1.metric("Events this week", int(cellm["current"]),
+        n1.metric(t("m_week"), int(cellm["current"]),
                   help="M4.5+ earthquakes recorded in this region in the past 7 days.")
-        n2.metric("Normal week", f"{cellm['weekly_avg']:.2f}",
+        n2.metric(t("m_normal"), f"{cellm['weekly_avg']:.2f}",
                   help="This region's average M4.5+ events per week over the last 50 years.")
-        n3.metric("Times above normal", f"{cellm['ratio']:.0f}x",
+        n3.metric(t("m_ratio"), f"{cellm['ratio']:.0f}x",
                   help="This week divided by the 50-year weekly average. "
                        "3x or more gets flagged.")
-        n4.metric("Strongest this week", f"M {cellm['max_mag']:.1f}",
+        n4.metric(t("m_strongest"), f"M {cellm['max_mag']:.1f}",
                   help="The largest event in this region during the past 7 days.")
         st.info(st.session_state.anomaly_text)
         cell = flagged.iloc[idx].to_dict()
@@ -1395,21 +1589,21 @@ def anomaly_explain_block(flagged, live_cells):
                          (live_cells["cell_lon"] == cell["cell_lon"])].copy()
         v1, v2 = st.columns(2)
         with v1:
-            st.markdown("**When they struck this week**")
+            st.markdown(f"**{t('when_h')}**")
             daily = evs.set_index(evs["time"].dt.floor("D")).groupby(level=0).size()
             daily.index = daily.index.strftime("%b %d")
-            st.bar_chart(daily, color="#e08850")
+            st.bar_chart(daily, color=PAL["accent"])
             st.caption("A tight burst suggests an aftershock sequence; "
                        "spread-out days suggest a swarm.")
         with v2:
-            st.markdown("**Where they struck**")
-            st.map(evs[["lat", "lon"]], zoom=4, color="#e08850")
+            st.markdown(f"**{t('where_h')}**")
+            st.map(evs[["lat", "lon"]], zoom=4, color=PAL["accent"])
 
 
 @st.fragment
 def sitrep_block(ev: dict, pick_rt: str, live):
     """SITREP generation reruns alone - the toolkit page stays put."""
-    if st.button("Generate SITREP", type="primary"):
+    if st.button(t("gen_sitrep"), type="primary"):
         hist_ctx = ""
         try:
             hdf = run_bigquery(
@@ -1429,7 +1623,7 @@ def sitrep_block(ev: dict, pick_rt: str, live):
     if (st.session_state.get("sitrep")
             and st.session_state.get("sitrep_event") == pick_rt):
         st.markdown(st.session_state.sitrep)
-        st.download_button("Download SITREP (.txt)", st.session_state.sitrep,
+        st.download_button(t("dl_sitrep"), st.session_state.sitrep,
                            "quakesense_sitrep.txt", "text/plain")
 
 
@@ -1439,21 +1633,26 @@ def guidance_block(context: str):
     from src.ai import DD_SITUATIONS
     d1, d2 = st.columns([1.6, 1])
     with d1:
-        dd_sit = st.selectbox("Your situation", list(DD_SITUATIONS.keys()),
+        dd_sit = st.selectbox(t("situation"), list(DD_SITUATIONS.keys()),
                               key="rt_sit",
                               help="The advice changes completely depending on who "
                                    "you are and where you are right now.")
     with d2:
-        dd_lang = st.selectbox("Language", ["English", "Myanmar (Burmese)", "Thai",
-                                            "Hindi", "Bengali", "Telugu",
-                                            "Marathi", "Tamil"], key="rt_lang")
-    if st.button("Generate guidance", type="primary", key="rt_dd"):
+        # defaults to the global interface language (incl. custom ones)
+        lang_opts = list(LANGS)
+        _g = st.session_state.get("ui_lang", "English")
+        if _g not in lang_opts:
+            lang_opts.insert(0, _g)
+        dd_lang = st.selectbox(t("language"), lang_opts, key="rt_lang",
+                               index=lang_opts.index(_g),
+                               format_func=lambda l: NATIVE_NAME.get(l, l))
+    if st.button(t("gen_guid"), type="primary", key="rt_dd"):
         with st.spinner("Writing guidance for your situation..."):
             st.session_state.dd = do_dont(context, dd_lang, dd_sit)
             st.session_state.dd_key = (dd_lang, dd_sit)
     if st.session_state.get("dd") and st.session_state.get("dd_key") == (dd_lang, dd_sit):
         st.markdown(st.session_state.dd)
-        st.download_button("Download guidance (.txt)", st.session_state.dd,
+        st.download_button(t("dl_guid"), st.session_state.dd,
                            "quakesense_guidance.txt", "text/plain")
 
 
@@ -1463,15 +1662,14 @@ def facilities_block(top, ev=None):
     OpenStreetMap otherwise), isolated from the page."""
     lab3 = [f"{r['name']} ({r['country']}) — {r['km']:.0f} km from epicenter"
             for _, r in top.iterrows()]
-    tix = st.selectbox("Affected-area town (nearest first)", range(len(lab3)),
+    tix = st.selectbox(t("town_sel"), range(len(lab3)),
                        format_func=lambda i: lab3[i], key="rt_town")
     trow = top.iloc[tix]
     country2 = trow["country"]
     if country2 in EMERGENCY_NUMBERS:
-        st.markdown(f"**Emergency hotlines ({country2}):** "
+        st.markdown(f"**{t('hotlines')} ({country2}):** "
                     f"{EMERGENCY_NUMBERS[country2]}")
-        st.caption("From public sources - verify locally. "
-                   "Numbers can differ by region.")
+        st.caption(t("verify_cap"))
 
     if MAPS_API_KEY:
         google_places_section(trow, ev)
@@ -1535,11 +1733,68 @@ def emergency_facilities(lat: float, lon: float, radius_km: int = 20):
     return df
 
 
+# ------------------------------------------------------------- onboarding --
+THEME_KEYS = ["dark", "light", "warm"]
+THEME_LABEL = {"dark": ("th_dark", "th_dark_d"),
+               "light": ("th_light", "th_light_d"),
+               "warm": ("th_warm", "th_warm_d")}
+OTHER_LANG = "__other__"
+
+
+def _set_pref(theme=None, lang=None):
+    """Apply a preference and mirror it into the URL so refreshes and shared
+    links keep it."""
+    if theme:
+        st.session_state.ui_theme = theme
+        st.query_params["theme"] = theme
+    if lang:
+        st.session_state.ui_lang = lang
+        st.query_params["lang"] = lang
+
+
+def _lang_label(l):
+    if l == OTHER_LANG:
+        return "🌐 Other — any language (Gemini)"
+    return NATIVE_NAME.get(l, l)
+
+
+@st.dialog("🌍 Welcome to QuakeSense")
+def welcome_dialog():
+    """First-open setup: display mode + interface language. Both can be
+    changed later from the sidebar."""
+    st.markdown(t("wb_intro"))
+    langs = list(LANGS) + [OTHER_LANG]
+    cur = st.session_state.ui_lang
+    ix = langs.index(cur) if cur in langs else len(langs) - 1
+    pick = st.selectbox(t("wb_lang"), langs, index=ix, key="wb_lang",
+                        format_func=_lang_label)
+    lang = pick
+    if pick == OTHER_LANG:
+        lang = st.text_input(
+            "🌐 Language", value=cur if cur not in LANGS else "",
+            key="wb_lang_free",
+            placeholder="e.g. Bahasa Indonesia, Shan, Nepali, Swahili...",
+            help="Gemini translates the whole interface — regional and "
+                 "low-resource languages welcome.")
+    theme = st.radio(t("wb_theme"), THEME_KEYS,
+                     index=THEME_KEYS.index(st.session_state.ui_theme),
+                     key="wb_theme",
+                     format_func=lambda k: t(THEME_LABEL[k][0]),
+                     captions=[t(THEME_LABEL[k][1]) for k in THEME_KEYS])
+    if st.button(t("wb_start"), type="primary", use_container_width=True):
+        _set_pref(theme=theme, lang=(lang or "English").strip() or "English")
+        st.session_state.onboarded = True
+        _hard_reload()
+
+
+if not st.session_state.get("onboarded"):
+    welcome_dialog()
+
 # ----------------------------------------------------------------- header --
-st.markdown("""
+st.markdown(f"""
 <div class="qs-header">
   <p class="qs-wordmark">QUAKE<span>SENSE</span></p>
-  <p class="qs-subline"><span class="qs-live"></span>Live &nbsp;·&nbsp; Global real-time earthquake intelligence</p>
+  <p class="qs-subline"><span class="qs-live"></span>{t("subline")}</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -1553,34 +1808,76 @@ except Exception as e:
 render_ticker(live)
 
 # ----------------------------------------------------------------- sidebar --
-st.sidebar.markdown("##### MENU")
-page = st.sidebar.radio(
-    "Navigation",
-    ["🛰️ Live Now", "📈 Anomaly Watch", "📍 My Area", "✦ Ask AI",
-     "⛑️ Response Toolkit", "📖 Guide"],
-    captions=["World map · briefings · media", "Is this week normal?",
-              "Your town's risk profile", "Any question, any language",
-              "SITREP · guidance · facilities", "How it all fits"],
-    label_visibility="collapsed")
-page = page.split(" ", 1)[1]
+# canonical page ids -> icon + translated label/caption; the id never changes
+# with the language, so page routing is language-independent
+PAGES = [("Live Now", "🛰️", "nav_live", "cap_live"),
+         ("Anomaly Watch", "📈", "nav_anom", "cap_anom"),
+         ("My Area", "📍", "nav_area", "cap_area"),
+         ("Ask AI", "✦", "nav_ask", "cap_ask"),
+         ("Response Toolkit", "⛑️", "nav_toolkit", "cap_toolkit"),
+         ("Guide", "📖", "nav_guide", "cap_guide")]
+_PAGE = {p[0]: p for p in PAGES}
 
-if st.sidebar.button("Refresh live feed", use_container_width=True):
+st.sidebar.markdown(f"##### {t('menu')}")
+_page_ids = [p[0] for p in PAGES]
+_default_page_ix = (_page_ids.index(st.session_state.ui_page)
+                    if st.session_state.get("ui_page") in _page_ids else 0)
+page = st.sidebar.radio(
+    "Navigation", _page_ids, index=_default_page_ix,
+    format_func=lambda k: f"{_PAGE[k][1]} {t(_PAGE[k][2])}",
+    captions=[t(p[3]) for p in PAGES],
+    label_visibility="collapsed")
+if page != st.session_state.get("ui_page"):
+    st.session_state.ui_page = page
+    st.query_params["page"] = page
+
+if st.sidebar.button(t("refresh"), use_container_width=True):
     get_live.clear()
     st.rerun()
 
+# ---- display mode + language, changeable anytime. A real reload (not a
+# plain st.rerun) is used here - see _hard_reload for why. ----
 st.sidebar.markdown("---")
-st.sidebar.caption("Earthquakes cannot be predicted. This tool supports awareness "
-                   "and decision-making, not prediction.")
+_theme_pick = st.sidebar.selectbox(
+    "🎨 " + t("theme"), THEME_KEYS,
+    index=THEME_KEYS.index(st.session_state.ui_theme), key="sb_theme",
+    format_func=lambda k: t(THEME_LABEL[k][0]))
+if _theme_pick != st.session_state.ui_theme:
+    _set_pref(theme=_theme_pick)
+    _hard_reload()
+
+_langs_sb = list(LANGS) + [OTHER_LANG]
+_cur_lang = st.session_state.ui_lang
+_sb_pick = st.sidebar.selectbox(
+    "🌐 " + t("language"), _langs_sb,
+    index=(_langs_sb.index(_cur_lang) if _cur_lang in _langs_sb
+           else len(_langs_sb) - 1),
+    key="sb_lang", format_func=_lang_label)
+if _sb_pick == OTHER_LANG:
+    _typed = st.sidebar.text_input(
+        "🌐 Language", value=_cur_lang if _cur_lang not in LANGS else "",
+        key="sb_lang_free",
+        placeholder="e.g. Bahasa Indonesia, Shan, Nepali...",
+        help="Gemini translates the whole interface into any language.")
+    if _typed.strip() and _typed.strip() != _cur_lang:
+        _set_pref(lang=_typed.strip())
+        _hard_reload()
+elif _sb_pick != _cur_lang:
+    _set_pref(lang=_sb_pick)
+    _hard_reload()
+
+st.sidebar.markdown("---")
+st.sidebar.caption(t("disclaimer"))
 
 _koda_b64 = logo_b64()
 st.sidebar.markdown(f"""
 <div class="qs-sidebar-bottom">
-  <p class="qs-credit">Built with</p>
+  <p class="qs-credit">{t("built_with")}</p>
   <p class="qs-credit-items">Google Cloud &nbsp;·&nbsp; BigQuery<br>
   Vertex AI Gemini &nbsp;·&nbsp; Streamlit<br>
   USGS Earthquake Hazards Program</p>
   <img src="data:image/png;base64,{_koda_b64}" width="96">
-  <p class="qs-team">Developed by Team KODA</p>
+  <p class="qs-team">{t("team")}</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -1591,18 +1888,18 @@ if page == "Live Now":
     else:
         c1, c2, c3, c4, c5 = st.columns(5)
         last24 = live[live["time"] > pd.Timestamp.now(tz="UTC") - pd.Timedelta("24h")]
-        c1.metric("Events · 7 days · M2.5+", len(live),
+        c1.metric(t("m_events7"), len(live),
                   help="Every earthquake above magnitude 2.5 recorded worldwide in the past 7 days (USGS live feed).")
-        c2.metric("Last 24 hours", len(last24))
-        c3.metric("Strongest this week", f"M {live['mag'].max():.1f}")
-        c4.metric("M5+ events", int((live["mag"] >= 5).sum()),
+        c2.metric(t("m_last24"), len(last24))
+        c3.metric(t("m_strongest"), f"M {live['mag'].max():.1f}")
+        c4.metric(t("m_m5"), int((live["mag"] >= 5).sum()),
                   help="Magnitude 5+ quakes can cause damage near the epicenter.")
-        c5.metric("Tsunami-flagged", int(live["tsunami_flag"].sum()),
+        c5.metric(t("m_tsu"), int(live["tsunami_flag"].sum()),
                   help="Events for which USGS raised a tsunami flag this week. Zero is good news.")
         newest = live.iloc[0]
         mins_ago = int((pd.Timestamp.now(tz="UTC") - newest["time"]).total_seconds() // 60)
         ago = f"{mins_ago} min ago" if mins_ago < 120 else f"{mins_ago // 60} h ago"
-        st.caption(f"Most recent event: M{newest['mag']:.1f} — {newest['place']} · {ago}")
+        st.caption(f"{t('recent_event')}: M{newest['mag']:.1f} — {newest['place']} · {ago}")
 
         tsu = live[live["tsunami_flag"] == 1]
         if len(tsu):
@@ -1614,23 +1911,26 @@ if page == "Live Now":
         st.write("")
         p1, p2 = st.columns([2, 1])
         with p1:
-            preset = st.radio("Quick filters", ["Custom", "M4.5+", "M6+", "Last 24 h"],
+            preset = st.radio(t("quick_filters"), ["Custom", "M4.5+", "M6+", "Last 24 h"],
                               horizontal=True,
+                              format_func=lambda o: {"Custom": t("preset_custom"),
+                                                     "Last 24 h": t("preset_24h")}.get(o, o),
                               help="One-tap views. 'Custom' uses the magnitude slider below.")
         with p2:
             regions = live["place"].str.split(",").str[-1].str.strip()
-            region_opts = ["All countries / regions"] + sorted(regions.unique())
-            q_region = st.selectbox("Filter by country / region (past 7 days)",
+            all_regions = t("all_regions")
+            region_opts = [all_regions] + sorted(regions.unique())
+            q_region = st.selectbox(t("region_filter"),
                                     region_opts,
                                     help="Only places with earthquakes this week appear "
                                          "here. For historical events, use Ask the Data.")
 
         s1, s3 = st.columns([3, 1])
         with s1:
-            min_mag = st.slider("Minimum magnitude", 2.5, 8.0, 4.5, 0.1,
+            min_mag = st.slider(t("min_mag"), 2.5, 8.0, 4.5, 0.1,
                                 disabled=(preset != "Custom"))
         with s3:
-            show_plates = st.toggle("Plate boundaries", value=False,
+            show_plates = st.toggle(t("plates"), value=False,
                                     help="Overlay tectonic plate boundaries (Bird 2003 dataset) - "
                                          "most earthquakes happen along these lines.")
 
@@ -1642,12 +1942,11 @@ if page == "Live Now":
             view = live[live["time"] > pd.Timestamp.now(tz="UTC") - pd.Timedelta("24h")].copy()
         else:
             view = live[live["mag"] >= min_mag].copy()
-        if q_region != "All countries / regions":
+        if q_region != all_regions:
             view = view[view["place"].str.split(",").str[-1].str.strip() == q_region]
 
         if view.empty:
-            st.info("No events match this filter in the past 7 days. "
-                    "Try a wider preset or 'All countries / regions'.")
+            st.info(t("no_match"))
 
         age_h = (pd.Timestamp.now(tz="UTC") - view["time"]).dt.total_seconds() / 3600
         view["alpha"] = (210 - age_h * 0.75).clip(80, 210).astype(int)
@@ -1674,15 +1973,14 @@ if page == "Live Now":
             stroked=True, line_width_min_pixels=1,
             get_radius="radius", pickable=True))
         st.pydeck_chart(pdk.Deck(
-            map_style="dark",
+            map_style=PAL["map_style"],
             initial_view_state=pdk.ViewState(latitude=15, longitude=100, zoom=1.6),
             layers=layers,
             tooltip={"text": "M{mag} — {place}\nDepth {depth_km} km"}))
 
         cap, dl = st.columns([4, 1])
-        cap.caption(f"{len(view)} events shown · size and color scale with magnitude · "
-                    f"faded markers are older · teal markers carry a tsunami flag")
-        dl.download_button("Export CSV",
+        cap.caption(t("shown_cap", n=len(view)))
+        dl.download_button(t("export_csv"),
                            view.drop(columns=["color_r", "color_g", "color_b",
                                               "alpha", "radius"]).to_csv(index=False),
                            "quakesense_events.csv", "text/csv", use_container_width=True)
@@ -1692,13 +1990,12 @@ if page == "Live Now":
 
         # ---------------------------------------------- AI briefings section
         st.divider()
-        st.subheader("AI Situation Briefings")
-        st.caption("Pick any significant event this week - Gemini writes a calm, "
-                   "plain-language community briefing from the USGS data.")
+        st.subheader(t("brief_h"))
+        st.caption(t("brief_cap"))
         sig = significant_events(live)
         labels = [f"M{r.mag:.1f}  ·  {r.place}  ·  {r.time:%b %d %H:%M} UTC"
                   for r in sig.itertuples()]
-        pick = st.selectbox("Event (ranked by USGS significance)", labels,
+        pick = st.selectbox(t("event_sel"), labels,
                             key="sig_event",
                             help="Significance is USGS's newsworthiness score - it combines "
                                  "magnitude, felt reports, and estimated impact. Your pick "
@@ -1706,14 +2003,14 @@ if page == "Live Now":
         ev = sig.iloc[labels.index(pick)].to_dict()
 
         a, b, c, d = st.columns(4)
-        a.metric("Magnitude", f"M {ev['mag']:.1f}")
-        b.metric("Depth", f"{ev['depth_km']:.0f} km",
+        a.metric(t("m_mag"), f"M {ev['mag']:.1f}")
+        b.metric(t("m_depth"), f"{ev['depth_km']:.0f} km",
                  help="Shallow quakes (under 70 km) shake the surface harder than deep ones of the same magnitude.")
-        c.metric("Felt reports", ev["felt_reports"],
+        c.metric(t("m_felt"), ev["felt_reports"],
                  help="People who reported feeling this quake via USGS 'Did You Feel It?'.")
         pager_raw = ev.get("pager_alert")
         pager_ok = isinstance(pager_raw, str) and pager_raw.strip() != ""
-        d.metric("PAGER alert", pager_raw.upper() if pager_ok else "N/A",
+        d.metric(t("m_pager"), pager_raw.upper() if pager_ok else "N/A",
                  help="USGS impact estimate: GREEN minimal, YELLOW local, ORANGE regional, "
                       "RED major. 'N/A' means no assessment was issued.")
         if pager_ok:
@@ -1723,18 +2020,16 @@ if page == "Live Now":
 
         # ------------------------------------------- global media coverage
         st.divider()
-        st.subheader("📺 Global media coverage")
-        st.caption("Latest earthquake coverage from world media — click a "
-                   "card to read the full story.")
+        st.subheader(t("media_h"))
+        st.caption(t("media_cap"))
         media_section(live)
 
         quick_ask(f"Live Now world map (past 7 days); selected event: {pick}", live)
 
 # ================================================================= MY AREA ==
 elif page == "My Area":
-    st.subheader("My Area — community seismic risk profile")
-    st.caption("Select your country and town - the agent combines your area's 50-year record "
-               "with this week's live activity into a personal risk profile, in your language.")
+    st.subheader(t("area_h"))
+    st.caption(t("area_cap"))
 
     my_area_block(towns_db(), live)
 
@@ -1745,27 +2040,23 @@ elif page == "My Area":
 
 # ================================================================== ASK AI ==
 elif page == "Ask AI":
-    st.subheader("Ask about Earthquakes — AI agent")
-    st.caption("Ask anything, in any language — it replies in yours. Historical numbers "
-               "come from 50 years of USGS data (SQL shown), this week's events from the "
-               "live feed, and current news with web sources cited. It remembers "
-               "follow-ups and can discuss your My Area analysis (from the My Area page).")
+    st.subheader(t("ask_h"))
+    st.caption(t("ask_cap"))
 
     chat_agent(live)
 
 # =========================================================== ANOMALY WATCH ==
 elif page == "Anomaly Watch":
-    st.subheader("Anomaly Watch — unusual seismic activity")
-    st.caption("Compares this week's M4.5+ activity in every 5-degree region against the "
-               "50-year historical baseline. Flags swarms and intense aftershock sequences.")
+    st.subheader(t("anom_h"))
+    st.caption(t("anom_cap"))
     if live.empty:
         st.info("Live feed unavailable.")
     else:
         flagged, live_cells = detect(live)
         if flagged.empty:
-            st.success("No regions show anomalously elevated activity this week.")
+            st.success(t("anom_ok"))
         else:
-            st.warning(f"{len(flagged)} region(s) flagged with unusually high activity")
+            st.warning(t("anom_warn", n=len(flagged)))
             show = flagged.rename(columns={"sample_place": "region_sample"})
             st.dataframe(show[["cell_lat", "cell_lon", "current", "weekly_avg",
                                "ratio", "max_mag", "region_sample"]].round(2),
@@ -1779,14 +2070,12 @@ elif page == "Anomaly Watch":
 
 # ========================================================= RESPONSE TOOLKIT ==
 elif page == "Response Toolkit":
-    st.subheader("Response Toolkit")
-    st.caption("Practical tools for the hours after an earthquake - for residents "
-               "waiting for help, and for the officials coordinating it.")
+    st.subheader(t("tk_h"))
+    st.caption(t("tk_cap"))
 
     # ---- A: situation report -------------------------------------------
-    st.markdown("##### Situation report (SITREP)")
-    st.caption("A formal report in the format emergency operations centers use. "
-               "Pick an event, generate, download, distribute.")
+    st.markdown(f"##### {t('sitrep_h')}")
+    st.caption(t("sitrep_cap"))
     if live.empty:
         st.info("Live feed unavailable.")
     else:
@@ -1795,7 +2084,7 @@ elif page == "Response Toolkit":
                      for r in sig.itertuples()]
         carry = st.session_state.get("sig_event")
         default_rt = labels_rt.index(carry) if carry in labels_rt else 0
-        pick_rt = st.selectbox("Event (ranked by USGS significance)", labels_rt,
+        pick_rt = st.selectbox(t("event_sel"), labels_rt,
                                index=default_rt, key="rt_event",
                                help="Defaults to the event you picked on Live Now.")
         ev = sig.iloc[labels_rt.index(pick_rt)].to_dict()
@@ -1803,9 +2092,8 @@ elif page == "Response Toolkit":
 
     # ---- B: do's and don'ts --------------------------------------------
     st.divider()
-    st.markdown("##### Before rescue arrives — do's and don'ts")
-    st.caption("Established international guidance (FEMA / Red Cross), written for "
-               "your situation and language. Not a substitute for trained rescuers.")
+    st.markdown(f"##### {t('dd_h')}")
+    st.caption(t("dd_cap"))
     context = (f"M{ev['mag']:.1f} earthquake near {ev['place']}, depth "
                f"{ev['depth_km']:.0f} km"
                if not live.empty else "a strong earthquake")
@@ -1813,7 +2101,7 @@ elif page == "Response Toolkit":
 
     # ---- C: emergency resources in the affected area --------------------
     st.divider()
-    st.markdown("##### Emergency resources in the affected area")
+    st.markdown(f"##### {t('res_h')}")
     tdb2 = towns_db()
     if live.empty:
         st.info("Live feed unavailable.")
@@ -1833,8 +2121,7 @@ elif page == "Response Toolkit":
                                        r["latitude"], r["longitude"]), axis=1)
             near_towns = near_towns[near_towns["km"] <= 150].sort_values("km")
         if near_towns.empty:
-            st.info("No towns within 150 km of this epicenter - it is likely offshore "
-                    "or in a remote area. Select a different event above.")
+            st.info(t("no_towns"))
         else:
             facilities_block(near_towns.head(15).reset_index(drop=True), ev)
 
@@ -1847,60 +2134,8 @@ elif page == "Response Toolkit":
 
 # ============================================================== HOW TO USE ==
 else:
-    st.subheader("How to use QuakeSense")
-    st.markdown("""
-QuakeSense answers three questions after an earthquake: **what just happened,
-what does it mean for my community, and is this pattern normal?** The menu is
-organized around those moments:
-
-| Section | Purpose | Data behind it |
-|---|---|---|
-| **Live Now** | What's happening right now, worldwide | USGS live feed (7 days, M2.5+), every 5 min |
-| **Anomaly Watch** | Is this week normal for each region? | Live feed vs 50-year baseline |
-| **My Area** | What's the risk where *I* live? | 50-year USGS catalog (BigQuery) |
-| **Ask AI** | Any earthquake question, any language | Catalog + live feed + web search |
-| **Response Toolkit** | The hours after a quake | All of the above + OpenStreetMap |
-
-The scrolling strip under the header shows this week's M5+ events everywhere in
-the app — orange for M6+, **red for M6.5+ alerts**, blue for tsunami-flagged.
-On most pages a **💬 Ask QuakeSense** chat bubble floats bottom-right: quick
-questions about what's on screen, answered with the exact event/location named.
-
-#### Live Now
-The world map of every earthquake in the last 7 days: magnitude presets and
-slider, location filter, tectonic plate boundaries (red lines — that's where
-quakes happen), tsunami auto-flagging, CSV export. Below the map: **AI Situation
-Briefings** for any significant event, and **global media coverage** — top
-earthquake headlines from world media.
-
-#### Anomaly Watch
-Compares this week's activity in every region against its 50-year average and
-flags what's unusual — swarms, aftershock sequences — with calm AI explanations.
-
-#### My Area
-Pick your country and town from verified dropdowns, choose from 8 languages
-(English, Burmese, Thai, Hindi, Bengali, Telugu, Marathi, Tamil), and get a
-community risk profile grounded in your area's real 50-year record — with
-charts and a map of every M5+ epicenter near you.
-
-#### Ask AI
-Ask anything about earthquakes, in any language — it answers in yours.
-Historical questions are answered from 50 years of USGS records with the SQL
-shown; this-week questions from the live feed; current events with live web
-search, **sources cited**. Every answer takes a 👍/👎 so we keep improving.
-It remembers follow-ups (*"and for Japan?"*) and can discuss your My Area profile.
-
-#### Response Toolkit
-For the hours after a quake: a formal **situation report (SITREP)** with
-web-verified external reports, **do's and don'ts** for people waiting for
-rescue (8 languages, FEMA/Red Cross guidance), and **hospitals, fire and
-police stations** near any affected town, with national emergency hotlines.
-The event you picked on Live Now carries over automatically.
-
----
-*Earthquakes cannot be predicted. QuakeSense supports awareness, communication,
-and preparedness decisions — never prediction.*
-""")
+    st.subheader(t("guide_h"))
+    st.markdown(t("guide_md"))
 
 st.divider()
 st.caption("Global real-time earthquake intelligence · USGS live feed & FDSN catalog · "

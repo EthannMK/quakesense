@@ -94,6 +94,34 @@ def _stream_text(prompt: str, temperature: float, fallback: str,
         yield fallback
 
 
+def translate_ui(strings: dict, language: str) -> dict:
+    """Translate the interface string table into any language Gemini knows -
+    including low-resource / regional languages. One batched JSON call.
+
+    Keys come back unchanged; only values are translated. Raises on failure
+    so the caller can fall back to English."""
+    prompt = (
+        f"Translate the VALUES of this JSON object into {language}.\n"
+        "Rules:\n"
+        "- Return ONLY a JSON object with exactly the same keys.\n"
+        "- These are UI labels for an earthquake-safety app: keep them short "
+        "and natural, the way a native-speaking app would phrase them.\n"
+        "- Preserve markdown syntax, emoji, punctuation like '·', and any "
+        "placeholders in curly braces such as {n} exactly as they are.\n"
+        "- Do NOT translate: QuakeSense, Terra, USGS, SITREP, PAGER, CSV, "
+        "GPS, SQL, FEMA, Gemini, BigQuery, M5+/M6+ magnitude notation, "
+        "organization names, or URLs.\n\n"
+        + json.dumps(strings, ensure_ascii=False))
+    resp = _client().models.generate_content(
+        model=GEMINI_MODEL, contents=prompt,
+        config=_config(temperature=0.1,
+                       response_mime_type="application/json"))
+    out = json.loads(resp.text)
+    if not isinstance(out, dict) or not out:
+        raise ValueError("empty translation")
+    return {k: out.get(k) or v for k, v in strings.items()}
+
+
 # ============================================================ briefings ====
 BRIEFING_SCHEMA = {
     "type": "object",
