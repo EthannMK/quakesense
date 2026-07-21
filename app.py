@@ -22,7 +22,7 @@ from src.ai import (situation_briefing, smart_ask, explain_anomaly,
                     log_feedback, prioritize_facilities)
 from src.config import MAPS_API_KEY
 from src.anomaly import detect
-from src.i18n import t, LANGS, NATIVE_NAME, ensure_language
+from src.i18n import t, LANGS, NATIVE_NAME, ensure_language, all_languages
 from src.live_feed import fetch_live, significant_events, PAGER_LABEL
 
 EMERGENCY_NUMBERS = {
@@ -101,42 +101,16 @@ if "ui_theme" not in st.session_state:
 
 PAL = THEMES.get(st.session_state.ui_theme, THEMES["dark"])
 
-# Keep Streamlit's own widget theme (inputs, menus, dataframes, chat) in
-# sync. Each key is set independently - one failing must not silently skip
-# the rest (they used to share one try/except). NOTE: this only reliably
-# reaches the CURRENT connection on this same rerun; it does NOT retroactively
-# restyle native widgets that the browser already painted with the old theme,
-# which is why an explicit theme/language change forces a real reload below
-# (_hard_reload) instead of a plain st.rerun().
-try:
-    from streamlit import config as _st_config
-except Exception:
-    _st_config = None
-if _st_config is not None:
-    for _k, _v in (("theme.base", PAL["base"]),
-                   ("theme.backgroundColor", PAL["bg"]),
-                   ("theme.secondaryBackgroundColor", PAL["panel"]),
-                   ("theme.textColor", PAL["text"]),
-                   ("theme.primaryColor", PAL["accent"])):
-        try:
-            if _st_config.get_option(_k) != _v:
-                _st_config.set_option(_k, _v)
-        except Exception:
-            pass
+# NOTE: this app used to also call streamlit.config.set_option("theme.*", ...)
+# here to retheme native widgets (sidebar, inputs, links) at runtime. Removed:
+# that config is PROCESS-GLOBAL, shared by every concurrent session AND every
+# background st.fragment(run_every=...) rerun in this app - two script runs
+# picking different themes could race on the same shared value, whichever
+# wrote last (non-deterministically) winning, which showed up as random
+# half-old/half-new theme splits. Everything themeable is instead covered by
+# our own CSS below, generated fresh per-session on every run - safe, because
+# it's this session's own output, not shared process state.
 
-
-def _hard_reload():
-    """Force a full browser reconnect (new WebSocket session) instead of a
-    same-connection st.rerun(). Streamlit bakes native widget colors -
-    selectbox highlights, checkboxes, chat input, dataframe accents - into
-    the browser tab once, at the first connection; changing theme.* config
-    mid-session doesn't reliably repaint them, so they snap back to the
-    original theme the moment anything else re-renders (e.g. switching
-    sections). The preference was already written to st.query_params by
-    _set_pref(), so the fresh connection reads it straight back on boot."""
-    components.html(
-        "<script>parent.window.location.reload();</script>", height=0)
-    st.stop()
 
 st.markdown("<style>:root {" + "".join(
     f"--qs-{k.replace('_', '-')}: {v};" for k, v in PAL.items()
@@ -208,11 +182,13 @@ h1, h2, h3 {font-weight: 600; letter-spacing: -0.01em;}
 .stButton button, [data-testid="stBaseButton-secondary"],
 [data-testid="stDownloadButton"] button {
   border-radius: 8px; font-weight: 600;
+  background: var(--qs-panel); color: var(--qs-text);
+  border: 1px solid var(--qs-border);
   transition: border-color 0.15s, background 0.15s, box-shadow 0.15s,
               transform 0.15s;
 }
 .stButton button:hover, [data-testid="stDownloadButton"] button:hover {
-  border-color: var(--qs-accent);
+  border-color: var(--qs-accent); background: var(--qs-panel-hi);
 }
 [data-testid="stButtonGroup"] button {border-radius: 999px; font-weight: 600;}
 hr {margin: 1.1rem 0 0.9rem 0; border-color: var(--qs-border);}
@@ -331,8 +307,31 @@ div[data-testid="stPopoverBody"] [data-testid="stBaseButton-secondaryFormSubmit"
 }
 
 h2, h3 {letter-spacing: 0.01em; color: var(--qs-text);}
-section[data-testid="stSidebar"] {border-right: 1px solid var(--qs-border);}
+
+/* Sidebar: background/text no longer come from Streamlit's native theme
+   (see the removed runtime theme.* config sync above) - covered here
+   instead, generated fresh per-session, so it can't race with anyone
+   else's session or a background fragment rerun. */
+section[data-testid="stSidebar"] {
+  background: var(--qs-bg); border-right: 1px solid var(--qs-border);
+}
+section[data-testid="stSidebar"] * {color: var(--qs-text);}
 section[data-testid="stSidebar"] .stRadio label p {font-size: 0.90rem;}
+section[data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+section[data-testid="stSidebar"] .stCaption {color: var(--qs-muted);}
+
+/* Native form controls: browsers respect accent-color directly, regardless
+   of Streamlit's own theme system - same reasoning as above. */
+input[type="radio"], input[type="checkbox"] {accent-color: var(--qs-accent);}
+a {color: var(--qs-blue);}
+[data-baseweb="select"] > div {
+  background: var(--qs-panel); border-color: var(--qs-border);
+}
+[data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea,
+[data-testid="stNumberInput"] input {
+  background: var(--qs-panel); color: var(--qs-text);
+  border-color: var(--qs-border);
+}
 
 .qs-credit {
   font-size: 0.68rem; letter-spacing: 0.10em; text-transform: uppercase;
@@ -1763,7 +1762,7 @@ def welcome_dialog():
     """First-open setup: display mode + interface language. Both can be
     changed later from the sidebar."""
     st.markdown(t("wb_intro"))
-    langs = list(LANGS) + [OTHER_LANG]
+    langs = all_languages() + [OTHER_LANG]
     cur = st.session_state.ui_lang
     ix = langs.index(cur) if cur in langs else len(langs) - 1
     pick = st.selectbox(t("wb_lang"), langs, index=ix, key="wb_lang",
@@ -1784,7 +1783,7 @@ def welcome_dialog():
     if st.button(t("wb_start"), type="primary", use_container_width=True):
         _set_pref(theme=theme, lang=(lang or "English").strip() or "English")
         st.session_state.onboarded = True
-        _hard_reload()
+        st.rerun()
 
 
 if not st.session_state.get("onboarded"):
@@ -1835,8 +1834,7 @@ if st.sidebar.button(t("refresh"), use_container_width=True):
     get_live.clear()
     st.rerun()
 
-# ---- display mode + language, changeable anytime. A real reload (not a
-# plain st.rerun) is used here - see _hard_reload for why. ----
+# ---- display mode + language, changeable anytime ----
 st.sidebar.markdown("---")
 _theme_pick = st.sidebar.selectbox(
     "🎨 " + t("theme"), THEME_KEYS,
@@ -1844,9 +1842,9 @@ _theme_pick = st.sidebar.selectbox(
     format_func=lambda k: t(THEME_LABEL[k][0]))
 if _theme_pick != st.session_state.ui_theme:
     _set_pref(theme=_theme_pick)
-    _hard_reload()
+    st.rerun()
 
-_langs_sb = list(LANGS) + [OTHER_LANG]
+_langs_sb = all_languages() + [OTHER_LANG]
 _cur_lang = st.session_state.ui_lang
 _sb_pick = st.sidebar.selectbox(
     "🌐 " + t("language"), _langs_sb,
@@ -1861,10 +1859,10 @@ if _sb_pick == OTHER_LANG:
         help="Gemini translates the whole interface into any language.")
     if _typed.strip() and _typed.strip() != _cur_lang:
         _set_pref(lang=_typed.strip())
-        _hard_reload()
+        st.rerun()
 elif _sb_pick != _cur_lang:
     _set_pref(lang=_sb_pick)
-    _hard_reload()
+    st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.caption(t("disclaimer"))

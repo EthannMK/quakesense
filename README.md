@@ -38,9 +38,12 @@ and deep navy), **Light**, or **Warm sand** (beige, brown and neutral earth
 tones) - and which language the interface should be in. The whole UI (menus,
 headers, captions, buttons) follows that choice. Eight languages ship
 hand-translated (English, Burmese, Thai, Hindi, Bengali, Telugu, Marathi,
-Tamil); pick "Other" and type **any** language - Gemini translates the entire
-interface in one batched call (cached per language, falls back to English if
-Vertex AI is unreachable). Both settings can be changed anytime from sidebar
+Tamil); the rest of the dropdown - about 180 world languages from the ISO
+639 standard - is populated locally (no network call), and picking one
+translates the whole interface via Gemini, in small batches so one call's
+output limit can't take the whole translation down (falls back to English
+for anything it truly can't reach). A free-text "Other" option still covers
+anything not in the list. Both settings can be changed anytime from sidebar
 dropdowns, and are kept in the URL so refreshes and shared links preserve
 them.
 

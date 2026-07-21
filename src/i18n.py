@@ -53,9 +53,52 @@ def ensure_language(lang: str) -> bool:
     try:
         _gemini_table(lang)
         return True
-    except Exception:
+    except Exception as e:
+        # Printed to the terminal running `streamlit run` - the UI only ever
+        # shows a generic toast, so this is the only way to see WHY a
+        # language failed (e.g. missing Vertex AI credentials vs a genuine
+        # translation hiccup).
+        print(f"[i18n] translation to '{lang}' failed: {e!r}")
         st.session_state["_i18n_failed"] = lang
         return False
+
+
+@st.cache_data(show_spinner=False)
+def all_languages() -> list:
+    """Full picker list: the 8 hand-translated core languages first (instant,
+    zero-latency), then every ISO 639-1 language name from pycountry - already
+    a project dependency (it's what powers the country-flag picker on My
+    Area), so this is a local lookup with no network call, no extra API to
+    enable, and nothing that can fail at runtime. Picking any of the extra
+    ~180 languages translates the interface on demand via Gemini (see
+    ensure_language / translate_ui in src/ai.py)."""
+    import pycountry
+    # pycountry's raw ISO 639 names carry technical qualifiers on a handful
+    # of major languages (e.g. "Nepali (macrolanguage)", "Modern Greek
+    # (1453-)") - map those to the plain name a user would actually type.
+    CLEAN = {
+        "Modern Greek (1453-)": "Greek",
+        "Interlingua (International Auxiliary Language Association)": "Interlingua",
+        "Malay (macrolanguage)": "Malay",
+        "Nepali (macrolanguage)": "Nepali",
+        "Occitan (post 1500)": "Occitan",
+        "Oriya (macrolanguage)": "Oriya",
+        "Swahili (macrolanguage)": "Swahili",
+        "Tonga (Tonga Islands)": "Tongan",
+    }
+    out = list(LANGS)
+    seen = {n.lower() for n in out}
+    extra = []
+    for lang in pycountry.languages:
+        name = getattr(lang, "name", None)
+        if not (name and getattr(lang, "alpha_2", None)):
+            continue
+        name = CLEAN.get(name, name)
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            extra.append(name)
+    out.extend(sorted(extra))
+    return out
 
 
 def t(key: str, **kw) -> str:

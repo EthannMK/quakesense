@@ -94,12 +94,13 @@ def _stream_text(prompt: str, temperature: float, fallback: str,
         yield fallback
 
 
-def translate_ui(strings: dict, language: str) -> dict:
-    """Translate the interface string table into any language Gemini knows -
-    including low-resource / regional languages. One batched JSON call.
-
-    Keys come back unchanged; only values are translated. Raises on failure
-    so the caller can fall back to English."""
+def _translate_chunk(strings: dict, language: str) -> dict:
+    """One Gemini call translating a SMALL chunk of the UI string table.
+    Kept small deliberately: translating the whole ~150-entry table in one
+    call risks the response getting cut off mid-JSON before it finishes
+    (scripts like Devanagari or Bengali often need more output tokens per
+    character than English), which throws a JSON parse error and used to
+    fail the entire table over one truncated response."""
     prompt = (
         f"Translate the VALUES of this JSON object into {language}.\n"
         "Rules:\n"
@@ -114,12 +115,44 @@ def translate_ui(strings: dict, language: str) -> dict:
         + json.dumps(strings, ensure_ascii=False))
     resp = _client().models.generate_content(
         model=GEMINI_MODEL, contents=prompt,
-        config=_config(temperature=0.1,
+        config=_config(temperature=0.1, max_output_tokens=8192,
                        response_mime_type="application/json"))
-    out = json.loads(resp.text)
+    text = (resp.text or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        text = text[text.find("{"):]
+    out = json.loads(text)
     if not isinstance(out, dict) or not out:
-        raise ValueError("empty translation")
-    return {k: out.get(k) or v for k, v in strings.items()}
+        raise ValueError("empty translation chunk")
+    return out
+
+
+def translate_ui(strings: dict, language: str) -> dict:
+    """Translate the interface string table into any language Gemini knows -
+    including low-resource / regional languages. Split into small chunks so
+    one call's output-token limit (or one transient hiccup) can't take down
+    the whole table; a chunk that fails just keeps its English values
+    instead of failing the entire translation.
+
+    Raises only if EVERY chunk failed (Vertex AI is genuinely unreachable),
+    so the caller can fall back to English."""
+    items = list(strings.items())
+    chunk_size = 40
+    out = {}
+    translated_any = False
+    for i in range(0, len(items), chunk_size):
+        piece = dict(items[i:i + chunk_size])
+        try:
+            done = _translate_chunk(piece, language)
+            out.update({k: done.get(k) or v for k, v in piece.items()})
+            translated_any = True
+        except Exception as e:
+            print(f"[ai] translate_ui chunk {i}-{i + len(piece)} into "
+                 f"'{language}' failed: {e!r}")
+            out.update(piece)  # this chunk stays in English
+    if not translated_any:
+        raise RuntimeError(f"could not translate any chunk into {language}")
+    return out
 
 
 # ============================================================ briefings ====
