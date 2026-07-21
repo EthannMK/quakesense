@@ -91,9 +91,26 @@ scale to zero if cost matters more than first-load speed.
 
 - USGS Earthquake Hazards Program (real-time GeoJSON feeds and the FDSN event
   service) - public domain
-- GeoNames cities500 database (town names and coordinates) - CC-BY
+- GeoNames cities500 database (town names and coordinates) - CC-BY 4.0
 - Tectonic plate boundaries from Bird (2003), via the fraxen/tectonicplates
   repository
+- Global news via the GDELT Project; humanitarian updates via ReliefWeb
+  (UN OCHA); place search and maps via the Google Maps Platform
+
+The offline library links to official publications hosted by their publishers
+(FEMA, American Red Cross, USGS, Ready.gov, Earthquake Country Alliance); those
+documents remain under their respective copyrights and are not redistributed
+here.
+
+## License
+
+QuakeSense is released under the [MIT License](LICENSE) - free to use, modify,
+and distribute.
+
+The MIT License covers the project's own source code. Third-party data bundled
+or fetched at runtime keeps its own license: the GeoNames town data
+(`data/towns.csv`) is CC-BY 4.0 and requires attribution to GeoNames; USGS
+data is public domain.
 
 ## Team
 
