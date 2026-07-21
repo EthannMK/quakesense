@@ -33,6 +33,17 @@ uses Gemini to turn them into answers:
   that region's 50-year average and flags anything unusual, with an AI
   explanation of the pattern.
 
+On first open the app asks two things: how it should look - **Dark** (black
+and deep navy), **Light**, or **Warm sand** (beige, brown and neutral earth
+tones) - and which language the interface should be in. The whole UI (menus,
+headers, captions, buttons) follows that choice. Eight languages ship
+hand-translated (English, Burmese, Thai, Hindi, Bengali, Telugu, Marathi,
+Tamil); pick "Other" and type **any** language - Gemini translates the entire
+interface in one batched call (cached per language, falls back to English if
+Vertex AI is unreachable). Both settings can be changed anytime from sidebar
+dropdowns, and are kept in the URL so refreshes and shared links preserve
+them.
+
 One thing we were careful about: the app never predicts earthquakes, and says
 so on every page. Answers from the catalog end with a note that events are
 verified against the USGS record, because we found that plain chatbots
