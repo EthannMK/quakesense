@@ -101,15 +101,35 @@ if "ui_theme" not in st.session_state:
 
 PAL = THEMES.get(st.session_state.ui_theme, THEMES["dark"])
 
-# NOTE: this app used to also call streamlit.config.set_option("theme.*", ...)
-# here to retheme native widgets (sidebar, inputs, links) at runtime. Removed:
-# that config is PROCESS-GLOBAL, shared by every concurrent session AND every
-# background st.fragment(run_every=...) rerun in this app - two script runs
-# picking different themes could race on the same shared value, whichever
-# wrote last (non-deterministically) winning, which showed up as random
-# half-old/half-new theme splits. Everything themeable is instead covered by
-# our own CSS below, generated fresh per-session on every run - safe, because
-# it's this session's own output, not shared process state.
+# st.dataframe/st.data_editor render onto an HTML canvas (glide-data-grid) -
+# not a normal DOM tree, so CSS further down CANNOT reach their colors; they
+# can only be recolored via Streamlit's own theme.* config. Without this,
+# they (and anything else not covered by our CSS) fall back to the STATIC
+# defaults in .streamlit/config.toml, which are the DARK theme's colors -
+# e.g. its pale textColor (#dbe2ec) is invisible on Light's white background.
+#
+# Everything ELSE themeable (sidebar, buttons, inputs, links) is covered
+# entirely by our own per-session CSS further down and deliberately does
+# NOT need this config. Kept deliberately minimal - just the few keys
+# dataframes/native chrome need - because streamlit.config is PROCESS-
+# GLOBAL, shared by every concurrent session in this server process (not by
+# same-session st.fragment(run_every=) reruns, which only re-execute the
+# fragment body, not this module-level code). Two full sessions with
+# DIFFERENT themes open at once (e.g. a stale tab left over from testing)
+# could race on this shared value and each see a half-old/half-new mix -
+# a real but narrow risk for a single-user demo, worth it to fix the
+# "invisible text" / "black table" problem CSS-only can't solve.
+try:
+    from streamlit import config as _st_config
+    for _k, _v in (("theme.base", PAL["base"]),
+                   ("theme.backgroundColor", PAL["bg"]),
+                   ("theme.secondaryBackgroundColor", PAL["panel"]),
+                   ("theme.textColor", PAL["text"]),
+                   ("theme.primaryColor", PAL["accent"])):
+        if _st_config.get_option(_k) != _v:
+            _st_config.set_option(_k, _v)
+except Exception:
+    pass
 
 
 st.markdown("<style>:root {" + "".join(
@@ -1744,34 +1764,25 @@ def _set_pref(theme=None, lang=None):
     """Apply a preference and mirror it into the URL so refreshes and shared
     links keep it.
 
-    Also clears every OTHER widget-bound key that shows this same choice
-    (sidebar + welcome-dialog pickers). Confirmed root cause of the "picks
-    Thai, ends up English" bug: the sidebar's own selectors render on every
-    page (even behind the welcome dialog, on first paint) and keep whatever
-    value they were FIRST given; when this function updates the canonical
-    ui_theme/ui_lang from a DIFFERENT picker, the sidebar widget's stale
-    value now visibly differs from the new canonical one, and the sidebar's
-    own "did the user change this?" check fires - overwriting the just-set
-    preference right back, moments after it was applied. Deleting these
-    keys (rather than assigning them - illegal on a widget already drawn
-    THIS run, e.g. wb_theme when called from inside the welcome dialog)
-    lets each one reinitialize cleanly from ui_theme/ui_lang next render."""
+    The sidebar's theme/language selectors are keyed by the CURRENT
+    ui_theme/ui_lang (e.g. key=f"sb_lang_{ui_lang}"), not a fixed key.
+    Confirmed root cause of the "picks Thai in the welcome dialog, sidebar
+    still shows English" bug: that sidebar selector renders on every page,
+    even behind the welcome dialog on first paint, and was never itself
+    clicked - so its on-screen value depended on the backend correctly
+    repainting an already-mounted widget instance, which didn't happen
+    reliably. Changing ui_theme/ui_lang here means the sidebar selector
+    gets a brand-new key next render regardless of which picker (sidebar
+    or welcome dialog) made the change, forcing a fresh widget mount with
+    the right value baked in from creation instead of patching a stale
+    one."""
     if theme:
         st.session_state.ui_theme = theme
         st.query_params["theme"] = theme
-        for _key in ("sb_theme", "wb_theme"):
-            try:
-                del st.session_state[_key]
-            except Exception:
-                pass
     if lang:
         st.session_state.ui_lang = lang
         st.query_params["lang"] = lang
-        for _key in ("sb_lang", "wb_lang", "sb_lang_free", "wb_lang_free"):
-            try:
-                del st.session_state[_key]
-            except Exception:
-                pass
+        st.session_state.pop("sb_lang_free", None)
 
 
 def _lang_label(l):
@@ -1861,7 +1872,8 @@ if st.sidebar.button(t("refresh"), use_container_width=True):
 st.sidebar.markdown("---")
 _theme_pick = st.sidebar.selectbox(
     "🎨 " + t("theme"), THEME_KEYS,
-    index=THEME_KEYS.index(st.session_state.ui_theme), key="sb_theme",
+    index=THEME_KEYS.index(st.session_state.ui_theme),
+    key=f"sb_theme_{st.session_state.ui_theme}",
     format_func=lambda k: t(THEME_LABEL[k][0]))
 if _theme_pick != st.session_state.ui_theme:
     _set_pref(theme=_theme_pick)
@@ -1873,7 +1885,7 @@ _sb_pick = st.sidebar.selectbox(
     "🌐 " + t("language"), _langs_sb,
     index=(_langs_sb.index(_cur_lang) if _cur_lang in _langs_sb
            else len(_langs_sb) - 1),
-    key="sb_lang", format_func=_lang_label)
+    key=f"sb_lang_{_cur_lang}", format_func=_lang_label)
 if _sb_pick == OTHER_LANG:
     _typed = st.sidebar.text_input(
         "🌐 Language", value=_cur_lang if _cur_lang not in LANGS else "",
