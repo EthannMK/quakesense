@@ -95,8 +95,8 @@ if "ui_theme" not in st.session_state:
     st.session_state.ui_theme = _qp_theme if _qp_theme in THEMES else "dark"
     st.session_state.ui_lang = _qp_lang or "English"
     st.session_state.onboarded = bool(_qp_theme or _qp_lang)
-    # Carried across the hard reload a theme/language change triggers below,
-    # so switching the display mode doesn't also bounce you back to Live Now.
+    # Carried across reruns so switching the display mode doesn't also
+    # bounce you back to Live Now.
     st.session_state.ui_page = st.query_params.get("page", "")
 
 PAL = THEMES.get(st.session_state.ui_theme, THEMES["dark"])
@@ -1742,13 +1742,36 @@ OTHER_LANG = "__other__"
 
 def _set_pref(theme=None, lang=None):
     """Apply a preference and mirror it into the URL so refreshes and shared
-    links keep it."""
+    links keep it.
+
+    Also clears every OTHER widget-bound key that shows this same choice
+    (sidebar + welcome-dialog pickers). Confirmed root cause of the "picks
+    Thai, ends up English" bug: the sidebar's own selectors render on every
+    page (even behind the welcome dialog, on first paint) and keep whatever
+    value they were FIRST given; when this function updates the canonical
+    ui_theme/ui_lang from a DIFFERENT picker, the sidebar widget's stale
+    value now visibly differs from the new canonical one, and the sidebar's
+    own "did the user change this?" check fires - overwriting the just-set
+    preference right back, moments after it was applied. Deleting these
+    keys (rather than assigning them - illegal on a widget already drawn
+    THIS run, e.g. wb_theme when called from inside the welcome dialog)
+    lets each one reinitialize cleanly from ui_theme/ui_lang next render."""
     if theme:
         st.session_state.ui_theme = theme
         st.query_params["theme"] = theme
+        for _key in ("sb_theme", "wb_theme"):
+            try:
+                del st.session_state[_key]
+            except Exception:
+                pass
     if lang:
         st.session_state.ui_lang = lang
         st.query_params["lang"] = lang
+        for _key in ("sb_lang", "wb_lang", "sb_lang_free", "wb_lang_free"):
+            try:
+                del st.session_state[_key]
+            except Exception:
+                pass
 
 
 def _lang_label(l):
