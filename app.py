@@ -1006,11 +1006,19 @@ def news_rail_component(server_cards, fetch_photos=True):
     html_src = ("""
 <style>
 body {margin:0; background:transparent; font-family:-apple-system,"Segoe UI",Roboto,sans-serif;}
-.qs-newsrail {overflow:hidden; padding:4px 0 8px 0;}
-.qs-newsrail-inner {display:flex; gap:12px; width:max-content;
-  animation: qs-rail 70s linear infinite;}
-.qs-newsrail:hover .qs-newsrail-inner {animation-play-state:paused;}
-@keyframes qs-rail {0% {transform:translateX(0);} 100% {transform:translateX(-50%);}}
+.qs-newsrail {overflow:hidden; padding:4px 0 8px 0; position:relative;}
+.qs-newsrail-scroll {overflow-x:auto; overflow-y:hidden; scroll-behavior:smooth;
+  scrollbar-width:none; -ms-overflow-style:none;}
+.qs-newsrail-scroll::-webkit-scrollbar {display:none;}
+.qs-newsrail-inner {display:flex; gap:12px; width:max-content;}
+.qs-railbtn {position:absolute; top:44%; transform:translateY(-50%); z-index:2;
+  width:30px; height:30px; border-radius:50%; border:1px solid __BORDER__;
+  background:__PANEL__; color:__TEXT__; display:flex; align-items:center;
+  justify-content:center; cursor:pointer; opacity:0.85; font-size:16px;
+  line-height:1; user-select:none; box-shadow:__SHADOW__;}
+.qs-railbtn:hover {opacity:1; border-color:__ACCENT__; color:__ACCENT__;}
+.qs-railbtn.qs-rail-left {left:2px;}
+.qs-railbtn.qs-rail-right {right:2px;}
 .qs-newscard {flex:0 0 250px; background:__PANEL__; border:1px solid __BORDER__;
   border-radius:10px; overflow:hidden; text-decoration:none;
   transition:border-color 0.15s, transform 0.15s, box-shadow 0.15s;}
@@ -1052,6 +1060,21 @@ function card(c) {
        + '</span><span class="qs-newstitle">' + esc((c.title || '').slice(0, 110))
        + '</span></div></a>';
 }
+let railPauseUntil = 0;
+function railScroll(dir) {
+  const sc = document.getElementById('railScroll');
+  if (!sc) return;
+  sc.scrollBy({left: dir * 270, behavior: 'smooth'});
+  railPauseUntil = Date.now() + 2500;
+}
+function railAutoStep() {
+  const sc = document.getElementById('railScroll');
+  if (!sc || Date.now() < railPauseUntil || sc.matches(':hover')) return;
+  sc.scrollLeft += 1;
+  const half = sc.scrollWidth / 2;
+  if (sc.scrollLeft >= half) {sc.scrollLeft -= half;}
+}
+setInterval(railAutoStep, 40);
 function render(cards) {
   const el = document.getElementById('rail');
   if (!cards || !cards.length) {
@@ -1059,7 +1082,11 @@ function render(cards) {
     return;
   }
   const row = cards.map(card).join('');
-  el.innerHTML = '<div class="qs-newsrail"><div class="qs-newsrail-inner">' + row + row + '</div></div>';
+  el.innerHTML = '<div class="qs-newsrail">'
+    + '<div class="qs-railbtn qs-rail-left" onclick="railScroll(-1)">&#8249;</div>'
+    + '<div class="qs-railbtn qs-rail-right" onclick="railScroll(1)">&#8250;</div>'
+    + '<div class="qs-newsrail-scroll" id="railScroll">'
+    + '<div class="qs-newsrail-inner">' + row + row + '</div></div></div>';
 }
 render(FALLBACK);
 if (FETCH) {
@@ -1853,13 +1880,15 @@ _PAGE = {p[0]: p for p in PAGES}
 
 st.sidebar.markdown(f"##### {t('menu')}")
 _page_ids = [p[0] for p in PAGES]
-_default_page_ix = (_page_ids.index(st.session_state.ui_page)
-                    if st.session_state.get("ui_page") in _page_ids else 0)
+if "nav_page_radio" not in st.session_state:
+    st.session_state["nav_page_radio"] = (
+        st.session_state.ui_page if st.session_state.get("ui_page") in _page_ids
+        else _page_ids[0])
 page = st.sidebar.radio(
-    "Navigation", _page_ids, index=_default_page_ix,
+    "Navigation", _page_ids,
     format_func=lambda k: f"{_PAGE[k][1]} {t(_PAGE[k][2])}",
     captions=[t(p[3]) for p in PAGES],
-    label_visibility="collapsed")
+    label_visibility="collapsed", key="nav_page_radio")
 if page != st.session_state.get("ui_page"):
     st.session_state.ui_page = page
     st.query_params["page"] = page
