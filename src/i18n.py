@@ -66,12 +66,20 @@ def ensure_language(lang: str) -> bool:
 @st.cache_data(show_spinner=False)
 def all_languages() -> list:
     """Full picker list: the 8 hand-translated core languages first (instant,
-    zero-latency), then every ISO 639-1 language name from pycountry - already
-    a project dependency (it's what powers the country-flag picker on My
-    Area), so this is a local lookup with no network call, no extra API to
-    enable, and nothing that can fail at runtime. Picking any of the extra
-    ~180 languages translates the interface on demand via Gemini (see
-    ensure_language / translate_ui in src/ai.py)."""
+    zero-latency), then EVERY language pycountry knows (full ISO 639-3, not
+    just the ~184 with an ISO 639-1 code) - already a project dependency
+    (it's what powers the country-flag picker on My Area), so this is a
+    local lookup with no network call, no extra API to enable, and nothing
+    that can fail at runtime.
+
+    Deliberately not narrowed to the ~184 "major" (alpha_2-coded) languages:
+    that list systematically excludes exactly the regional/minority
+    languages this project's rural, earthquake-prone audience actually
+    speaks - Bhojpuri, Santali, Shan, Karen, Cebuano, Ilocano, Tetum and
+    thousands more. Picking any of these ~7900 languages translates the
+    interface on demand via Gemini (see ensure_language / translate_ui in
+    src/ai.py); the picker itself does the searchable-dropdown work so a
+    user never has to type or spell anything."""
     import pycountry
     # pycountry's raw ISO 639 names carry technical qualifiers on a handful
     # of major languages (e.g. "Nepali (macrolanguage)", "Modern Greek
@@ -91,7 +99,7 @@ def all_languages() -> list:
     extra = []
     for lang in pycountry.languages:
         name = getattr(lang, "name", None)
-        if not (name and getattr(lang, "alpha_2", None)):
+        if not name:
             continue
         name = CLEAN.get(name, name)
         if name.lower() not in seen:
