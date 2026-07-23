@@ -113,10 +113,12 @@ def _translate_chunk(strings: dict, language: str) -> dict:
         "GPS, SQL, FEMA, Gemini, BigQuery, M5+/M6+ magnitude notation, "
         "organization names, or URLs.\n\n"
         + json.dumps(strings, ensure_ascii=False))
+    from google.genai import types
     resp = _client().models.generate_content(
         model=GEMINI_MODEL, contents=prompt,
         config=_config(temperature=0.1, max_output_tokens=8192,
-                       response_mime_type="application/json"))
+                       response_mime_type="application/json",
+                       http_options=types.HttpOptions(timeout=45_000)))
     text = (resp.text or "").strip()
     if text.startswith("```"):
         text = text.strip("`")
@@ -127,29 +129,48 @@ def _translate_chunk(strings: dict, language: str) -> dict:
     return out
 
 
+def _translate_chunk_retrying(piece: dict, language: str) -> dict:
+    """One chunk, with a single retry - a truncated/malformed JSON response
+    is usually a one-off hiccup, not a language Gemini can't do, so a
+    single chunk failing on the first try shouldn't leave 40 strings
+    permanently stuck in English."""
+    try:
+        return _translate_chunk(piece, language)
+    except Exception:
+        return _translate_chunk(piece, language)
+
+
 def translate_ui(strings: dict, language: str) -> dict:
     """Translate the interface string table into any language Gemini knows -
     including low-resource / regional languages. Split into small chunks so
     one call's output-token limit (or one transient hiccup) can't take down
-    the whole table; a chunk that fails just keeps its English values
+    the whole table, and run the chunks CONCURRENTLY - sequentially, 4
+    chunks at ~30-90s each for a low-resource language turns into minutes
+    of spinner; in parallel it's bounded by the slowest single chunk. A
+    chunk that fails (even after its retry) just keeps its English values
     instead of failing the entire translation.
 
     Raises only if EVERY chunk failed (Vertex AI is genuinely unreachable),
     so the caller can fall back to English."""
+    from concurrent.futures import ThreadPoolExecutor
     items = list(strings.items())
     chunk_size = 40
+    pieces = [dict(items[i:i + chunk_size])
+             for i in range(0, len(items), chunk_size)]
     out = {}
     translated_any = False
-    for i in range(0, len(items), chunk_size):
-        piece = dict(items[i:i + chunk_size])
-        try:
-            done = _translate_chunk(piece, language)
-            out.update({k: done.get(k) or v for k, v in piece.items()})
-            translated_any = True
-        except Exception as e:
-            print(f"[ai] translate_ui chunk {i}-{i + len(piece)} into "
-                 f"'{language}' failed: {e!r}")
-            out.update(piece)  # this chunk stays in English
+    with ThreadPoolExecutor(max_workers=len(pieces) or 1) as ex:
+        futures = {ex.submit(_translate_chunk_retrying, piece, language): piece
+                  for piece in pieces}
+        for fut, piece in futures.items():
+            try:
+                done = fut.result()
+                out.update({k: done.get(k) or v for k, v in piece.items()})
+                translated_any = True
+            except Exception as e:
+                print(f"[ai] translate_ui chunk into '{language}' failed "
+                     f"after retry: {e!r}")
+                out.update(piece)  # this chunk stays in English
     if not translated_any:
         raise RuntimeError(f"could not translate any chunk into {language}")
     return out
@@ -172,7 +193,7 @@ BRIEFING_SCHEMA = {
 BRIEFING_PROMPT = """You are a public-safety communication specialist. Write a calm,
 plain-language community situation briefing for this earthquake, suitable for citizens,
 local officials, and journalists. No jargon. Do not exaggerate. Base everything ONLY on
-the data below; where data is missing, say so.
+the data below; where data is missing, say so. Write ALL output in {language}.
 
 EARTHQUAKE DATA (USGS real-time feed):
 - Magnitude: {mag}
@@ -192,14 +213,14 @@ For a minor deep quake, say monitoring is sufficient - do not cause alarm.
 """
 
 
-def situation_briefing(ev: dict) -> dict:
+def situation_briefing(ev: dict, language: str = "English") -> dict:
     try:
         resp = _client().models.generate_content(
             model=GEMINI_MODEL,
             contents=BRIEFING_PROMPT.format(
                 mag=ev["mag"], place=ev["place"], lat=ev["lat"], lon=ev["lon"],
                 depth_km=round(ev["depth_km"], 1), time=ev["time"],
-                pager=_pager_label(ev),
+                pager=_pager_label(ev), language=language,
                 tsunami="YES - check official tsunami advisories" if ev.get("tsunami_flag") else "no",
                 felt=ev.get("felt_reports", 0), sig=ev.get("significance", 0)),
             config=_config(response_mime_type="application/json",
@@ -891,7 +912,7 @@ def area_profile(place: str, hist: dict, live_near: dict,
 
 # ======================================================== anomaly explain ===
 def explain_anomaly(cell: dict, events: pd.DataFrame,
-                    hist_context: str = "") -> str:
+                    hist_context: str = "", language: str = "English") -> str:
     ev_lines = "; ".join(
         f"M{r.mag:.1f} {r.place} ({r.time:%b %d %H:%M} UTC, {r.depth_km:.0f} km deep)"
         for r in events.sort_values('time').head(10).itertuples())
@@ -909,7 +930,8 @@ def explain_anomaly(cell: dict, events: pd.DataFrame,
             "background) with reasoning from the magnitudes and timing above.\n"
             "**Historical context** - how this week compares to the region's record.\n"
             "**For nearby communities** - 2-3 calm, practical points.\n"
-            "Never predict; state clearly that elevated activity does not guarantee a larger event.")
+            "Never predict; state clearly that elevated activity does not guarantee a larger event.\n"
+            f"Write ALL output in {language}.")
         resp = _client().models.generate_content(
             model=GEMINI_MODEL, contents=prompt,
             config=_config(temperature=0.3))

@@ -805,7 +805,7 @@ def google_places_section(trow, ev):
         places = places_search(query.strip(), lat, lon)
     except Exception as e:
         places = []
-        st.warning(f"Google Places unavailable ({str(e)[:80]}).")
+        st.warning(f"{t('places_unavail')} ({str(e)[:80]}).")
 
     # -- 3. NEAREST OPTIONS (ride-option cards) ---------------------------
     if places:
@@ -1333,7 +1333,8 @@ def briefing_block(ev: dict, pick: str):
     """Generate + display the community briefing; reruns alone, not the page."""
     if st.button(t("gen_brief"), type="primary"):
         with st.spinner("Gemini drafting briefing..."):
-            st.session_state.briefing = situation_briefing(ev)
+            st.session_state.briefing = situation_briefing(
+                ev, st.session_state.get("ui_lang", "English"))
             st.session_state.briefing_event = pick
 
     if st.session_state.get("briefing") and st.session_state.get("briefing_event") == pick:
@@ -1534,7 +1535,7 @@ def my_area_block(tdb, live):
                                      "df": hist_df, "lat": lat, "lon": lon,
                                      "city": sel, "display": display}
         except Exception as e:
-            st.error(f"Historical layer unavailable: {e}")
+            st.error(f"{t('hist_layer_unavail')} {e}")
 
     if st.session_state.get("area") and st.session_state.area["city"] == sel:
         ar = st.session_state.area
@@ -1614,7 +1615,8 @@ def anomaly_explain_block(flagged, live_cells):
         except Exception:
             pass
         with st.spinner("Gemini analyzing pattern with 50-year context..."):
-            st.session_state.anomaly_text = explain_anomaly(cell, evs, hist_context)
+            st.session_state.anomaly_text = explain_anomaly(
+                cell, evs, hist_context, st.session_state.get("ui_lang", "English"))
             st.session_state.anomaly_idx = idx
     if (st.session_state.get("anomaly_text")
             and st.session_state.get("anomaly_idx") == idx):
@@ -1721,14 +1723,13 @@ def facilities_block(top, ev=None):
         google_places_section(trow, ev)
         return
 
-    if st.button("Find hospitals, fire & police stations within 20 km"):
+    if st.button(t("find_facilities_btn")):
         try:
             with st.spinner(f"Searching OpenStreetMap around {trow['name']}..."):
                 fac = emergency_facilities(round(float(trow["latitude"]), 3),
                                            round(float(trow["longitude"]), 3))
             if fac.empty:
-                st.info("OpenStreetMap has no tagged facilities within 20 km of "
-                        "this point. Local knowledge may know more.")
+                st.info(t("osm_no_facilities"))
             else:
                 f1, f2 = st.columns([1.2, 1])
                 with f1:
@@ -1739,8 +1740,8 @@ def facilities_block(top, ev=None):
                 st.caption(f"{len(fac)} facilities from OpenStreetMap (community-"
                            f"maintained - coverage varies by area).")
         except Exception as e:
-            st.warning(f"Facility search unavailable right now ({str(e)[:60]}). "
-                       f"Try again in a minute.")
+            st.warning(f"{t('facility_search_unavail')} ({str(e)[:60]}). "
+                       f"{t('try_again_min')}")
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -1862,7 +1863,7 @@ try:
     live = get_live()
     feed_ok = True
 except Exception as e:
-    st.error(f"USGS live feed unreachable: {e}")
+    st.error(f"{t('usgs_unreachable')} {e}")
     live, feed_ok = pd.DataFrame(), False
 
 render_ticker(live)
@@ -1946,7 +1947,7 @@ st.sidebar.markdown(f"""
 # ================================================================ LIVE NOW ==
 if page == "Live Now":
     if not feed_ok or live.empty:
-        st.warning("No live data available right now.")
+        st.warning(t("no_live_data"))
     else:
         c1, c2, c3, c4, c5 = st.columns(5)
         last24 = live[live["time"] > pd.Timestamp.now(tz="UTC") - pd.Timedelta("24h")]
@@ -1966,9 +1967,8 @@ if page == "Live Now":
         tsu = live[live["tsunami_flag"] == 1]
         if len(tsu):
             worst = tsu.iloc[0]
-            st.warning(f"Tsunami flag active this week: {len(tsu)} event(s), including "
-                       f"M{worst['mag']:.1f} {worst['place']}. Coastal communities should "
-                       f"follow official tsunami advisories.")
+            st.warning(f"{t('tsunami_warn')} {len(tsu)} event(s), including "
+                       f"M{worst['mag']:.1f} {worst['place']}. {t('tsunami_warn_suffix')}")
 
         st.write("")
         p1, p2 = st.columns([2, 1])
@@ -2112,7 +2112,7 @@ elif page == "Anomaly Watch":
     st.subheader(t("anom_h"))
     st.caption(t("anom_cap"))
     if live.empty:
-        st.info("Live feed unavailable.")
+        st.info(t("feed_unavail"))
     else:
         flagged, live_cells = detect(live)
         if flagged.empty:
@@ -2139,7 +2139,7 @@ elif page == "Response Toolkit":
     st.markdown(f"##### {t('sitrep_h')}")
     st.caption(t("sitrep_cap"))
     if live.empty:
-        st.info("Live feed unavailable.")
+        st.info(t("feed_unavail"))
     else:
         sig = significant_events(live)
         labels_rt = [f"M{r.mag:.1f}  ·  {r.place}  ·  {r.time:%b %d %H:%M} UTC"
@@ -2166,7 +2166,7 @@ elif page == "Response Toolkit":
     st.markdown(f"##### {t('res_h')}")
     tdb2 = towns_db()
     if live.empty:
-        st.info("Live feed unavailable.")
+        st.info(t("feed_unavail"))
     elif tdb2 is None:
         st.error("Towns database missing. Run once:  python scripts/load_towns.py")
     else:
