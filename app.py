@@ -181,21 +181,58 @@ section[data-testid="stSidebar"] .stRadio label p {font-size: 0.90rem;}
   letter-spacing: 0.06em; font-weight: 600; border-radius: 4px;
 }
 
-/* Floating quick-ask popup (bottom-right on every relevant page) */
+/* Floating chat launcher — circular FAB, bottom-right */
 div[data-testid="stPopover"] {
-  position: fixed !important; bottom: 1.2rem; right: 1.2rem;
-  left: auto !important; width: auto !important; z-index: 999;
+  position: fixed !important; bottom: 1.3rem; right: 1.3rem;
+  left: auto !important; width: auto !important; z-index: 1000;
 }
 button[data-testid="stPopoverButton"] {
-  width: auto !important; border-radius: 999px !important;
-  padding: 0.5rem 1.15rem; font-weight: 600;
+  width: 58px !important; min-width: 58px !important; height: 58px !important;
+  border-radius: 50% !important; padding: 0 !important;
+  font-size: 1.55rem; line-height: 1; font-weight: 400;
   background: #e08850 !important; color: #0d1321 !important;
-  border: none !important; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  border: none !important; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  display: flex; align-items: center; justify-content: center;
+  transition: transform 0.12s, background 0.12s;
 }
 button[data-testid="stPopoverButton"]:hover {
   background: #eda06b !important; color: #0d1321 !important;
+  transform: scale(1.06);
 }
-div[data-testid="stPopoverBody"] {min-width: min(400px, 94vw);}
+button[data-testid="stPopoverButton"] [data-testid="stIconMaterial"] {
+  display: none !important;  /* hide the expand chevron - it's a round icon button */
+}
+/* Centre the chat glyph perfectly inside the circle */
+button[data-testid="stPopoverButton"] > div,
+button[data-testid="stPopoverButton"] p {
+  margin: 0 !important; padding: 0 !important; line-height: 1 !important;
+  display: flex !important; align-items: center !important;
+  justify-content: center !important;
+}
+/* Remove Streamlit's "Press Enter to submit form" hint inside the chat */
+div[data-testid="stPopoverBody"] [data-testid="InputInstructions"] {
+  display: none !important;
+}
+
+/* Chat panel — a proper fixed-size chat box */
+div[data-testid="stPopoverBody"] {
+  width: 384px !important; max-width: 92vw !important;
+  height: 560px; max-height: 78vh; overflow-y: auto;
+  padding: 0.85rem !important;
+}
+/* Coloured header bar that bleeds to the panel edges */
+.qs-chat-head {
+  display: flex; align-items: center; gap: 10px;
+  background: #e08850; margin: -0.85rem -0.85rem 0.6rem -0.85rem;
+  padding: 0.7rem 0.9rem;
+}
+.qs-chat-av {
+  width: 32px; height: 32px; border-radius: 50%; background: #0d1321;
+  color: #e08850; display: flex; align-items: center; justify-content: center;
+  font-size: 1rem; flex: 0 0 32px;
+}
+.qs-chat-title {font-weight: 700; font-size: 0.98rem; color: #0d1321; line-height: 1.1;}
+.qs-chat-sub {font-size: 0.68rem; color: #5c3a1f; line-height: 1.2;}
 [data-stale="true"] div[data-testid="stPopover"] {display: none !important;}
 
 /* Live event ticker under the header */
@@ -265,7 +302,6 @@ div[data-testid="stPopoverBody"] [data-testid="stHorizontalBlock"] {
 div[data-testid="stPopoverBody"] [data-testid="stColumn"] {
   width: auto !important; min-width: 0 !important;
 }
-div[data-testid="stPopoverBody"] {max-height: 85vh; overflow-y: auto;}
 
 /* Grab-style help finder */
 .qs-fac {
@@ -311,6 +347,11 @@ div[data-testid="stPopoverBody"] {max-height: 85vh; overflow-y: auto;}
   [data-testid="stMetricValue"] {font-size: 1.2rem !important;}
   h2, h3 {font-size: 1.1rem;}
   div[data-testid="stPopover"] {bottom: 0.9rem; right: 0.9rem;}
+  /* Chat box fills the phone screen so it never overflows */
+  div[data-testid="stPopoverBody"] {
+    width: 94vw !important; max-width: 94vw !important;
+    height: 82vh !important; max-height: 82vh !important;
+  }
   .stButton button {min-height: 44px;}
   [data-testid="stChatMessage"] {padding: 0.7rem 0.75rem;}
   .qs-fac {flex-wrap: wrap; padding: 10px 12px;}
@@ -1036,10 +1077,14 @@ def quick_ask(context: str, live_df):
     which location) travels with every question and is shown in the header,
     and the model is told to name the location it is talking about."""
     hist = st.session_state.setdefault("quick_chat", [])
-    with st.popover("💬 Ask QuakeSense"):
-        st.markdown("✦ **Terra** — QuakeSense assistant · powered by Gemini 2.5 Flash")
+    with st.popover("💬", help="Ask QuakeSense"):
+        st.markdown(
+            '<div class="qs-chat-head"><div class="qs-chat-av">✦</div>'
+            '<div><div class="qs-chat-title">Terra</div>'
+            '<div class="qs-chat-sub">QuakeSense assistant · Gemini 2.5 Flash'
+            '</div></div></div>', unsafe_allow_html=True)
         st.caption(f"📍 Talking about: {context}")
-        box = st.container(height=300)
+        box = st.container(height=328)
         with box:
             if not hist:
                 with st.chat_message("assistant", avatar=AVATARS["assistant"]):
