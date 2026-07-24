@@ -94,17 +94,65 @@ def _stream_text(prompt: str, temperature: float, fallback: str,
         yield fallback
 
 
+def _reject_if_degenerate(out: dict, strings: dict, language: str) -> None:
+    """Raise if a translated chunk looks like hallucinated filler rather
+    than a real per-key translation.
+
+    Two independent failure modes, seen with extremely low-resource /
+    constructed / near-nonexistent languages (e.g. ISO 639-3 codes with
+    essentially no real corpus, like 'Abar'):
+
+    1. Exact duplicates - the model collapses several keys onto the exact
+       same phrase (seen with Klingon, Sumerian).
+    2. Language-name echo - the model has NO real knowledge of the
+       language, so instead of translating it just echoes the language's
+       own name back as filler, inflected/combined differently per key
+       (e.g. asked for 'Abar', it returns "Abar & abar abar", "Abar-abar",
+       "Abar+ abar" ...). These values are all superficially different
+       strings, so a plain uniqueness check misses them entirely - what
+       gives it away is that most of the actual WORDS across the response
+       are just the language's own name repeated."""
+    vals = [v for v in out.values() if isinstance(v, str) and v.strip()]
+    if not vals:
+        raise ValueError("empty translation values")
+    if len(strings) >= 4 and len(set(vals)) / len(vals) < 0.5:
+        raise ValueError(
+            f"degenerate translation: {len(set(vals))}/{len(vals)} unique values")
+    lang_words = {w.lower() for w in re.findall(r"[^\W\d_]+", language)}
+    if lang_words:
+        words = [w.lower() for v in vals for w in re.findall(r"[^\W\d_]+", v)]
+        if len(words) >= 8:
+            echo_ratio = sum(1 for w in words if w in lang_words) / len(words)
+            if echo_ratio > 0.4:
+                raise ValueError(
+                    f"degenerate translation: {echo_ratio:.0%} of words just "
+                    f"echo the language name {language!r}")
+
+
 def _translate_chunk(strings: dict, language: str) -> dict:
     """One Gemini call translating a SMALL chunk of the UI string table.
     Kept small deliberately: translating the whole ~150-entry table in one
     call risks the response getting cut off mid-JSON before it finishes
     (scripts like Devanagari or Bengali often need more output tokens per
     character than English), which throws a JSON parse error and used to
-    fail the entire table over one truncated response."""
+    fail the entire table over one truncated response. Small chunks are
+    also just faster - less output to generate per call means a shorter
+    wait, and every chunk runs concurrently (see translate_ui) so more,
+    smaller chunks doesn't cost extra wall-clock time.
+
+    For genuinely-impossible targets (constructed/dead/extremely
+    low-resource languages), Gemini doesn't always fail cleanly - it can
+    return syntactically valid JSON that just repeats one phrase across
+    unrelated keys instead of translating each one. That's treated as a
+    failure below (see the uniqueness check) so the caller's retry/
+    fall-back-to-English path kicks in instead of showing garbage."""
     prompt = (
         f"Translate the VALUES of this JSON object into {language}.\n"
         "Rules:\n"
         "- Return ONLY a JSON object with exactly the same keys.\n"
+        "- Every value must be its OWN distinct, accurate translation of "
+        "the corresponding English source - never reuse one phrase for "
+        "multiple different keys.\n"
         "- These are UI labels for an earthquake-safety app: keep them short "
         "and natural, the way a native-speaking app would phrase them.\n"
         "- Preserve markdown syntax, emoji, punctuation like '·', and any "
@@ -126,6 +174,7 @@ def _translate_chunk(strings: dict, language: str) -> dict:
     out = json.loads(text)
     if not isinstance(out, dict) or not out:
         raise ValueError("empty translation chunk")
+    _reject_if_degenerate(out, strings, language)
     return out
 
 
@@ -154,7 +203,7 @@ def translate_ui(strings: dict, language: str) -> dict:
     so the caller can fall back to English."""
     from concurrent.futures import ThreadPoolExecutor
     items = list(strings.items())
-    chunk_size = 40
+    chunk_size = 12
     pieces = [dict(items[i:i + chunk_size])
              for i in range(0, len(items), chunk_size)]
     out = {}

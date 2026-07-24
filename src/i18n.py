@@ -63,23 +63,41 @@ def ensure_language(lang: str) -> bool:
         return False
 
 
+# Rural/regional languages with no ISO 639-1 code, so the alpha_2 filter
+# below would otherwise drop them - each one hand-verified this session by
+# actually running translate_ui() and checking the output was distinct,
+# non-degenerate real text (not the alpha_2-coded majority-language filter's
+# blind spot, but not "any of pycountry's ~7900 entries" either - many of
+# those are languages Gemini has essentially no training data for, e.g.
+# ISO 639-3 'Abar', where it hallucinates by echoing the language's own
+# name back as filler instead of translating. Add to this list only after
+# verifying the same way: STRINGS -> translate_ui(lang) -> spot-check for
+# repeated/nonsense values.
+VERIFIED_EXTRA_LANGUAGES = [
+    "Bhojpuri", "Santali", "Cebuano", "Hiligaynon", "Tetum",
+    "Waray (Philippines)",
+]
+
+
 @st.cache_data(show_spinner=False)
 def all_languages() -> list:
     """Full picker list: the 8 hand-translated core languages first (instant,
-    zero-latency), then EVERY language pycountry knows (full ISO 639-3, not
-    just the ~184 with an ISO 639-1 code) - already a project dependency
-    (it's what powers the country-flag picker on My Area), so this is a
-    local lookup with no network call, no extra API to enable, and nothing
-    that can fail at runtime.
+    zero-latency), then the ~184 ISO 639-1 (alpha_2) coded languages - the
+    world's major, well-resourced languages Gemini translates reliably -
+    plus a short hand-verified allowlist (VERIFIED_EXTRA_LANGUAGES) of
+    additional rural/regional languages this project's audience actually
+    speaks but that don't have their own alpha_2 code.
 
-    Deliberately not narrowed to the ~184 "major" (alpha_2-coded) languages:
-    that list systematically excludes exactly the regional/minority
-    languages this project's rural, earthquake-prone audience actually
-    speaks - Bhojpuri, Santali, Shan, Karen, Cebuano, Ilocano, Tetum and
-    thousands more. Picking any of these ~7900 languages translates the
-    interface on demand via Gemini (see ensure_language / translate_ui in
-    src/ai.py); the picker itself does the searchable-dropdown work so a
-    user never has to type or spell anything."""
+    Deliberately NOT every one of pycountry's ~7900 ISO 639-3 entries:
+    earlier this session that included languages Gemini has essentially no
+    real knowledge of (e.g. 'Abar', 'Klingon', 'Sumerian'), which it would
+    either fail on outright or - worse - hallucinate plausible-looking
+    garbage for (repeating the language's own name as filler text across
+    unrelated UI labels). Better to offer a smaller list where every entry
+    reliably works than a huge one where some silently don't. Anyone who
+    wants a language outside this list still has the "Other - any
+    language" free-text option, which benefits from the same runtime
+    garbage-detection safeguards in translate_ui()."""
     import pycountry
     # pycountry's raw ISO 639 names carry technical qualifiers on a handful
     # of major languages (e.g. "Nepali (macrolanguage)", "Modern Greek
@@ -99,9 +117,13 @@ def all_languages() -> list:
     extra = []
     for lang in pycountry.languages:
         name = getattr(lang, "name", None)
-        if not name:
+        if not (name and getattr(lang, "alpha_2", None)):
             continue
         name = CLEAN.get(name, name)
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            extra.append(name)
+    for name in VERIFIED_EXTRA_LANGUAGES:
         if name.lower() not in seen:
             seen.add(name.lower())
             extra.append(name)
