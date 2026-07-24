@@ -189,25 +189,19 @@ div[data-testid="stPopover"] {
 button[data-testid="stPopoverButton"] {
   width: 58px !important; min-width: 58px !important; height: 58px !important;
   border-radius: 50% !important; padding: 0 !important;
-  font-size: 1.55rem; line-height: 1; font-weight: 400;
-  background: #e08850 !important; color: #0d1321 !important;
+  font-size: 0 !important; color: transparent !important;
+  background-color: #e08850 !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M5 4h14a1.6 1.6 0 0 1 1.6 1.6v8.8A1.6 1.6 0 0 1 19 16H9l-4 3.6V5.6A1.6 1.6 0 0 1 6.6 4z' fill='%23ffffff'/%3E%3Ccircle cx='9' cy='10' r='1.15' fill='%23e08850'/%3E%3Ccircle cx='12.5' cy='10' r='1.15' fill='%23e08850'/%3E%3Ccircle cx='16' cy='10' r='1.15' fill='%23e08850'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: center;
+  background-size: 30px 30px;
   border: none !important; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
-  display: flex; align-items: center; justify-content: center;
-  transition: transform 0.12s, background 0.12s;
+  transition: transform 0.12s, background-color 0.12s;
 }
 button[data-testid="stPopoverButton"]:hover {
-  background: #eda06b !important; color: #0d1321 !important;
-  transform: scale(1.06);
+  background-color: #eda06b !important; transform: scale(1.06);
 }
-button[data-testid="stPopoverButton"] [data-testid="stIconMaterial"] {
-  display: none !important;  /* hide the expand chevron - it's a round icon button */
-}
-/* Centre the chat glyph perfectly inside the circle */
-button[data-testid="stPopoverButton"] > div,
-button[data-testid="stPopoverButton"] p {
-  margin: 0 !important; padding: 0 !important; line-height: 1 !important;
-  display: flex !important; align-items: center !important;
-  justify-content: center !important;
+button[data-testid="stPopoverButton"] * {
+  display: none !important;  /* hide emoji label + chevron; the SVG bg is the icon */
 }
 /* Remove Streamlit's "Press Enter to submit form" hint inside the chat */
 div[data-testid="stPopoverBody"] [data-testid="InputInstructions"] {
