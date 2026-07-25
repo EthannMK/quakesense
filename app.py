@@ -331,6 +331,13 @@ div[data-testid="stPopoverBody"] [data-testid="stColumn"] {
 .qs-trip {font-size: 0.85rem; color: #dbe2ec; line-height: 1.9;}
 .qs-trip .dotA {color: #6fae7f;} .qs-trip .dotB {color: #ff6b61;}
 .qs-trip .leg {color: #8fa0b5; padding-left: 0.32rem;}
+.qs-maphelp {
+  display: flex; flex-direction: column; gap: 5px; margin-top: 10px;
+  padding: 10px 12px; background: #161e2e; border: 1px solid #263145;
+  border-radius: 10px; font-size: 0.8rem; color: #c3cede; line-height: 1.4;
+}
+.qs-maphelp b {color: #dbe2ec;}
+.qs-maphelp .dotA {color: #6fae7f;} .qs-maphelp .dotB {color: #ff6b61;}
 
 /* Small screens: tighten spacing so phones get a clean layout */
 @media (max-width: 640px) {
@@ -658,18 +665,6 @@ def google_places_section(trow, ev):
                 f'</div></div>')
         st.markdown("".join(rows), unsafe_allow_html=True)
 
-        if st.button("✦ Ask Terra: where should I go first?",
-                     key=f"gm_gem_{trow['name']}", use_container_width=True):
-            fac_lines = "\n".join(
-                f"{p['name']} | {p['addr']} | {p['phone'] or 'no phone'} | "
-                f"{p['km']:.1f} km | {'open' if p['open'] else 'unknown/closed'}"
-                for p in places[:6])
-            ctx = (f"M{ev['mag']:.1f} earthquake near {ev['place']}; "
-                   f"user is at {origin_label}"
-                   if ev else f"user is at {origin_label}")
-            with st.spinner("Terra weighing the options..."):
-                st.markdown(prioritize_facilities(ctx, fac_lines))
-
         # -- 4. YOUR ROUTE (trip card) ------------------------------------
         with st.container(border=True):
             r1, r2 = st.columns([0.62, 0.38])
@@ -697,8 +692,18 @@ def google_places_section(trow, ev):
                 f"?key={MAPS_API_KEY}&origin={quote(origin)}"
                 f"&destination={dest['lat']},{dest['lon']}&mode={mode}",
                 height=360)
-            st.caption("The map shows the route and estimated arrival time — "
-                       "tap 🧭 Navigate on any card for live turn-by-turn.")
+            st.markdown(
+                '<div class="qs-maphelp">'
+                '<b>How to use this map</b>'
+                '<span><span class="dotA">●</span> green = where you are &nbsp;·&nbsp; '
+                '<span class="dotB">●</span> red = your destination</span>'
+                '<span>🧭 <b>Navigate</b> on any result opens live turn-by-turn '
+                'in Google Maps from your location.</span>'
+                '<span>📞 <b>Call</b> dials the facility — call ahead, lines and '
+                'roads may be affected after a quake.</span>'
+                '<span>Switch <b>Drive / Walk / Bike</b> to update the route and '
+                'estimated arrival time above.</span>'
+                '</div>', unsafe_allow_html=True)
     else:
         components.iframe(
             f"https://www.google.com/maps/embed/v1/search"
