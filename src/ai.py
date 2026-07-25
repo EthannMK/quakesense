@@ -8,14 +8,20 @@ Routing and SQL generation happen in ONE model call, and chat answers stream.
 """
 import json
 import re
+import threading
+import time as _time
 
 import pandas as pd
 
 from src.config import GCP_PROJECT, GCP_LOCATION, GEMINI_MODEL, BQ_DATASET, BQ_TABLE
 
 
-_CLIENT = None
+_local = threading.local()
 _BQ = None
+
+
+def _tlog(label, ms):
+    print(f"[TIMING] {label}: {ms:.0f}ms", flush=True)
 
 
 def _pager_label(ev: dict) -> str:
@@ -27,14 +33,27 @@ def _pager_label(ev: dict) -> str:
 
 
 def _client():
-    """Singleton Gemini client - recreating per call can hit a closed
-    underlying HTTP client in Streamlit's rerun model."""
-    global _CLIENT
-    if _CLIENT is None:
+    """One Gemini client per thread. A single client shared across threads
+    isn't safe under concurrent use - translate_ui fans out ~12 chunks in a
+    ThreadPoolExecutor, and a shared client's underlying HTTP transport gets
+    closed mid-flight by one thread while others are still using it
+    ('Cannot send a request, as the client has been closed'), so nearly
+    every concurrent chunk failed and fell back to a slow sequential retry.
+    That was the real source of the ~30s language-switch delay, not the
+    model call itself (confirmed: same chunks that failed at ~2.7s each
+    under a shared client succeed at ~3-14s each with one client per
+    thread). A thread-local client still avoids recreating one per call
+    within a single thread's lifetime, so reruns on the main thread stay
+    cheap too."""
+    t0 = _time.time()
+    is_new = getattr(_local, "client", None) is None
+    if is_new:
         from google import genai
-        _CLIENT = genai.Client(vertexai=True, project=GCP_PROJECT,
-                               location=GCP_LOCATION)
-    return _CLIENT
+        _local.client = genai.Client(vertexai=True, project=GCP_PROJECT,
+                                     location=GCP_LOCATION)
+    _tlog(f"_client() [{'NEW' if is_new else 'reused'}, thread={threading.current_thread().name}]",
+         (_time.time() - t0) * 1000)
+    return _local.client
 
 
 def _config(ground: bool = False, **kwargs):
@@ -129,7 +148,15 @@ def _reject_if_degenerate(out: dict, strings: dict, language: str) -> None:
                     f"echo the language name {language!r}")
 
 
-def _translate_chunk(strings: dict, language: str) -> dict:
+# UI-string translation is short, fixed, low-stakes text (button labels,
+# headers) - not the open-ended reasoning the main model is for. flash-lite
+# translates a small batch in ~1-2s standalone vs ~4-6s for the full model
+# (measured), at the cost of occasionally malformed JSON escaping on long
+# markdown content - see the length-based model split in translate_ui.
+TRANSLATE_MODEL = "gemini-2.5-flash-lite"
+
+
+def _translate_chunk(strings: dict, language: str, model: str = TRANSLATE_MODEL) -> dict:
     """One Gemini call translating a SMALL chunk of the UI string table.
     Kept small deliberately: translating the whole ~150-entry table in one
     call risks the response getting cut off mid-JSON before it finishes
@@ -146,6 +173,9 @@ def _translate_chunk(strings: dict, language: str) -> dict:
     unrelated keys instead of translating each one. That's treated as a
     failure below (see the uniqueness check) so the caller's retry/
     fall-back-to-English path kicks in instead of showing garbage."""
+    _chunk_t0 = _time.time()
+    tname = threading.current_thread().name
+    t0 = _time.time()
     prompt = (
         f"Translate the VALUES of this JSON object into {language}.\n"
         "Rules:\n"
@@ -161,12 +191,26 @@ def _translate_chunk(strings: dict, language: str) -> dict:
         "GPS, SQL, FEMA, Gemini, BigQuery, M5+/M6+ magnitude notation, "
         "organization names, or URLs.\n\n"
         + json.dumps(strings, ensure_ascii=False))
+    _tlog(f"  chunk[{tname}] prompt_build ({len(strings)} keys, {len(prompt)} chars, model={model})",
+         (_time.time() - t0) * 1000)
+
     from google.genai import types
+    t0 = _time.time()
     resp = _client().models.generate_content(
-        model=GEMINI_MODEL, contents=prompt,
+        model=model, contents=prompt,
         config=_config(temperature=0.1, max_output_tokens=8192,
                        response_mime_type="application/json",
                        http_options=types.HttpOptions(timeout=45_000)))
+    api_ms = (_time.time() - t0) * 1000
+    _tlog(f"  chunk[{tname}] VERTEX AI generate_content() call", api_ms)
+    usage = getattr(resp, "usage_metadata", None)
+    if usage:
+        print(f"[TIMING]   chunk[{tname}] token usage: "
+             f"prompt={getattr(usage, 'prompt_token_count', '?')} "
+             f"output={getattr(usage, 'candidates_token_count', '?')} "
+             f"thoughts={getattr(usage, 'thoughts_token_count', '?')}", flush=True)
+
+    t0 = _time.time()
     text = (resp.text or "").strip()
     if text.startswith("```"):
         text = text.strip("`")
@@ -174,38 +218,120 @@ def _translate_chunk(strings: dict, language: str) -> dict:
     out = json.loads(text)
     if not isinstance(out, dict) or not out:
         raise ValueError("empty translation chunk")
+    _tlog(f"  chunk[{tname}] json_parse", (_time.time() - t0) * 1000)
+
+    t0 = _time.time()
     _reject_if_degenerate(out, strings, language)
+    _tlog(f"  chunk[{tname}] validate", (_time.time() - t0) * 1000)
+
+    _tlog(f"  chunk[{tname}] TOTAL", (_time.time() - _chunk_t0) * 1000)
     return out
 
 
-def _translate_chunk_retrying(piece: dict, language: str) -> dict:
+def _translate_chunk_retrying(piece: dict, language: str, model: str = TRANSLATE_MODEL) -> dict:
     """One chunk, with a single retry - a truncated/malformed JSON response
     is usually a one-off hiccup, not a language Gemini can't do, so a
     single chunk failing on the first try shouldn't leave 40 strings
     permanently stuck in English."""
     try:
-        return _translate_chunk(piece, language)
+        return _translate_chunk(piece, language, model)
     except Exception:
-        return _translate_chunk(piece, language)
+        return _translate_chunk(piece, language, model)
+
+
+# Above this length, a value (currently just guide_md, ~2.7k chars of
+# markdown) is NOT part of the blocking translation at all. Measured: even
+# translated ALONE (no concurrency contention from other chunks), it took
+# ~17-18s on the full model - that's real generation time proportional to
+# its ~1500-output-token size, not a queuing artifact, so no amount of
+# chunk-rebalancing or model swapping fixes it without also fixing it. The
+# Guide page is not part of the UI a user sees on first load, so it doesn't
+# need to be ready before the rest of the interface is - it's translated in
+# a fire-and-forget background thread instead (see _HEAVY_CACHE) and served
+# in English until that finishes, typically a few seconds after the main
+# UI is already interactive.
+#
+# LIGHT_CHUNK_SIZE controls concurrency and was found by directly sweeping
+# chunk counts against live Vertex AI, not assumed - this project's
+# concurrency behavior is NOT "more parallelism is free" (throughput is
+# non-monotonic in chunk count, evidence of request-level throttling) and
+# NOT stable over time (re-sweeping minutes apart gave different absolute
+# numbers), but ~12 strings/chunk (~14 chunks for this table) was the
+# consistent local optimum across repeated sweeps: e.g. one sweep measured
+# n=10 (~16 strings/chunk) at 5.8s and n=20 (~8 strings/chunk) at 4.4s
+# against n=14 at 2.1-2.9s. Coincidentally the same granularity the
+# original single-model version already used - only the model changed.
+_HEAVY_CHARS = 500
+_LIGHT_CHUNK_SIZE = 12
+
+_HEAVY_CACHE = {}          # language -> {key: translated value}
+_HEAVY_INFLIGHT = set()    # languages currently being translated in the background
+_HEAVY_LOCK = threading.Lock()
+
+
+def _translate_heavy_background(heavy_items: list, language: str) -> None:
+    """Fire-and-forget: translate the long-form strings without blocking
+    the caller. Safe to call from any thread - only touches a plain dict
+    behind a lock, no Streamlit APIs."""
+    with _HEAVY_LOCK:
+        if language in _HEAVY_INFLIGHT or language in _HEAVY_CACHE:
+            return
+        _HEAVY_INFLIGHT.add(language)
+
+    def worker():
+        try:
+            result = _translate_chunk_retrying(dict(heavy_items), language, GEMINI_MODEL)
+        except Exception as e:
+            print(f"[ai] background heavy translation into '{language}' "
+                 f"failed, staying in English: {e!r}")
+            result = {}
+        with _HEAVY_LOCK:
+            _HEAVY_CACHE[language] = result
+            _HEAVY_INFLIGHT.discard(language)
+
+    threading.Thread(target=worker, daemon=True,
+                     name=f"heavy-translate-{language}").start()
+
+
+def get_heavy_translation(key: str, language: str):
+    """None if not (yet) available - caller falls back to English."""
+    with _HEAVY_LOCK:
+        return _HEAVY_CACHE.get(language, {}).get(key)
 
 
 def translate_ui(strings: dict, language: str) -> dict:
     """Translate the interface string table into any language Gemini knows -
-    including low-resource / regional languages. Split into small chunks so
-    one call's output-token limit (or one transient hiccup) can't take down
-    the whole table, and run the chunks CONCURRENTLY - sequentially, 4
-    chunks at ~30-90s each for a low-resource language turns into minutes
-    of spinner; in parallel it's bounded by the slowest single chunk. A
-    chunk that fails (even after its retry) just keeps its English values
+    including low-resource / regional languages.
+
+    Two-tier: the rare long value (currently just the Guide page markdown)
+    is translated separately in the background (see _translate_heavy_
+    background) and is NOT in this function's return value or blocking
+    path at all. Everything else (short UI labels, the vast majority of
+    the table) is batched into a handful of chunks on gemini-2.5-flash-lite,
+    which is measured several times faster per call for short fixed text.
+    Chunk size for the light tier is tuned to the concurrency level that
+    was actually fastest in repeated live sweeps - see _LIGHT_CHUNK_SIZE.
+    A chunk that fails (even after its retry) just keeps its English values
     instead of failing the entire translation.
 
-    Raises only if EVERY chunk failed (Vertex AI is genuinely unreachable),
-    so the caller can fall back to English."""
+    Raises only if EVERY light chunk failed (Vertex AI is genuinely
+    unreachable), so the caller can fall back to English."""
+    _t0 = _time.time()
     from concurrent.futures import ThreadPoolExecutor
     items = list(strings.items())
-    chunk_size = 12
-    pieces = [dict(items[i:i + chunk_size])
-             for i in range(0, len(items), chunk_size)]
+    heavy_items = [(k, v) for k, v in items if len(v) > _HEAVY_CHARS]
+    light_items = [(k, v) for k, v in items if len(v) <= _HEAVY_CHARS]
+
+    if heavy_items:
+        _translate_heavy_background(heavy_items, language)
+
+    pieces = [dict(light_items[i:i + _LIGHT_CHUNK_SIZE])
+             for i in range(0, len(light_items), _LIGHT_CHUNK_SIZE)]
+    _tlog(f"translate_ui: chunk_prep ({len(items)} strings -> {len(pieces)} light "
+         f"chunks, {len(heavy_items)} heavy deferred to background)",
+         (_time.time() - _t0) * 1000)
+
+    _pool_t0 = _time.time()
     out = {}
     translated_any = False
     with ThreadPoolExecutor(max_workers=len(pieces) or 1) as ex:
@@ -220,8 +346,12 @@ def translate_ui(strings: dict, language: str) -> dict:
                 print(f"[ai] translate_ui chunk into '{language}' failed "
                      f"after retry: {e!r}")
                 out.update(piece)  # this chunk stays in English
+    _tlog(f"translate_ui: pool_wall (all {len(pieces)} light chunks concurrently)",
+         (_time.time() - _pool_t0) * 1000)
     if not translated_any:
         raise RuntimeError(f"could not translate any chunk into {language}")
+    _tlog("translate_ui: TOTAL (heavy strings excluded, translating in background)",
+         (_time.time() - _t0) * 1000)
     return out
 
 

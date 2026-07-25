@@ -8,6 +8,8 @@ chrome and the default language of generated content.
 (st.session_state["ui_lang"]), falling back to English, then to the
 key itself — so a missing translation can never crash a page.
 """
+import time as _time
+
 import streamlit as st
 
 # canonical name (used by AI prompts) -> ISO code used in STRINGS
@@ -39,8 +41,12 @@ NATIVE_NAME = {
 def _gemini_table(language: str) -> dict:
     """Whole UI string table translated into ANY language by Gemini, in one
     batched call - cached, so each language is translated once per server."""
+    _t0 = _time.time()
     from src.ai import translate_ui
-    return translate_ui({k: v["en"] for k, v in STRINGS.items()}, language)
+    result = translate_ui({k: v["en"] for k, v in STRINGS.items()}, language)
+    print(f"[TIMING] _gemini_table({language}) CACHE-MISS compute: "
+         f"{(_time.time()-_t0)*1000:.0f}ms", flush=True)
+    return result
 
 
 def ensure_language(lang: str) -> bool:
@@ -50,8 +56,11 @@ def ensure_language(lang: str) -> bool:
         return True
     if st.session_state.get("_i18n_failed") == lang:
         return False
+    _t0 = _time.time()
     try:
         _gemini_table(lang)
+        print(f"[TIMING] ensure_language({lang}) TOTAL (incl. cache lookup): "
+             f"{(_time.time()-_t0)*1000:.0f}ms", flush=True)
         return True
     except Exception as e:
         # Printed to the terminal running `streamlit run` - the UI only ever
@@ -144,7 +153,16 @@ def t(key: str, **kw) -> str:
                 table = _gemini_table(lang)
             except Exception:
                 st.session_state["_i18n_failed"] = lang
-        out = table.get(key) or entry.get("en") or key
+        out = table.get(key)
+        if out is None:
+            # Long-form strings (e.g. guide_md) are excluded from the
+            # (cached) table above and translated in a background thread
+            # instead, so the rest of the UI doesn't wait on them - check
+            # whether that background job has landed yet on every render,
+            # since the cached table itself won't reflect it.
+            from src.ai import get_heavy_translation
+            out = get_heavy_translation(key, lang)
+        out = out or entry.get("en") or key
     if kw:
         try:
             out = out.format(**kw)
