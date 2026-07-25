@@ -113,6 +113,21 @@ section[data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) 
 
 /* Freeze the WHOLE top bar — wordmark, tagline, nav and live ticker — so the
    menu area is always visible and obviously navigation, not page content */
+/* Answer rating buttons — blue thumb up, red thumb down (icon-only, compact) */
+[class*="st-key-fb_up_"] button, [class*="st-key-fb_down_"] button {
+  width: 40px !important; min-width: 40px !important; height: 34px;
+  padding: 0 !important; border-radius: 9px !important;
+  background: #131c2c !important; border: 1px solid #263145 !important;
+}
+[class*="st-key-fb_up_"] button [data-testid="stIconMaterial"] {
+  color: #45b3e6 !important; font-size: 19px !important;
+}
+[class*="st-key-fb_down_"] button [data-testid="stIconMaterial"] {
+  color: #ff6b61 !important; font-size: 19px !important;
+}
+[class*="st-key-fb_up_"] button:hover {border-color: #45b3e6 !important;}
+[class*="st-key-fb_down_"] button:hover {border-color: #ff6b61 !important;}
+
 /* Freeze just the nav buttons at the top of the scroll area — nothing else
    moves, so the rest of the layout is untouched. */
 .st-key-topnav {
@@ -517,7 +532,27 @@ def logo_b64() -> str:
         return base64.b64encode(f.read()).decode()
 
 
-AVATARS = {"user": "🧑", "assistant": os.path.join("assets", "gemini.png")}
+@st.cache_data(show_spinner=False)
+def asset_b64(name: str) -> str:
+    """Base64 for an asset PNG, so it can be inlined in card HTML."""
+    try:
+        with open(os.path.join("assets", name), "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    except Exception:
+        return ""
+
+
+AVATARS = {"user": os.path.join("assets", "user.png"),
+           "assistant": os.path.join("assets", "gemini.png")}
+
+# Voice features are implemented but disabled: browser speech recognition
+# only handled English reliably. Flip these to re-enable.
+VOICE_INPUT_ENABLED = False    # microphone (speech-to-text)
+VOICE_OUTPUT_ENABLED = False   # per-answer "Listen" (text-to-speech)
+
+# Where the sidebar feedback form sends to. Never rendered as text in
+# the UI - it only ever appears inside a mailto link's href.
+FEEDBACK_TO = os.environ.get("FEEDBACK_EMAIL", "ethanmk2205@gmail.com")
 
 BOT_INTRO = (
     "Hi, I'm **Terra** ✦ — powered by Gemini 2.5 Flash.\n\n"
@@ -638,7 +673,21 @@ def offline_library():
 
 
 CAT_ICONS = {"Hospitals": "🏥", "Fire stations": "🚒", "Police": "👮",
-             "Pharmacies": "💊", "Shelters": "⛺", "Custom search": "🔍"}
+             "Pharmacies": "💊", "Shelters": "🏠", "Custom search": "🔍"}
+
+# categories with custom artwork used on the result cards
+CAT_IMAGES = {"Shelters": "shelter.png"}
+
+
+def cat_icon_html(cat_name: str, fallback: str) -> str:
+    """Card icon: inline PNG artwork when the category has one, else emoji."""
+    img = CAT_IMAGES.get(cat_name)
+    if img:
+        b64 = asset_b64(img)
+        if b64:
+            return (f'<img src="data:image/png;base64,{b64}" '
+                    f'style="width:26px;height:26px;border-radius:7px">')
+    return fallback
 
 
 def _chip_pick(label, options, key, default=None):
@@ -822,6 +871,7 @@ def google_places_section(trow, ev):
                      key=f"gm_cat_{trow['name']}")
     cat_name = cat.split(" ", 1)[1]
     cat_icon = CAT_ICONS.get(cat_name, "📍")
+    cat_art = cat_icon_html(cat_name, cat_icon)
     query = cat_name.lower()
     if cat_name == "Custom search":
         query = st.text_input(
@@ -851,7 +901,7 @@ def google_places_section(trow, ev):
                    f'&destination={p["lat"]},{p["lon"]}" target="_blank" '
                    f'rel="noopener">🧭 Navigate</a>')
             rows.append(
-                f'<div class="qs-fac"><div class="qs-fac-ic">{cat_icon}</div>'
+                f'<div class="qs-fac"><div class="qs-fac-ic">{cat_art}</div>'
                 f'<div class="qs-fac-main">'
                 f'<div class="qs-fac-name">{html.escape(p["name"])}</div>'
                 f'<div class="qs-fac-addr">{html.escape(p["addr"])}</div>'
@@ -1307,19 +1357,24 @@ qsAddClose(); setInterval(qsAddClose,400);
                     if m.get("sources"):
                         st.caption("Sources: " + " · ".join(
                             f"[{s['title']}]({s['uri']})" for s in m["sources"][:3]))
-        # Composer — mic inline beside the auto-growing chat input.
+        # Composer. (Voice input is available via VOICE_INPUT_ENABLED - kept
+        # off for now: browser speech recognition only handled English.)
         voice_q = None
-        _style_mic_component()
-        ic, tc = st.columns([0.14, 0.86], vertical_alignment="bottom")
-        with ic:
-            try:
-                from streamlit_mic_recorder import speech_to_text
-                voice_q = speech_to_text(
-                    language="en", start_prompt="🎙️", stop_prompt="🔴",
-                    just_once=True, use_container_width=False, key="quick_stt")
-            except Exception:
-                pass
-        with tc:
+        if VOICE_INPUT_ENABLED:
+            _style_mic_component()
+            ic, tc = st.columns([0.14, 0.86], vertical_alignment="bottom")
+            with ic:
+                try:
+                    from streamlit_mic_recorder import speech_to_text
+                    voice_q = speech_to_text(
+                        language="en", start_prompt="🎙️", stop_prompt="🔴",
+                        just_once=True, use_container_width=False,
+                        key="quick_stt")
+                except Exception:
+                    pass
+            with tc:
+                q_sub = st.chat_input("Type a message…", key="quick_chat_input")
+        else:
             q_sub = st.chat_input("Type a message…", key="quick_chat_input")
         the_q = voice_q or (q_sub.strip() if q_sub and q_sub.strip() else None)
         if the_q:
@@ -1464,30 +1519,37 @@ def chat_agent(live):
                 if m.get("rated"):
                     a1.caption("✓ noted")
                 else:
-                    a1.button("👍", key=f"fb_up_{i}", help="Good answer",
-                              on_click=_rate_answer, args=(i, "up"))
-                    a2.button("👎", key=f"fb_down_{i}", help="Poor answer",
-                              on_click=_rate_answer, args=(i, "down"))
-                _speak_button(m["content"], f"spk_{i}")
+                    a1.button(":material/thumb_up:", key=f"fb_up_{i}",
+                              help="Good answer", on_click=_rate_answer,
+                              args=(i, "up"))
+                    a2.button(":material/thumb_down:", key=f"fb_down_{i}",
+                              help="Poor answer", on_click=_rate_answer,
+                              args=(i, "down"))
+                if VOICE_OUTPUT_ENABLED:
+                    _speak_button(m["content"], f"spk_{i}")
 
     if st.session_state.get("area"):
         st.caption(f"The agent can see your current My Area analysis "
                    f"({st.session_state.area['city']}) — ask about it here.")
 
-    # Composer — mic inline beside the chat input. st.chat_input grows as you
-    # type and scrolls at its max height, and has its own send arrow.
+    # Composer. st.chat_input grows as you type, scrolls at its max height and
+    # carries its own send arrow. (Voice input behind VOICE_INPUT_ENABLED.)
     voice_q = None
-    _style_mic_component()
-    ic, tc = st.columns([0.07, 0.93], vertical_alignment="bottom")
-    with ic:
-        try:
-            from streamlit_mic_recorder import speech_to_text
-            voice_q = speech_to_text(
-                language="en", start_prompt="🎙️", stop_prompt="🔴",
-                just_once=True, use_container_width=False, key="stt_ask")
-        except Exception:
-            pass
-    with tc:
+    if VOICE_INPUT_ENABLED:
+        _style_mic_component()
+        ic, tc = st.columns([0.07, 0.93], vertical_alignment="bottom")
+        with ic:
+            try:
+                from streamlit_mic_recorder import speech_to_text
+                voice_q = speech_to_text(
+                    language="en", start_prompt="🎙️", stop_prompt="🔴",
+                    just_once=True, use_container_width=False, key="stt_ask")
+            except Exception:
+                pass
+        with tc:
+            typed = st.chat_input("Ask anything about earthquakes…",
+                                  key="ask_chat_input")
+    else:
         typed = st.chat_input("Ask anything about earthquakes…",
                               key="ask_chat_input")
     question = pending or voice_q or typed
@@ -1867,6 +1929,31 @@ if st.sidebar.button("Refresh live feed", use_container_width=True):
     st.rerun()
 
 st.sidebar.markdown("---")
+
+# ---- suggestions / feedback (emails the team; address never displayed) ------
+with st.sidebar.expander("💬 Suggestions & feedback"):
+    st.caption("Found a problem or have an idea? Tell us — it goes straight "
+               "to the QuakeSense team.")
+    fb_name = st.text_input("Your name (optional)", key="fb_form_name",
+                            placeholder="Name or organisation")
+    fb_msg = st.text_area("Your message", key="fb_form_msg", height=110,
+                          placeholder="What could we do better?")
+    if fb_msg and fb_msg.strip():
+        from urllib.parse import quote as _q
+        _body = _q(f"{fb_msg.strip()}\n\n—\nFrom: {fb_name.strip() or 'a QuakeSense user'}")
+        _subj = _q("QuakeSense feedback")
+        st.link_button("📧 Send feedback",
+                       f"mailto:{FEEDBACK_TO}?subject={_subj}&body={_body}",
+                       use_container_width=True)
+        if st.button("Or log it here instead", key="fb_form_log",
+                     use_container_width=True):
+            ok = log_feedback(f"[suggestion] {fb_name.strip() or 'anonymous'}",
+                              fb_msg.strip(), "suggestion", "note")
+            st.success("Thank you — your feedback was recorded."
+                       if ok else "Saved locally — thank you.")
+    else:
+        st.caption("Write a message to enable sending.")
+
 st.sidebar.caption("Earthquakes cannot be predicted. This tool supports awareness "
                    "and decision-making, not prediction.")
 
