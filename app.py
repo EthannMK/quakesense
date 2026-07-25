@@ -508,11 +508,10 @@ def offline_library():
     """Curated official PDFs (visual guides: protection, first aid,
     preparedness) - meant to be downloaded BEFORE disaster strikes, when
     networks still work, then read offline. Two-column responsive grid."""
-    st.markdown("##### 📥 Offline library — download before you need it")
-    st.caption("Official illustrated publications from the American Red "
-               "Cross, FEMA, USGS, Ready.gov and the Earthquake Country "
-               "Alliance. Save them to your phone now — they open without "
-               "internet when networks go down.")
+    st.markdown("##### 📥 Offline library")
+    st.caption("Official safety guides from the American Red Cross, FEMA, "
+               "USGS, Ready.gov and the Earthquake Country Alliance. "
+               "Download for offline use.")
     rows = []
     for d in OFFLINE_DOCS:
         rows.append(
@@ -589,12 +588,11 @@ def google_places_section(trow, ev):
     where you are -> what you need -> pick from cards -> route with ETA."""
     from urllib.parse import quote
     st.markdown("##### ⛑️ Find help")
-    st.caption("Powered by Google Maps — starts from you, not the epicenter.")
+    st.caption("Powered by Google Maps.")
     _style_gps_component()
 
-    # -- 1. WHERE YOU ARE (pickup-bar style) ------------------------------
-    # Default: the affected-area town selected above. One tap on the locate
-    # button switches everything to the user's real GPS position.
+    # -- 1. STARTING POINT — editable like Google Maps; the GPS button
+    #       auto-selects the device location.
     with st.container(border=True):
         lc, sc = st.columns([0.07, 0.93], gap="small",
                             vertical_alignment="center")
@@ -608,17 +606,27 @@ def google_places_section(trow, ev):
         use_me = bool(loc and loc.get("latitude"))
         with sc:
             if use_me:
-                lat, lon = float(loc["latitude"]), float(loc["longitude"])
-                origin = f"{lat},{lon}"
+                glat, glon = float(loc["latitude"]), float(loc["longitude"])
+                lat, lon = glat, glon
+                origin = f"{glat},{glon}"
                 origin_label = "your current location"
-                st.markdown("**Your location:** 🟢 device GPS")
+                st.markdown("🟢 **Starting point:** your device location")
+                typed = st.text_input(
+                    "Starting point", value="",
+                    placeholder="Using your GPS location — or type another place",
+                    key=f"gm_org_{trow['name']}", label_visibility="collapsed")
+                if typed.strip():
+                    origin, origin_label = typed.strip(), typed.strip()
             else:
                 lat, lon = float(trow["latitude"]), float(trow["longitude"])
-                origin = f"{lat},{lon}"
-                origin_label = f"{trow['name']}, {trow['country']}"
-                st.markdown(f"**Your location:** {trow['name']}, "
-                            f"{trow['country']}")
-                st.caption("Tap ◎ to use your device GPS instead.")
+                st.markdown("🟢 **Starting point** — type a place, or tap ◎ for GPS")
+                typed = st.text_input(
+                    "Starting point",
+                    value=f"{trow['name']}, {trow['country']}",
+                    placeholder="Type an address or place, like Google Maps",
+                    key=f"gm_org_{trow['name']}", label_visibility="collapsed")
+                origin = typed.strip() or f"{lat},{lon}"
+                origin_label = typed.strip() or trow["name"]
 
     # -- 2. WHAT YOU NEED (service chips) ---------------------------------
     cat = _chip_pick("What do you need?",
@@ -695,14 +703,12 @@ def google_places_section(trow, ev):
             st.markdown(
                 '<div class="qs-maphelp">'
                 '<b>How to use this map</b>'
-                '<span><span class="dotA">●</span> green = where you are &nbsp;·&nbsp; '
-                '<span class="dotB">●</span> red = your destination</span>'
-                '<span>🧭 <b>Navigate</b> on any result opens live turn-by-turn '
-                'in Google Maps from your location.</span>'
-                '<span>📞 <b>Call</b> dials the facility — call ahead, lines and '
-                'roads may be affected after a quake.</span>'
-                '<span>Switch <b>Drive / Walk / Bike</b> to update the route and '
-                'estimated arrival time above.</span>'
+                '<span>The map shows the route from your starting point to the '
+                'facility, with the estimated arrival time.</span>'
+                '<span>🧭 <b>Navigate</b> opens live turn-by-turn in Google Maps.'
+                ' &nbsp; 📞 <b>Call</b> dials the facility.</span>'
+                '<span>Switch <b>Drive / Walk / Bike</b> to update the route '
+                'and arrival time.</span>'
                 '</div>', unsafe_allow_html=True)
     else:
         components.iframe(
@@ -1832,9 +1838,9 @@ elif page == "Ask":
 
 # ==================================================================== RESPOND ==
 elif page == "Respond":
-    st.subheader("⛑️ Respond — get help now")
-    st.caption("Find the nearest hospitals, fire and police from your own location, "
-               "and keep official safety guides for when the network goes down.")
+    st.subheader("⛑️ Respond")
+    st.caption("Find nearby hospitals, fire and police, and download official "
+               "safety guides for offline use.")
 
     # ---- Find help in the affected area --------------------------------
     st.markdown("##### Emergency resources in the affected area")

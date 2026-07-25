@@ -45,6 +45,8 @@ def _config(ground: bool = False, **kwargs):
     from google.genai import types
     if ground:
         kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+    # Generous output cap so a normal answer is never truncated for length.
+    kwargs.setdefault("max_output_tokens", 2048)
     try:
         kwargs.setdefault("thinking_config",
                           types.ThinkingConfig(thinking_budget=0))
@@ -69,28 +71,60 @@ def _collect_sources(resp_or_chunk, out: list):
         pass
 
 
+def _chunk_text(chunk) -> str:
+    """Safely pull text from a stream chunk. Accessing chunk.text raises when
+    a chunk carries only tool/grounding parts (common with Google Search
+    grounding) - that exception was aborting answers mid-sentence."""
+    try:
+        t = chunk.text
+        return t or ""
+    except Exception:
+        pass
+    out = []
+    try:
+        for cand in chunk.candidates or []:
+            for part in (getattr(cand.content, "parts", None) or []):
+                if getattr(part, "text", None):
+                    out.append(part.text)
+    except Exception:
+        pass
+    return "".join(out)
+
+
 def _stream_text(prompt: str, temperature: float, fallback: str,
                  ground: bool = False, sources: list = None):
-    """Yield answer chunks; if the model dies mid-answer, finish with the fallback.
+    """Yield answer chunks resiliently. A single bad chunk never aborts the
+    answer; if the whole stream fails before producing text, fall back to a
+    single non-streaming call (more robust) before giving up.
 
-    When ground=True, web sources found by Gemini are appended to `sources`
-    (read it after the stream is fully consumed)."""
+    When ground=True, web sources found by Gemini are appended to `sources`."""
     produced = False
     try:
         resp = _client().models.generate_content_stream(
             model=GEMINI_MODEL, contents=prompt,
             config=_config(ground=ground, temperature=temperature))
         for chunk in resp:
-            if chunk.text:
+            t = _chunk_text(chunk)
+            if t:
                 produced = True
-                yield chunk.text
+                yield t
             if sources is not None:
                 _collect_sources(chunk, sources)
     except Exception:
-        yield ("\n\n---\n*(Answer interrupted - showing summary instead.)*\n\n"
-               + fallback) if produced else fallback
+        if produced:
+            return  # keep what we streamed; don't tack on a canned summary
+    if produced:
         return
-    if not produced:
+    # Nothing streamed - one non-streaming retry (handles transient stream errors)
+    try:
+        resp = _client().models.generate_content(
+            model=GEMINI_MODEL, contents=prompt,
+            config=_config(ground=ground, temperature=temperature))
+        if sources is not None:
+            _collect_sources(resp, sources)
+        text = (resp.text or "").strip()
+        yield text if text else fallback
+    except Exception:
         yield fallback
 
 
@@ -235,8 +269,12 @@ Also detect:
 - "fresh": true when the answer benefits from CURRENT web information - details or
   impact of a specific recent earthquake, current advisories/warnings, casualty or
   damage reports, anything after 2024. Otherwise false (timeless science/safety).
-- "language": the language the question is written in (e.g. "English", "Thai",
-  "Myanmar (Burmese)", "Hindi"). Answer language must match the question.
+- "language": the language of the user's CURRENT question (any language on
+  Earth - e.g. "English", "Thai", "Myanmar (Burmese)", "Hindi", "Spanish",
+  "Arabic", "Chinese", "French"). The answer must be in this language. The
+  user may switch languages at any time mid-conversation - always follow the
+  latest question's language, never a previous one. If the question names a
+  target language ("answer in Thai", "explain in Spanish"), use that instead.
 
 """ + _SCHEMA_BLOCK + """
 
