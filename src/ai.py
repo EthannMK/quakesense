@@ -898,3 +898,49 @@ def explain_anomaly(cell: dict, events: pd.DataFrame,
                 f"aftershock sequence or swarm near: {places}.\n\n**For nearby communities** - "
                 f"review preparedness, secure heavy items, follow official guidance. Earthquakes "
                 f"cannot be predicted; elevated activity does not guarantee a larger event.")
+
+
+# ================================================================= voice ====
+def transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/wav") -> str:
+    """Speech-to-text via Gemini's own multimodal input (no separate Speech
+    API needed). Returns '' on any failure so callers degrade gracefully."""
+    try:
+        from google.genai import types
+        resp = _client().models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                      "Transcribe this audio to plain text. Return ONLY the exact "
+                      "words spoken, in their original language, with no commentary."],
+            config=_config(temperature=0.0))
+        return (resp.text or "").strip()
+    except Exception:
+        return ""
+
+
+# BCP-47 codes for the app's supported languages, for TTS voice selection
+_TTS_LANG = {
+    "english": "en-US", "myanmar": "my-MM", "burmese": "my-MM", "thai": "th-TH",
+    "hindi": "hi-IN", "bengali": "bn-IN", "telugu": "te-IN", "marathi": "mr-IN",
+    "tamil": "ta-IN", "spanish": "es-ES", "french": "fr-FR", "arabic": "ar-XA",
+    "chinese": "cmn-CN", "japanese": "ja-JP", "indonesian": "id-ID",
+}
+
+
+def synthesize_speech(text: str, language: str = "English") -> bytes:
+    """Text-to-speech via Google Cloud Text-to-Speech. Returns MP3 bytes, or
+    None if the API/library is unavailable (caller then hides the audio)."""
+    try:
+        from google.cloud import texttospeech
+        code = _TTS_LANG.get((language or "english").split()[0].lower().strip("()"),
+                             "en-US")
+        client = texttospeech.TextToSpeechClient()
+        resp = client.synthesize_speech(
+            input=texttospeech.SynthesisInput(text=text[:1800]),
+            voice=texttospeech.VoiceSelectionParams(
+                language_code=code,
+                ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL),
+            audio_config=texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.MP3))
+        return resp.audio_content
+    except Exception:
+        return None

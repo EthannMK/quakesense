@@ -19,7 +19,8 @@ import streamlit.components.v1 as components
 
 from src.ai import (situation_briefing, smart_ask, explain_anomaly,
                     area_profile, sitrep, do_dont, run_bigquery, TABLE_FQN,
-                    log_feedback, prioritize_facilities)
+                    log_feedback, prioritize_facilities,
+                    transcribe_audio, synthesize_speech)
 from src.config import MAPS_API_KEY
 from src.anomaly import detect
 from src.live_feed import fetch_live, significant_events, PAGER_LABEL
@@ -227,6 +228,18 @@ div[data-testid="stPopoverBody"] {
 }
 .qs-chat-title {font-weight: 700; font-size: 0.98rem; color: #0d1321; line-height: 1.1;}
 .qs-chat-sub {font-size: 0.68rem; color: #5c3a1f; line-height: 1.2;}
+/* Compact chat text inside the popup */
+div[data-testid="stPopoverBody"] [data-testid="stChatMessage"] {
+  padding: 0.5rem 0.55rem; margin-bottom: 0.3rem;
+}
+div[data-testid="stPopoverBody"] [data-testid="stChatMessage"] p,
+div[data-testid="stPopoverBody"] [data-testid="stChatMessage"] li {
+  font-size: 0.85rem !important; line-height: 1.45 !important;
+}
+div[data-testid="stPopoverBody"] [data-testid="stChatMessage"] [data-testid="stChatMessageAvatarAssistant"],
+div[data-testid="stPopoverBody"] [data-testid="stChatMessage"] [data-testid="stChatMessageAvatarUser"] {
+  width: 26px; height: 26px;
+}
 [data-stale="true"] div[data-testid="stPopover"] {display: none !important;}
 
 /* Live event ticker under the header */
@@ -433,13 +446,9 @@ def logo_b64() -> str:
 AVATARS = {"user": "🧑", "assistant": os.path.join("assets", "gemini.png")}
 
 BOT_INTRO = (
-    "Hi, I'm **Terra** ✦ — QuakeSense's AI assistant, powered by Google's "
-    "Gemini 2.5 Flash on Vertex AI.\n\n"
-    "I can help you with:\n"
-    "- **What you're seeing** on this page — any event, number, or alert\n"
-    "- **Any earthquake question**, in your own language\n"
-    "- **Finding help**: nearest hospitals, fire & police stations and national "
-    "emergency numbers are in the **Response Toolkit**\n\n"
+    "Hi, I'm **Terra** ✦ — powered by Gemini 2.5 Flash.\n\n"
+    "Ask me about anything on this page, any earthquake question in your own "
+    "language, or how to stay safe.\n\n"
     "What would you like to know?")
 
 
@@ -594,9 +603,11 @@ def google_places_section(trow, ev):
     # -- 1. STARTING POINT — editable like Google Maps; the GPS button
     #       auto-selects the device location.
     with st.container(border=True):
-        lc, sc = st.columns([0.07, 0.93], gap="small",
+        st.markdown("🟢 **Starting point** — type a place, or tap the button "
+                    "for your GPS location")
+        tc, ic = st.columns([0.87, 0.13], gap="small",
                             vertical_alignment="center")
-        with lc:
+        with ic:
             loc = None
             try:
                 from streamlit_geolocation import streamlit_geolocation
@@ -604,22 +615,20 @@ def google_places_section(trow, ev):
             except Exception:
                 pass
         use_me = bool(loc and loc.get("latitude"))
-        with sc:
+        with tc:
             if use_me:
                 glat, glon = float(loc["latitude"]), float(loc["longitude"])
                 lat, lon = glat, glon
                 origin = f"{glat},{glon}"
                 origin_label = "your current location"
-                st.markdown("🟢 **Starting point:** your device location")
                 typed = st.text_input(
                     "Starting point", value="",
-                    placeholder="Using your GPS location — or type another place",
+                    placeholder="📍 Using your GPS location — or type another place",
                     key=f"gm_org_{trow['name']}", label_visibility="collapsed")
                 if typed.strip():
                     origin, origin_label = typed.strip(), typed.strip()
             else:
                 lat, lon = float(trow["latitude"]), float(trow["longitude"])
-                st.markdown("🟢 **Starting point** — type a place, or tap ◎ for GPS")
                 typed = st.text_input(
                     "Starting point",
                     value=f"{trow['name']}, {trow['country']}",
@@ -1100,13 +1109,26 @@ def quick_ask(context: str, live_df):
                     if m.get("sources"):
                         st.caption("Sources: " + " · ".join(
                             f"[{s['title']}]({s['uri']})" for s in m["sources"][:3]))
+        # Voice input (outside the form so it records + transcribes immediately)
+        voice_q = None
+        vclip = st.audio_input("🎤 Ask by voice", key="quick_voice",
+                               label_visibility="collapsed")
+        if vclip is not None:
+            import hashlib
+            vd = vclip.getvalue()
+            vh = hashlib.md5(vd).hexdigest()
+            if vh != st.session_state.get("quick_voice_hash"):
+                st.session_state.quick_voice_hash = vh
+                with st.spinner("Transcribing your voice..."):
+                    voice_q = transcribe_audio(vd, vclip.type or "audio/wav")
         with st.form("quick_form", clear_on_submit=True, border=False):
             c1, c2 = st.columns([0.82, 0.18])
             q = c1.text_input("Message", label_visibility="collapsed",
                               placeholder="Type a message...")
             send = c2.form_submit_button("➤", use_container_width=True)
-        if send and q.strip():
-            q = q.strip()
+        the_q = voice_q or (q.strip() if send and q.strip() else None)
+        if the_q:
+            q = the_q
             recent = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in hist[-4:])
             ctx_hist = (f"[Floating mini-chat. The user is looking at: {context}. "
                         f"Answer in under 120 words and ALWAYS name the specific "
@@ -1223,22 +1245,49 @@ def chat_agent(live):
             if m.get("df") is not None and len(m["df"]) and m["df"].size > 1:
                 st.dataframe(m["df"].head(30), use_container_width=True, hide_index=True)
             if m["role"] == "assistant":
+                a1, a2, a3, _ = st.columns([0.09, 0.09, 0.16, 0.66])
                 if m.get("rated"):
-                    st.caption("Feedback recorded — thank you.")
+                    a1.caption("✓ noted")
                 else:
-                    fb1, fb2, _ = st.columns([0.07, 0.07, 0.86])
-                    fb1.button("👍", key=f"fb_up_{i}", help="Good answer",
-                               on_click=_rate_answer, args=(i, "up"))
-                    fb2.button("👎", key=f"fb_down_{i}", help="Poor answer",
-                               on_click=_rate_answer, args=(i, "down"))
+                    a1.button("👍", key=f"fb_up_{i}", help="Good answer",
+                              on_click=_rate_answer, args=(i, "up"))
+                    a2.button("👎", key=f"fb_down_{i}", help="Poor answer",
+                              on_click=_rate_answer, args=(i, "down"))
+                if a3.button("🔊 Listen", key=f"tts_btn_{i}",
+                             help="Hear this answer"):
+                    with st.spinner("Generating audio..."):
+                        audio = synthesize_speech(m["content"])
+                    if audio:
+                        st.session_state[f"tts_audio_{i}"] = audio
+                    else:
+                        st.caption(":orange[Voice output needs the Text-to-Speech "
+                                   "API enabled on the project.]")
+                if st.session_state.get(f"tts_audio_{i}"):
+                    st.audio(st.session_state[f"tts_audio_{i}"], format="audio/mp3")
 
     if st.session_state.get("area"):
         st.caption(f"The agent can see your current My Area analysis "
                    f"({st.session_state.area['city']}) — ask about it here.")
 
+    # Voice input (mic) — records, then transcribes with Gemini's own audio model
+    voice_q = None
+    mc, _mrest = st.columns([0.5, 0.5])
+    with mc:
+        clip = st.audio_input("🎤 Ask by voice", key="voice_in")
+    if clip is not None:
+        import hashlib
+        data = clip.getvalue()
+        h = hashlib.md5(data).hexdigest()
+        if h != st.session_state.get("voice_hash"):
+            st.session_state.voice_hash = h
+            with st.spinner("Transcribing your voice..."):
+                voice_q = transcribe_audio(data, clip.type or "audio/wav")
+            if not voice_q:
+                st.caption(":orange[Couldn't hear that — try again, or type below.]")
+
     typed = st.chat_input("Ask anything about earthquakes — events, science, safety, "
                           "or your area's analysis...")
-    question = pending or typed
+    question = pending or voice_q or typed
     if question:
         st.session_state.chat.append({"role": "user", "content": question})
         with st.chat_message("user", avatar=AVATARS["user"]):

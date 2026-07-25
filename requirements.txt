@@ -8,4 +8,5 @@ google-genai>=1.0
 db-dtypes>=1.2
 pycountry>=23.12
 streamlit-geolocation>=0.0.10
+google-cloud-texttospeech>=2.16
 
