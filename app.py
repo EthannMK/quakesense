@@ -19,8 +19,7 @@ import streamlit.components.v1 as components
 
 from src.ai import (situation_briefing, smart_ask, explain_anomaly,
                     area_profile, sitrep, do_dont, run_bigquery, TABLE_FQN,
-                    log_feedback, prioritize_facilities,
-                    transcribe_audio, synthesize_speech)
+                    log_feedback, prioritize_facilities)
 from src.config import MAPS_API_KEY
 from src.anomaly import detect
 from src.live_feed import fetch_live, significant_events, PAGER_LABEL
@@ -91,13 +90,80 @@ hr {margin: 1.1rem 0 0.9rem 0;}
   padding: 0.85rem 1rem; margin-bottom: 0.45rem;
 }
 
-/* Sidebar nav: hover + active states */
-section[data-testid="stSidebar"] .stRadio label {
-  padding: 5px 8px; border-radius: 8px; transition: background 0.12s;
+/* Sidebar nav — modern menu with active accent, hover, no radio circles */
+section[data-testid="stSidebar"] [role="radiogroup"] {gap: 3px;}
+section[data-testid="stSidebar"] [role="radiogroup"] > label {
+  padding: 9px 12px; border-radius: 10px; margin: 0;
+  border-left: 3px solid transparent;
+  transition: background 0.12s, border-color 0.12s; cursor: pointer;
 }
-section[data-testid="stSidebar"] .stRadio label:hover {background: #161e2e;}
-section[data-testid="stSidebar"] .stRadio label:has(input:checked) {
+section[data-testid="stSidebar"] [role="radiogroup"] > label:hover {
   background: #161e2e;
+}
+section[data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) {
+  background: #18212f; border-left: 3px solid #e08850;
+}
+/* hide the round radio marker for a clean nav look */
+section[data-testid="stSidebar"] [role="radiogroup"] > label > div:first-child {
+  display: none !important;
+}
+section[data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) p {
+  color: #e08850;
+}
+
+/* Freeze the WHOLE top bar — wordmark, tagline, nav and live ticker — so the
+   menu area is always visible and obviously navigation, not page content */
+/* Freeze just the nav buttons at the top of the scroll area — nothing else
+   moves, so the rest of the layout is untouched. */
+.st-key-topnav {
+  position: sticky; top: 0; z-index: 500;
+  background: #0d1321; padding: 0.35rem 0 0.15rem 0;
+}
+
+/* Top navigation — a distinct segmented-control BAR (the app menu), so it
+   reads as navigation, clearly separate from the page controls below it. */
+.st-key-topnav [role="radiogroup"] {
+  gap: 4px; flex-wrap: wrap; background: #10192a;
+  border: 1px solid #263145; border-radius: 12px;
+  padding: 6px; margin-bottom: 16px;
+}
+.st-key-topnav [role="radiogroup"] > label {
+  padding: 7px 18px; border-radius: 8px; margin: 0; cursor: pointer;
+  border: none; background: transparent; transition: background 0.12s;
+}
+.st-key-topnav [role="radiogroup"] > label:hover {background: #1a2434;}
+.st-key-topnav [role="radiogroup"] > label:has(input:checked) {
+  background: #e08850;
+}
+.st-key-topnav [role="radiogroup"] > label:has(input:checked) p {
+  color: #0d1321 !important;
+}
+.st-key-topnav [role="radiogroup"] > label > div:first-child {
+  display: none !important;  /* hide the radio circle */
+}
+.st-key-topnav [role="radiogroup"] > label p {
+  font-size: 0.9rem !important; font-weight: 600;
+}
+
+/* Chat composer — the mic sits inline next to the auto-growing chat input.
+   The chat input already reads clearly as an input (rounded, with a send
+   arrow), distinct from the rectangular suggestion buttons. */
+.st-key-stt_ask, .st-key-quick_stt {
+  display: flex !important; justify-content: center; align-items: flex-end;
+}
+/* Composer input — accent border so it clearly reads as the place to type,
+   with breathing room above it separating it from the suggestion buttons */
+.st-key-ask_chat_input, .st-key-quick_chat_input {margin-top: 1.4rem;}
+.st-key-stt_ask, .st-key-quick_stt {margin-top: 1.4rem;}
+.st-key-ask_chat_input [data-testid="stChatInput"],
+.st-key-quick_chat_input [data-testid="stChatInput"] {
+  border: 1.5px solid #45b3e6 !important; border-radius: 12px;
+  background: #0b1220 !important;
+}
+.st-key-ask_chat_input [data-testid="stChatInput"]:focus-within,
+.st-key-quick_chat_input [data-testid="stChatInput"]:focus-within {
+  border-color: #e08850 !important;
+  box-shadow: 0 0 0 2px rgba(224, 136, 80, 0.18) !important;
 }
 
 /* Messenger panel send button: light blue, filled on hover */
@@ -165,18 +231,26 @@ div[data-testid="stPopoverBody"] [data-testid="stBaseButton-secondaryFormSubmit"
 
 h2, h3 {letter-spacing: 0.01em; color: #dbe2ec;}
 section[data-testid="stSidebar"] {border-right: 1px solid #263145;}
-section[data-testid="stSidebar"] .stRadio label p {font-size: 0.90rem;}
+section[data-testid="stSidebar"] .stRadio label p {font-size: 0.95rem; font-weight: 600;}
 
+/* Narrower sidebar — but ONLY when expanded, so collapsing fully hides it
+   (forcing the width unconditionally left a black strip when collapsed). */
+section[data-testid="stSidebar"][aria-expanded="true"] {
+  min-width: 15rem !important; max-width: 15rem !important;
+}
 .qs-credit {
-  font-size: 0.68rem; letter-spacing: 0.10em; text-transform: uppercase;
+  font-size: 0.6rem; letter-spacing: 0.10em; text-transform: uppercase;
   color: #8fa0b5; margin-bottom: 0.15rem;
 }
-.qs-credit-items {font-size: 0.76rem; color: #c3cede; line-height: 1.5; margin-bottom: 0.55rem;}
+.qs-credit-items {font-size: 0.66rem; color: #c3cede; line-height: 1.45; margin-bottom: 0.5rem;}
 .qs-sidebar-bottom {
-  margin-top: 2.2rem; padding: 0.8rem 0 0.4rem 0;
+  margin-top: 1.6rem; padding: 0.7rem 0 0.4rem 0;
   border-top: 1px solid #263145;
 }
-.qs-team {font-size: 0.72rem; color: #8fa0b5; margin-top: 0.4rem;}
+.qs-team {font-size: 0.64rem; color: #8fa0b5; margin-top: 0.35rem;}
+section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
+  font-size: 0.68rem !important; line-height: 1.4;
+}
 
 .stButton button[kind="primary"] {
   letter-spacing: 0.06em; font-weight: 600; border-radius: 4px;
@@ -209,10 +283,10 @@ div[data-testid="stPopoverBody"] [data-testid="InputInstructions"] {
   display: none !important;
 }
 
-/* Chat panel — a proper fixed-size chat box */
+/* Chat panel — fits its content; only the conversation scrolls, never the panel */
 div[data-testid="stPopoverBody"] {
   width: 384px !important; max-width: 92vw !important;
-  height: 560px; max-height: 78vh; overflow-y: auto;
+  max-height: 86vh; overflow: hidden !important;
   padding: 0.85rem !important;
 }
 /* Coloured header bar that bleeds to the panel edges */
@@ -361,10 +435,10 @@ div[data-testid="stPopoverBody"] [data-testid="stColumn"] {
   [data-testid="stMetricValue"] {font-size: 1.2rem !important;}
   h2, h3 {font-size: 1.1rem;}
   div[data-testid="stPopover"] {bottom: 0.9rem; right: 0.9rem;}
-  /* Chat box fills the phone screen so it never overflows */
+  /* Chat box fills the phone width; fits content, never overflows */
   div[data-testid="stPopoverBody"] {
     width: 94vw !important; max-width: 94vw !important;
-    height: 82vh !important; max-height: 82vh !important;
+    max-height: 88vh !important;
   }
   .stButton button {min-height: 44px;}
   [data-testid="stChatMessage"] {padding: 0.7rem 0.75rem;}
@@ -453,6 +527,31 @@ BOT_INTRO = (
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
+def place_suggestions(text: str, lat: float, lon: float, n: int = 4):
+    """Google-Maps-style place hints (Places Autocomplete)."""
+    if not text or len(text.strip()) < 3:
+        return []
+    try:
+        r = requests.post(
+            "https://places.googleapis.com/v1/places:autocomplete",
+            json={"input": text.strip(),
+                  "locationBias": {"circle": {"center": {"latitude": lat,
+                                                         "longitude": lon},
+                                   "radius": 50000.0}}},
+            headers={"X-Goog-Api-Key": MAPS_API_KEY,
+                     "Content-Type": "application/json"}, timeout=8)
+        r.raise_for_status()
+        out = []
+        for s in r.json().get("suggestions", [])[:n]:
+            t = s.get("placePrediction", {}).get("text", {}).get("text")
+            if t:
+                out.append(t)
+        return out
+    except Exception:
+        return []
+
+
 def places_search(query: str, lat: float, lon: float, n: int = 8):
     """Live place results (name, address, phone, open-now) from the Google
     Places API, biased around the affected town."""
@@ -551,6 +650,67 @@ def _chip_pick(label, options, key, default=None):
     return st.selectbox(label, options, key=key)
 
 
+def _style_mic_component():
+    """Give the mic button the same accent border as the chat input. The
+    component iframe is served by our own app (same origin), so a zero-height
+    helper frame can inject styling into its document."""
+    components.html("""
+<script>
+const micCss = `
+  html, body {margin:0; padding:0; background:transparent; overflow:hidden;
+              display:flex; align-items:center; justify-content:center;}
+  html body button, html body button:not([disabled]), button {
+    width: 44px !important; height: 42px !important;
+    background-color: #0b1220 !important;
+    border: 1.5px solid #45b3e6 !important;
+    border-color: #45b3e6 !important; border-style: solid !important;
+    border-width: 1.5px !important;
+    border-radius: 12px !important; cursor: pointer !important;
+    box-shadow: none !important; outline: none !important;
+    display: flex !important; align-items: center !important;
+    justify-content: center !important; padding: 0 !important;
+    font-size: 17px !important; line-height: 1 !important;
+    transition: border-color 0.15s, background-color 0.15s !important;
+  }
+  html body button:hover {
+    border-color: #e08850 !important; background-color: #131c2c !important;
+  }
+`;
+function injectMic() {
+  try {
+    const frames = window.parent.document.querySelectorAll('iframe');
+    for (const f of frames) {
+      const t = f.getAttribute('title') || '';
+      if (!/mic_recorder|speech_to_text/i.test(t)) continue;
+      const d = f.contentDocument;
+      if (d && d.head && !d.getElementById('qs-mic-style')) {
+        const s = d.createElement('style');
+        s.id = 'qs-mic-style'; s.textContent = micCss;
+        d.head.appendChild(s);
+      }
+      // the component sets inline styles that beat stylesheet rules, so write
+      // the accent border straight onto the element with top priority
+      const btn = d ? d.querySelector('button') : null;
+      if (btn) {
+        btn.style.setProperty('border', '1.5px solid #45b3e6', 'important');
+        btn.style.setProperty('background-color', '#0b1220', 'important');
+        btn.style.setProperty('border-radius', '12px', 'important');
+        btn.style.setProperty('width', '44px', 'important');
+        btn.style.setProperty('height', '42px', 'important');
+        btn.style.setProperty('box-shadow', 'none', 'important');
+        btn.onmouseenter = function(){
+          btn.style.setProperty('border-color', '#e08850', 'important'); };
+        btn.onmouseleave = function(){
+          btn.style.setProperty('border-color', '#45b3e6', 'important'); };
+      }
+    }
+  } catch (e) {}
+}
+injectMic();
+setInterval(injectMic, 600);
+</script>""", height=0)
+
+
 def _style_gps_component():
     """Restyle the third-party GPS button from the inside: the component
     iframe is served by our own app (same origin), so a zero-height helper
@@ -602,6 +762,8 @@ def google_places_section(trow, ev):
 
     # -- 1. STARTING POINT — editable like Google Maps; the GPS button
     #       auto-selects the device location.
+    GPS_TXT = "📍 My location (GPS)"
+    okey = f"gm_org_{trow['name']}"
     with st.container(border=True):
         st.markdown("🟢 **Starting point** — type a place, or tap the button "
                     "for your GPS location")
@@ -615,27 +777,44 @@ def google_places_section(trow, ev):
             except Exception:
                 pass
         use_me = bool(loc and loc.get("latitude"))
+        glat = glon = None
+        if use_me:
+            glat = round(float(loc["latitude"]), 5)
+            glon = round(float(loc["longitude"]), 5)
+            # Auto-fill the field the moment the device location arrives.
+            # (Streamlit keeps a widget's previous value for the same key, so
+            # the session value must be overwritten explicitly.)
+            if st.session_state.get("_gps_fix") != (glat, glon):
+                st.session_state["_gps_fix"] = (glat, glon)
+                st.session_state[okey] = GPS_TXT
         with tc:
-            if use_me:
-                glat, glon = float(loc["latitude"]), float(loc["longitude"])
-                lat, lon = glat, glon
-                origin = f"{glat},{glon}"
-                origin_label = "your current location"
-                typed = st.text_input(
-                    "Starting point", value="",
-                    placeholder="📍 Using your GPS location — or type another place",
-                    key=f"gm_org_{trow['name']}", label_visibility="collapsed")
-                if typed.strip():
-                    origin, origin_label = typed.strip(), typed.strip()
-            else:
-                lat, lon = float(trow["latitude"]), float(trow["longitude"])
-                typed = st.text_input(
-                    "Starting point",
-                    value=f"{trow['name']}, {trow['country']}",
-                    placeholder="Type an address or place, like Google Maps",
-                    key=f"gm_org_{trow['name']}", label_visibility="collapsed")
-                origin = typed.strip() or f"{lat},{lon}"
-                origin_label = typed.strip() or trow["name"]
+            typed = st.text_input(
+                "Starting point",
+                value=f"{trow['name']}, {trow['country']}",
+                placeholder="Type an address or place, like Google Maps",
+                key=okey, label_visibility="collapsed")
+        t = (typed or "").strip()
+        if use_me and (not t or t == GPS_TXT):
+            lat, lon = glat, glon
+            origin, origin_label = f"{glat},{glon}", "your current location"
+        else:
+            lat, lon = float(trow["latitude"]), float(trow["longitude"])
+            origin = t or f"{lat},{lon}"
+            origin_label = t or trow["name"]
+
+        # Google-Maps-style hints while typing
+        if t and t != GPS_TXT:
+            hints = [h for h in place_suggestions(t, lat, lon, 3)
+                     if h.lower() != t.lower()]
+            if hints:
+                st.caption("Did you mean:")
+                hcols = st.columns(len(hints))
+                for j, h in enumerate(hints):
+                    label = h if len(h) <= 36 else h[:34] + "…"
+                    if hcols[j].button(label, key=f"sg_{trow['name']}_{j}",
+                                       help=h, use_container_width=True):
+                        st.session_state[okey] = h
+                        st.rerun(scope="fragment")
 
     # -- 2. WHAT YOU NEED (service chips) ---------------------------------
     cat = _chip_pick("What do you need?",
@@ -1097,8 +1276,27 @@ def quick_ask(context: str, live_df):
             '<div><div class="qs-chat-title">Terra</div>'
             '<div class="qs-chat-sub">QuakeSense assistant · Gemini 2.5 Flash'
             '</div></div></div>', unsafe_allow_html=True)
+        # inject an ✕ close button into the header (clicks the launcher to close)
+        components.html("""
+<script>
+function qsAddClose(){
+ try{
+  const doc=window.parent.document;
+  const head=doc.querySelector('.qs-chat-head');
+  if(head && !head.querySelector('.qs-x')){
+    const x=doc.createElement('div');
+    x.className='qs-x'; x.textContent='\\u2715';
+    x.style.cssText='margin-left:auto;cursor:pointer;color:#0d1321;'
+      +'font-weight:700;font-size:17px;line-height:1;padding:2px 4px';
+    x.onclick=function(){const t=doc.querySelector('button[data-testid=\\"stPopoverButton\\"]'); if(t) t.click();};
+    head.appendChild(x);
+  }
+ }catch(e){}
+}
+qsAddClose(); setInterval(qsAddClose,400);
+</script>""", height=0)
         st.caption(f"📍 Talking about: {context}")
-        box = st.container(height=328)
+        box = st.container(height=300)
         with box:
             if not hist:
                 with st.chat_message("assistant", avatar=AVATARS["assistant"]):
@@ -1109,24 +1307,21 @@ def quick_ask(context: str, live_df):
                     if m.get("sources"):
                         st.caption("Sources: " + " · ".join(
                             f"[{s['title']}]({s['uri']})" for s in m["sources"][:3]))
-        # Voice input (outside the form so it records + transcribes immediately)
+        # Composer — mic inline beside the auto-growing chat input.
         voice_q = None
-        vclip = st.audio_input("🎤 Ask by voice", key="quick_voice",
-                               label_visibility="collapsed")
-        if vclip is not None:
-            import hashlib
-            vd = vclip.getvalue()
-            vh = hashlib.md5(vd).hexdigest()
-            if vh != st.session_state.get("quick_voice_hash"):
-                st.session_state.quick_voice_hash = vh
-                with st.spinner("Transcribing your voice..."):
-                    voice_q = transcribe_audio(vd, vclip.type or "audio/wav")
-        with st.form("quick_form", clear_on_submit=True, border=False):
-            c1, c2 = st.columns([0.82, 0.18])
-            q = c1.text_input("Message", label_visibility="collapsed",
-                              placeholder="Type a message...")
-            send = c2.form_submit_button("➤", use_container_width=True)
-        the_q = voice_q or (q.strip() if send and q.strip() else None)
+        _style_mic_component()
+        ic, tc = st.columns([0.14, 0.86], vertical_alignment="bottom")
+        with ic:
+            try:
+                from streamlit_mic_recorder import speech_to_text
+                voice_q = speech_to_text(
+                    language="en", start_prompt="🎙️", stop_prompt="🔴",
+                    just_once=True, use_container_width=False, key="quick_stt")
+            except Exception:
+                pass
+        with tc:
+            q_sub = st.chat_input("Type a message…", key="quick_chat_input")
+        the_q = voice_q or (q_sub.strip() if q_sub and q_sub.strip() else None)
         if the_q:
             q = the_q
             recent = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in hist[-4:])
@@ -1203,6 +1398,26 @@ def _rate_answer(i: int, rating: str):
     m["rated"] = rating
 
 
+def _speak_button(text: str, key):
+    """Instant, free text-to-speech using the BROWSER's own speech engine
+    (Web Speech API) - no server call, no Cloud TTS API, no cost. The button
+    lives inside the component iframe so the click is a valid user gesture."""
+    import json as _json
+    clean = re.sub(r"[*#`>|_~]", "", text or "")
+    payload = _json.dumps(clean)
+    components.html(
+        "<style>.spk{background:#161e2e;color:#45b3e6;border:1px solid #263145;"
+        "border-radius:8px;padding:3px 11px;font:600 13px system-ui,sans-serif;"
+        "cursor:pointer;margin-right:6px}.spk:hover{border-color:#e08850;"
+        "color:#e08850}</style>"
+        "<button class='spk' onclick='qsSpeak()'>🔊 Listen</button>"
+        "<button class='spk' onclick='window.speechSynthesis.cancel()'>⏹️</button>"
+        "<script>const QT=" + payload + ";function qsSpeak(){try{"
+        "window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(QT);"
+        "u.rate=1.0;window.speechSynthesis.speak(u);}catch(e){}}</script>",
+        height=40)
+
+
 @st.fragment
 def chat_agent(live):
     """The full chat agent. As a fragment, every interaction (question,
@@ -1245,7 +1460,7 @@ def chat_agent(live):
             if m.get("df") is not None and len(m["df"]) and m["df"].size > 1:
                 st.dataframe(m["df"].head(30), use_container_width=True, hide_index=True)
             if m["role"] == "assistant":
-                a1, a2, a3, _ = st.columns([0.09, 0.09, 0.16, 0.66])
+                a1, a2, _ = st.columns([0.09, 0.09, 0.82])
                 if m.get("rated"):
                     a1.caption("✓ noted")
                 else:
@@ -1253,40 +1468,28 @@ def chat_agent(live):
                               on_click=_rate_answer, args=(i, "up"))
                     a2.button("👎", key=f"fb_down_{i}", help="Poor answer",
                               on_click=_rate_answer, args=(i, "down"))
-                if a3.button("🔊 Listen", key=f"tts_btn_{i}",
-                             help="Hear this answer"):
-                    with st.spinner("Generating audio..."):
-                        audio = synthesize_speech(m["content"])
-                    if audio:
-                        st.session_state[f"tts_audio_{i}"] = audio
-                    else:
-                        st.caption(":orange[Voice output needs the Text-to-Speech "
-                                   "API enabled on the project.]")
-                if st.session_state.get(f"tts_audio_{i}"):
-                    st.audio(st.session_state[f"tts_audio_{i}"], format="audio/mp3")
+                _speak_button(m["content"], f"spk_{i}")
 
     if st.session_state.get("area"):
         st.caption(f"The agent can see your current My Area analysis "
                    f"({st.session_state.area['city']}) — ask about it here.")
 
-    # Voice input (mic) — records, then transcribes with Gemini's own audio model
+    # Composer — mic inline beside the chat input. st.chat_input grows as you
+    # type and scrolls at its max height, and has its own send arrow.
     voice_q = None
-    mc, _mrest = st.columns([0.5, 0.5])
-    with mc:
-        clip = st.audio_input("🎤 Ask by voice", key="voice_in")
-    if clip is not None:
-        import hashlib
-        data = clip.getvalue()
-        h = hashlib.md5(data).hexdigest()
-        if h != st.session_state.get("voice_hash"):
-            st.session_state.voice_hash = h
-            with st.spinner("Transcribing your voice..."):
-                voice_q = transcribe_audio(data, clip.type or "audio/wav")
-            if not voice_q:
-                st.caption(":orange[Couldn't hear that — try again, or type below.]")
-
-    typed = st.chat_input("Ask anything about earthquakes — events, science, safety, "
-                          "or your area's analysis...")
+    _style_mic_component()
+    ic, tc = st.columns([0.07, 0.93], vertical_alignment="bottom")
+    with ic:
+        try:
+            from streamlit_mic_recorder import speech_to_text
+            voice_q = speech_to_text(
+                language="en", start_prompt="🎙️", stop_prompt="🔴",
+                just_once=True, use_container_width=False, key="stt_ask")
+        except Exception:
+            pass
+    with tc:
+        typed = st.chat_input("Ask anything about earthquakes…",
+                              key="ask_chat_input")
     question = pending or voice_q or typed
     if question:
         st.session_state.chat.append({"role": "user", "content": question})
@@ -1642,6 +1845,13 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# ---- top navigation — segmented tabs (mobile-friendly, no hamburger) -------
+page = st.radio(
+    "Navigation",
+    ["🛰️ Live", "📍 My Area", "✦ Ask", "⛑️ Respond"],
+    horizontal=True, label_visibility="collapsed", key="topnav")
+page = page.split(" ", 1)[1]
+
 try:
     live = get_live()
     feed_ok = True
@@ -1652,17 +1862,6 @@ except Exception as e:
 render_ticker(live)
 
 # ----------------------------------------------------------------- sidebar --
-st.sidebar.markdown("##### MENU")
-page = st.sidebar.radio(
-    "Navigation",
-    ["🛰️ Live", "📍 My Area", "✦ Ask", "⛑️ Respond"],
-    captions=["Map · briefings · unusual activity · news",
-              "Your town's risk profile",
-              "Any question, verified against USGS",
-              "Find help · offline guides"],
-    label_visibility="collapsed")
-page = page.split(" ", 1)[1]
-
 if st.sidebar.button("Refresh live feed", use_container_width=True):
     get_live.clear()
     st.rerun()
