@@ -1595,11 +1595,11 @@ render_ticker(live)
 st.sidebar.markdown("##### MENU")
 page = st.sidebar.radio(
     "Navigation",
-    ["🛰️ Live Now", "📈 Anomaly Watch", "📍 My Area", "✦ Ask AI",
-     "⛑️ Response Toolkit", "📖 Guide"],
-    captions=["World map · briefings · media", "Is this week normal?",
-              "Your town's risk profile", "Any question, any language",
-              "SITREP · guidance · facilities", "How it all fits"],
+    ["🛰️ Live", "📍 My Area", "✦ Ask", "⛑️ Respond"],
+    captions=["Map · briefings · unusual activity · news",
+              "Your town's risk profile",
+              "Any question, verified against USGS",
+              "Find help · offline guides"],
     label_visibility="collapsed")
 page = page.split(" ", 1)[1]
 
@@ -1623,8 +1623,8 @@ st.sidebar.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ================================================================ LIVE NOW ==
-if page == "Live Now":
+# ==================================================================== LIVE ==
+if page == "Live":
     if not feed_ok or live.empty:
         st.warning("No live data available right now.")
     else:
@@ -1760,6 +1760,25 @@ if page == "Live Now":
 
         briefing_block(ev, pick)
 
+        # ------------------------------------------- unusual activity (anomaly)
+        st.divider()
+        st.subheader("🚨 Unusual activity this week")
+        st.caption("Regions where this week's M4.5+ activity is far above their "
+                   "own 50-year weekly average — swarms and aftershock sequences, "
+                   "with an AI explanation of the pattern.")
+        flagged, live_cells = detect(live)
+        if flagged.empty:
+            st.success("No regions show anomalously elevated activity this week.")
+        else:
+            st.warning(f"{len(flagged)} region(s) flagged with unusually high activity")
+            show = flagged.rename(columns={"sample_place": "region",
+                                           "weekly_avg": "normal_week",
+                                           "ratio": "times_normal"})
+            st.dataframe(show[["region", "current", "normal_week",
+                               "times_normal", "max_mag"]].round(2),
+                         use_container_width=True, hide_index=True)
+            anomaly_explain_block(flagged, live_cells)
+
         # ------------------------------------------- global media coverage
         st.divider()
         st.subheader("📺 Global media coverage")
@@ -1767,7 +1786,26 @@ if page == "Live Now":
                    "card to read the full story.")
         media_section(live)
 
-        quick_ask(f"Live Now world map (past 7 days); selected event: {pick}", live)
+        with st.expander("ℹ️  How QuakeSense works"):
+            st.markdown("""
+QuakeSense turns raw USGS seismic data into decisions communities can act on —
+it **never predicts** earthquakes.
+
+- **🛰️ Live** — every M2.5+ quake worldwide in the past 7 days: map, filters,
+  plain-language **AI briefings** for significant events, **unusual-activity**
+  flags vs the 50-year record, and **global media** coverage.
+- **📍 My Area** — a risk profile for any town on Earth, in 8 languages, from
+  that area's real 50-year record.
+- **✦ Ask** — ask anything in any language. Historical numbers come from
+  86,000 verified USGS records (the **SQL is shown**), this week from the live
+  feed, current events from the web with sources cited.
+- **⛑️ Respond** — find the nearest hospitals / fire / police from your live
+  location via Google Maps, and download official offline safety guides.
+
+Data: USGS (public domain) · Gemini on Vertex AI · BigQuery · Google Maps.
+""")
+
+        quick_ask(f"Live world map (past 7 days); selected event: {pick}", live)
 
 # ================================================================= MY AREA ==
 elif page == "My Area":
@@ -1777,13 +1815,8 @@ elif page == "My Area":
 
     my_area_block(towns_db(), live)
 
-    area_ctx = (f"My Area risk profile for {st.session_state.area['city']}"
-                if st.session_state.get("area") else
-                "My Area page (no town profiled yet)")
-    quick_ask(area_ctx, live)
-
-# ================================================================== ASK AI ==
-elif page == "Ask AI":
+# ====================================================================== ASK ==
+elif page == "Ask":
     st.subheader("Ask about Earthquakes — AI agent")
     st.caption("Ask anything, in any language — it replies in yours. Historical numbers "
                "come from 50 years of USGS data (SQL shown), this week's events from the "
@@ -1792,76 +1825,32 @@ elif page == "Ask AI":
 
     chat_agent(live)
 
-# =========================================================== ANOMALY WATCH ==
-elif page == "Anomaly Watch":
-    st.subheader("Anomaly Watch — unusual seismic activity")
-    st.caption("Compares this week's M4.5+ activity in every 5-degree region against the "
-               "50-year historical baseline. Flags swarms and intense aftershock sequences.")
-    if live.empty:
-        st.info("Live feed unavailable.")
-    else:
-        flagged, live_cells = detect(live)
-        if flagged.empty:
-            st.success("No regions show anomalously elevated activity this week.")
-        else:
-            st.warning(f"{len(flagged)} region(s) flagged with unusually high activity")
-            show = flagged.rename(columns={"sample_place": "region_sample"})
-            st.dataframe(show[["cell_lat", "cell_lon", "current", "weekly_avg",
-                               "ratio", "max_mag", "region_sample"]].round(2),
-                         use_container_width=True, hide_index=True)
-            st.caption("current = M4.5+ events this week in that region · weekly_avg = the region's "
-                       "50-year average per week · ratio = current ÷ average (3x or more gets flagged)")
-            anomaly_explain_block(flagged, live_cells)
-        ctx = (f"{len(flagged)} regions flagged with unusual activity"
-               if not flagged.empty else "no anomalous regions this week")
-        quick_ask(f"Anomaly Watch page; {ctx}", live)
+# ==================================================================== RESPOND ==
+elif page == "Respond":
+    st.subheader("⛑️ Respond — get help now")
+    st.caption("Find the nearest hospitals, fire and police from your own location, "
+               "and keep official safety guides for when the network goes down.")
 
-# ========================================================= RESPONSE TOOLKIT ==
-elif page == "Response Toolkit":
-    st.subheader("Response Toolkit")
-    st.caption("Practical tools for the hours after an earthquake - for residents "
-               "waiting for help, and for the officials coordinating it.")
-
-    # ---- A: situation report -------------------------------------------
-    st.markdown("##### Situation report (SITREP)")
-    st.caption("A formal report in the format emergency operations centers use. "
-               "Pick an event, generate, download, distribute.")
-    if live.empty:
-        st.info("Live feed unavailable.")
-    else:
-        sig = significant_events(live)
-        labels_rt = [f"M{r.mag:.1f}  ·  {r.place}  ·  {r.time:%b %d %H:%M} UTC"
-                     for r in sig.itertuples()]
-        carry = st.session_state.get("sig_event")
-        default_rt = labels_rt.index(carry) if carry in labels_rt else 0
-        pick_rt = st.selectbox("Event (ranked by USGS significance)", labels_rt,
-                               index=default_rt, key="rt_event",
-                               help="Defaults to the event you picked on Live Now.")
-        ev = sig.iloc[labels_rt.index(pick_rt)].to_dict()
-        sitrep_block(ev, pick_rt, live)
-
-    # ---- B: do's and don'ts --------------------------------------------
-    st.divider()
-    st.markdown("##### Before rescue arrives — do's and don'ts")
-    st.caption("Established international guidance (FEMA / Red Cross), written for "
-               "your situation and language. Not a substitute for trained rescuers.")
-    context = (f"M{ev['mag']:.1f} earthquake near {ev['place']}, depth "
-               f"{ev['depth_km']:.0f} km"
-               if not live.empty else "a strong earthquake")
-    guidance_block(context)
-
-    # ---- C: emergency resources in the affected area --------------------
-    st.divider()
+    # ---- Find help in the affected area --------------------------------
     st.markdown("##### Emergency resources in the affected area")
+    pick_rt = None
     tdb2 = towns_db()
     if live.empty:
         st.info("Live feed unavailable.")
     elif tdb2 is None:
         st.error("Towns database missing. Run once:  python scripts/load_towns.py")
     else:
-        st.caption(f"Towns near the selected event above ({ev['place']}), located from "
-                   f"the event's actual USGS coordinates. Pick the affected town, then "
-                   f"find its emergency facilities.")
+        sig = significant_events(live)
+        labels_rt = [f"M{r.mag:.1f}  ·  {r.place}  ·  {r.time:%b %d %H:%M} UTC"
+                     for r in sig.itertuples()]
+        carry = st.session_state.get("sig_event")
+        default_rt = labels_rt.index(carry) if carry in labels_rt else 0
+        pick_rt = st.selectbox("Which event are you responding to?", labels_rt,
+                               index=default_rt, key="rt_event",
+                               help="Defaults to the event you picked on Live.")
+        ev = sig.iloc[labels_rt.index(pick_rt)].to_dict()
+        st.caption(f"Towns near this event ({ev['place']}), located from its actual "
+                   f"USGS coordinates. Pick the affected town, then find help.")
         dlat = 1.5
         dlon = 1.5 / max(0.2, math.cos(math.radians(ev["lat"])))
         near_towns = tdb2[tdb2["latitude"].between(ev["lat"] - dlat, ev["lat"] + dlat)
@@ -1877,69 +1866,12 @@ elif page == "Response Toolkit":
         else:
             facilities_block(near_towns.head(15).reset_index(drop=True), ev)
 
-    # ---- D: offline library ---------------------------------------------
+    # ---- Offline library ------------------------------------------------
     st.divider()
     offline_library()
 
-    quick_ask(f"Response Toolkit; selected event: {pick_rt}" if not live.empty
-              else "Response Toolkit page", live)
-
-# ============================================================== HOW TO USE ==
-else:
-    st.subheader("How to use QuakeSense")
-    st.markdown("""
-QuakeSense answers three questions after an earthquake: **what just happened,
-what does it mean for my community, and is this pattern normal?** The menu is
-organized around those moments:
-
-| Section | Purpose | Data behind it |
-|---|---|---|
-| **Live Now** | What's happening right now, worldwide | USGS live feed (7 days, M2.5+), every 5 min |
-| **Anomaly Watch** | Is this week normal for each region? | Live feed vs 50-year baseline |
-| **My Area** | What's the risk where *I* live? | 50-year USGS catalog (BigQuery) |
-| **Ask AI** | Any earthquake question, any language | Catalog + live feed + web search |
-| **Response Toolkit** | The hours after a quake | All of the above + OpenStreetMap |
-
-The scrolling strip under the header shows this week's M5+ events everywhere in
-the app — orange for M6+, **red for M6.5+ alerts**, blue for tsunami-flagged.
-On most pages a **💬 Ask QuakeSense** chat bubble floats bottom-right: quick
-questions about what's on screen, answered with the exact event/location named.
-
-#### Live Now
-The world map of every earthquake in the last 7 days: magnitude presets and
-slider, location filter, tectonic plate boundaries (red lines — that's where
-quakes happen), tsunami auto-flagging, CSV export. Below the map: **AI Situation
-Briefings** for any significant event, and **global media coverage** — top
-earthquake headlines from world media.
-
-#### Anomaly Watch
-Compares this week's activity in every region against its 50-year average and
-flags what's unusual — swarms, aftershock sequences — with calm AI explanations.
-
-#### My Area
-Pick your country and town from verified dropdowns, choose from 8 languages
-(English, Burmese, Thai, Hindi, Bengali, Telugu, Marathi, Tamil), and get a
-community risk profile grounded in your area's real 50-year record — with
-charts and a map of every M5+ epicenter near you.
-
-#### Ask AI
-Ask anything about earthquakes, in any language — it answers in yours.
-Historical questions are answered from 50 years of USGS records with the SQL
-shown; this-week questions from the live feed; current events with live web
-search, **sources cited**. Every answer takes a 👍/👎 so we keep improving.
-It remembers follow-ups (*"and for Japan?"*) and can discuss your My Area profile.
-
-#### Response Toolkit
-For the hours after a quake: a formal **situation report (SITREP)** with
-web-verified external reports, **do's and don'ts** for people waiting for
-rescue (8 languages, FEMA/Red Cross guidance), and **hospitals, fire and
-police stations** near any affected town, with national emergency hotlines.
-The event you picked on Live Now carries over automatically.
-
----
-*Earthquakes cannot be predicted. QuakeSense supports awareness, communication,
-and preparedness decisions — never prediction.*
-""")
+    quick_ask(f"Respond page; selected event: {pick_rt}" if pick_rt
+              else "Respond page", live)
 
 st.divider()
 st.caption("Global real-time earthquake intelligence · USGS live feed & FDSN catalog · "
