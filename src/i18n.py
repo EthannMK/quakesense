@@ -1,168 +1,64 @@
 """UI internationalization for QuakeSense.
 
-Canonical language names match the ones the AI features already use
-(src/ai.py prompts), so one global choice drives both the interface
-chrome and the default language of generated content.
+Fixed set of languages, chosen for the countries/regions with the world's
+most frequent earthquakes. Every string is translated ahead of time and
+baked in as static text below - switching languages is instant (dict
+lookup, no API call, no latency, ever). There is no dynamic/on-demand
+translation path: a language not in LANGS simply isn't offered.
 
 `t(key)` returns the string for the current UI language
 (st.session_state["ui_lang"]), falling back to English, then to the
-key itself — so a missing translation can never crash a page.
+key itself - so a missing translation can never crash a page.
 """
-import time as _time
-
 import streamlit as st
 
-# canonical name (used by AI prompts) -> ISO code used in STRINGS
+# canonical name (shown in the picker) -> code used in STRINGS
 LANGS = {
     "English": "en",
-    "Myanmar (Burmese)": "my",
-    "Thai": "th",
     "Hindi": "hi",
-    "Bengali": "bn",
-    "Telugu": "te",
-    "Marathi": "mr",
-    "Tamil": "ta",
+    "Japanese": "ja",
+    "Indonesian": "id",
+    "Filipino": "fil",
+    "Spanish": "es",
+    "Turkish": "tr",
+    "Persian (Farsi)": "fa",
+    "Mandarin Chinese": "zh",
+    "Tok Pisin": "tpi",
+    "Hiri Motu": "ho",
+    "M\u0101ori": "mi",
+    "Nepali": "ne",
+    "Greek": "el",
+    "Italian": "it",
+    "Pashto": "ps",
+    "Dari": "prs",
 }
 
-# how each language names itself in the pickers
+# how each language names itself in the picker
 NATIVE_NAME = {
     "English": "English",
-    "Myanmar (Burmese)": "မြန်မာ (Burmese)",
-    "Thai": "ไทย (Thai)",
-    "Hindi": "हिन्दी (Hindi)",
-    "Bengali": "বাংলা (Bengali)",
-    "Telugu": "తెలుగు (Telugu)",
-    "Marathi": "मराठी (Marathi)",
-    "Tamil": "தமிழ் (Tamil)",
+    "Hindi": "\u0939\u093f\u0928\u094d\u0926\u0940 (Hindi)",
+    "Japanese": "\u65e5\u672c\u8a9e (Japanese)",
+    "Indonesian": "Bahasa Indonesia",
+    "Filipino": "Filipino",
+    "Spanish": "Espa\u00f1ol (Spanish)",
+    "Turkish": "T\u00fcrk\u00e7e (Turkish)",
+    "Persian (Farsi)": "\u0641\u0627\u0631\u0633\u06cc (Persian)",
+    "Mandarin Chinese": "\u4e2d\u6587 (Mandarin)",
+    "Tok Pisin": "Tok Pisin",
+    "Hiri Motu": "Hiri Motu",
+    "M\u0101ori": "M\u0101ori",
+    "Nepali": "\u0928\u0947\u092a\u093e\u0932\u0940 (Nepali)",
+    "Greek": "\u0395\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac (Greek)",
+    "Italian": "Italiano (Italian)",
+    "Pashto": "\u067e\u069a\u062a\u0648 (Pashto)",
+    "Dari": "\u062f\u0631\u06cc (Dari)",
 }
-
-
-@st.cache_data(ttl=7 * 86400, show_spinner=False)
-def _gemini_table(language: str) -> dict:
-    """Whole UI string table translated into ANY language by Gemini, in one
-    batched call - cached, so each language is translated once per server."""
-    _t0 = _time.time()
-    from src.ai import translate_ui
-    result = translate_ui({k: v["en"] for k, v in STRINGS.items()}, language)
-    print(f"[TIMING] _gemini_table({language}) CACHE-MISS compute: "
-         f"{(_time.time()-_t0)*1000:.0f}ms", flush=True)
-    return result
-
-
-def ensure_language(lang: str) -> bool:
-    """Preload the translation table for a custom (non-core) language.
-    Returns True when the UI can render in that language."""
-    if not lang or lang in LANGS:
-        return True
-    if st.session_state.get("_i18n_failed") == lang:
-        return False
-    _t0 = _time.time()
-    try:
-        _gemini_table(lang)
-        print(f"[TIMING] ensure_language({lang}) TOTAL (incl. cache lookup): "
-             f"{(_time.time()-_t0)*1000:.0f}ms", flush=True)
-        return True
-    except Exception as e:
-        # Printed to the terminal running `streamlit run` - the UI only ever
-        # shows a generic toast, so this is the only way to see WHY a
-        # language failed (e.g. missing Vertex AI credentials vs a genuine
-        # translation hiccup).
-        print(f"[i18n] translation to '{lang}' failed: {e!r}")
-        st.session_state["_i18n_failed"] = lang
-        return False
-
-
-# Rural/regional languages with no ISO 639-1 code, so the alpha_2 filter
-# below would otherwise drop them - each one hand-verified this session by
-# actually running translate_ui() and checking the output was distinct,
-# non-degenerate real text (not the alpha_2-coded majority-language filter's
-# blind spot, but not "any of pycountry's ~7900 entries" either - many of
-# those are languages Gemini has essentially no training data for, e.g.
-# ISO 639-3 'Abar', where it hallucinates by echoing the language's own
-# name back as filler instead of translating. Add to this list only after
-# verifying the same way: STRINGS -> translate_ui(lang) -> spot-check for
-# repeated/nonsense values.
-VERIFIED_EXTRA_LANGUAGES = [
-    "Bhojpuri", "Santali", "Cebuano", "Hiligaynon", "Tetum",
-    "Waray (Philippines)",
-]
-
-
-@st.cache_data(show_spinner=False)
-def all_languages() -> list:
-    """Full picker list: the 8 hand-translated core languages first (instant,
-    zero-latency), then the ~184 ISO 639-1 (alpha_2) coded languages - the
-    world's major, well-resourced languages Gemini translates reliably -
-    plus a short hand-verified allowlist (VERIFIED_EXTRA_LANGUAGES) of
-    additional rural/regional languages this project's audience actually
-    speaks but that don't have their own alpha_2 code.
-
-    Deliberately NOT every one of pycountry's ~7900 ISO 639-3 entries:
-    earlier this session that included languages Gemini has essentially no
-    real knowledge of (e.g. 'Abar', 'Klingon', 'Sumerian'), which it would
-    either fail on outright or - worse - hallucinate plausible-looking
-    garbage for (repeating the language's own name as filler text across
-    unrelated UI labels). Better to offer a smaller list where every entry
-    reliably works than a huge one where some silently don't. Anyone who
-    wants a language outside this list still has the "Other - any
-    language" free-text option, which benefits from the same runtime
-    garbage-detection safeguards in translate_ui()."""
-    import pycountry
-    # pycountry's raw ISO 639 names carry technical qualifiers on a handful
-    # of major languages (e.g. "Nepali (macrolanguage)", "Modern Greek
-    # (1453-)") - map those to the plain name a user would actually type.
-    CLEAN = {
-        "Modern Greek (1453-)": "Greek",
-        "Interlingua (International Auxiliary Language Association)": "Interlingua",
-        "Malay (macrolanguage)": "Malay",
-        "Nepali (macrolanguage)": "Nepali",
-        "Occitan (post 1500)": "Occitan",
-        "Oriya (macrolanguage)": "Oriya",
-        "Swahili (macrolanguage)": "Swahili",
-        "Tonga (Tonga Islands)": "Tongan",
-    }
-    out = list(LANGS)
-    seen = {n.lower() for n in out}
-    extra = []
-    for lang in pycountry.languages:
-        name = getattr(lang, "name", None)
-        if not (name and getattr(lang, "alpha_2", None)):
-            continue
-        name = CLEAN.get(name, name)
-        if name.lower() not in seen:
-            seen.add(name.lower())
-            extra.append(name)
-    for name in VERIFIED_EXTRA_LANGUAGES:
-        if name.lower() not in seen:
-            seen.add(name.lower())
-            extra.append(name)
-    out.extend(sorted(extra))
-    return out
 
 
 def t(key: str, **kw) -> str:
-    lang = st.session_state.get("ui_lang", "English")
+    lang_code = LANGS.get(st.session_state.get("ui_lang", "English"), "en")
     entry = STRINGS.get(key, {})
-    if lang in LANGS:
-        out = entry.get(LANGS[lang]) or entry.get("en") or key
-    else:
-        # custom language: Gemini-translated table, English if unavailable
-        table = {}
-        if st.session_state.get("_i18n_failed") != lang:
-            try:
-                table = _gemini_table(lang)
-            except Exception:
-                st.session_state["_i18n_failed"] = lang
-        out = table.get(key)
-        if out is None:
-            # Long-form strings (e.g. guide_md) are excluded from the
-            # (cached) table above and translated in a background thread
-            # instead, so the rest of the UI doesn't wait on them - check
-            # whether that background job has landed yet on every render,
-            # since the cached table itself won't reflect it.
-            from src.ai import get_heavy_translation
-            out = get_heavy_translation(key, lang)
-        out = out or entry.get("en") or key
+    out = entry.get(lang_code) or entry.get("en") or key
     if kw:
         try:
             out = out.format(**kw)
@@ -172,1334 +68,168 @@ def t(key: str, **kw) -> str:
 
 
 STRINGS = {
-    # ---------------------------------------------------- header / sidebar --
-    "subline": {
-        "en": "Live · Global real-time earthquake intelligence",
-        "my": "တိုက်ရိုက် · ကမ္ဘာလုံးဆိုင်ရာ ငလျင်သတင်းအချက်အလက်",
-        "th": "สด · ข้อมูลแผ่นดินไหวทั่วโลกแบบเรียลไทม์",
-        "hi": "लाइव · वैश्विक रीयल-टाइम भूकंप इंटेलिजेंस",
-        "bn": "লাইভ · বিশ্বব্যাপী রিয়েল-টাইম ভূমিকম্প তথ্য",
-        "te": "లైవ్ · ప్రపంచవ్యాప్త రియల్-టైమ్ భూకంప సమాచారం",
-        "mr": "लाइव्ह · जागतिक रिअल-टाइम भूकंप माहिती",
-        "ta": "நேரலை · உலகளாவிய நிகழ்நேர நிலநடுக்கத் தகவல்",
-    },
-    "menu": {"en": "MENU", "my": "မီနူး", "th": "เมนู", "hi": "मेनू",
-             "bn": "মেনু", "te": "మెనూ", "mr": "मेनू", "ta": "பட்டி"},
-    "nav_live": {"en": "Live Now", "my": "ယခုတိုက်ရိုက်", "th": "สดตอนนี้",
-                 "hi": "लाइव अभी", "bn": "এখন লাইভ", "te": "ప్రత్యక్షం",
-                 "mr": "थेट आता", "ta": "நேரலை"},
-    "cap_live": {"en": "World map · briefings · media",
-                 "my": "ကမ္ဘာ့မြေပုံ · အကျဉ်းချုပ် · မီဒီယာ",
-                 "th": "แผนที่โลก · สรุปสถานการณ์ · สื่อ",
-                 "hi": "विश्व मानचित्र · ब्रीफिंग · मीडिया",
-                 "bn": "বিশ্ব মানচিত্র · ব্রিফিং · মিডিয়া",
-                 "te": "ప్రపంచ పటం · బ్రీఫింగ్ · మీడియా",
-                 "mr": "जागतिक नकाशा · ब्रीफिंग · मीडिया",
-                 "ta": "உலக வரைபடம் · சுருக்கம் · ஊடகம்"},
-    "nav_anom": {"en": "Anomaly Watch", "my": "ထူးခြားမှုစောင့်ကြည့်",
-                 "th": "เฝ้าระวังความผิดปกติ", "hi": "असामान्यता निगरानी",
-                 "bn": "অস্বাভাবিকতা নজরদারি", "te": "అసాధారణతల పరిశీలన",
-                 "mr": "विसंगती निरीक्षण", "ta": "அசாதாரணக் கண்காணிப்பு"},
-    "cap_anom": {"en": "Is this week normal?", "my": "ဒီအပတ် ပုံမှန်လား?",
-                 "th": "สัปดาห์นี้ปกติไหม?", "hi": "क्या यह सप्ताह सामान्य है?",
-                 "bn": "এই সপ্তাহ কি স্বাভাবিক?", "te": "ఈ వారం సాధారణమేనా?",
-                 "mr": "हा आठवडा सामान्य आहे का?", "ta": "இந்த வாரம் இயல்பானதா?"},
-    "nav_area": {"en": "My Area", "my": "ကျွန်ုပ်၏ဒေသ", "th": "พื้นที่ของฉัน",
-                 "hi": "मेरा क्षेत्र", "bn": "আমার এলাকা", "te": "నా ప్రాంతం",
-                 "mr": "माझा परिसर", "ta": "என் பகுதி"},
-    "cap_area": {"en": "Your town's risk profile",
-                 "my": "သင့်မြို့၏ အန္တရာယ်အခြေအနေ",
-                 "th": "โปรไฟล์ความเสี่ยงของเมืองคุณ",
-                 "hi": "आपके शहर की जोखिम प्रोफ़ाइल",
-                 "bn": "আপনার শহরের ঝুঁকি প্রোফাইল",
-                 "te": "మీ ఊరి ప్రమాద వివరాలు",
-                 "mr": "तुमच्या गावाची जोखीम प्रोफाइल",
-                 "ta": "உங்கள் ஊரின் அபாய விவரம்"},
-    "nav_ask": {"en": "Ask AI", "my": "AI ကိုမေးရန်", "th": "ถาม AI",
-                "hi": "AI से पूछें", "bn": "AI-কে জিজ্ঞাসা করুন",
-                "te": "AI ని అడగండి", "mr": "AI ला विचारा", "ta": "AI-யிடம் கேளுங்கள்"},
-    "cap_ask": {"en": "Any question, any language",
-                "my": "မည်သည့်မေးခွန်း၊ မည်သည့်ဘာသာစကားမဆို",
-                "th": "ทุกคำถาม ทุกภาษา", "hi": "कोई भी सवाल, किसी भी भाषा में",
-                "bn": "যেকোনো প্রশ্ন, যেকোনো ভাষায়", "te": "ఏ ప్రశ్న అయినా, ఏ భాషలోనైనా",
-                "mr": "कोणताही प्रश्न, कोणतीही भाषा", "ta": "எந்தக் கேள்வியும், எந்த மொழியிலும்"},
-    "nav_toolkit": {"en": "Response Toolkit", "my": "တုံ့ပြန်ရေးကိရိယာစုံ",
-                    "th": "ชุดเครื่องมือรับมือ", "hi": "प्रतिक्रिया टूलकिट",
-                    "bn": "প্রতিক্রিয়া টুলকিট", "te": "స్పందన సాధనాలు",
-                    "mr": "प्रतिसाद साधने", "ta": "மீட்புக் கருவிகள்"},
-    "cap_toolkit": {"en": "SITREP · guidance · facilities",
-                    "my": "SITREP · လမ်းညွှန် · အဆောက်အအုံများ",
-                    "th": "SITREP · คำแนะนำ · สถานบริการ",
-                    "hi": "SITREP · मार्गदर्शन · सुविधाएँ",
-                    "bn": "SITREP · নির্দেশনা · সুবিধা",
-                    "te": "SITREP · మార్గదర్శకత్వం · సదుపాయాలు",
-                    "mr": "SITREP · मार्गदर्शन · सुविधा",
-                    "ta": "SITREP · வழிகாட்டுதல் · வசதிகள்"},
-    "nav_guide": {"en": "Guide", "my": "လမ်းညွှန်", "th": "คู่มือ", "hi": "गाइड",
-                  "bn": "গাইড", "te": "గైడ్", "mr": "मार्गदर्शक", "ta": "வழிகாட்டி"},
-    "cap_guide": {"en": "How it all fits", "my": "အားလုံးမည်သို့ဆက်စပ်သည်",
-                  "th": "ทุกอย่างเชื่อมกันอย่างไร", "hi": "सब कुछ कैसे जुड़ता है",
-                  "bn": "সবকিছু কীভাবে মিলে যায়", "te": "అంతా ఎలా కలుస్తుంది",
-                  "mr": "सर्व कसे जुळते", "ta": "எப்படி இணைகிறது"},
-    "refresh": {"en": "Refresh live feed", "my": "တိုက်ရိုက်ဖီးဒ် ပြန်လည်ဆန်းသစ်ရန်",
-                "th": "รีเฟรชข้อมูลสด", "hi": "लाइव फ़ीड रीफ़्रेश करें",
-                "bn": "লাইভ ফিড রিফ্রেশ করুন", "te": "లైవ్ ఫీడ్ రిఫ్రెష్ చేయండి",
-                "mr": "लाइव्ह फीड रिफ्रेश करा", "ta": "நேரலை ஊட்டத்தைப் புதுப்பிக்கவும்"},
-    "disclaimer": {
-        "en": "Earthquakes cannot be predicted. This tool supports awareness "
-              "and decision-making, not prediction.",
-        "my": "ငလျင်များကို ကြိုတင်ဟောကိန်းထုတ်၍မရပါ။ ဤကိရိယာသည် သတိပြုမှုနှင့် "
-              "ဆုံးဖြတ်ချက်ချမှတ်မှုကို ကူညီပေးပြီး ဟောကိန်းထုတ်ခြင်း မဟုတ်ပါ။",
-        "th": "แผ่นดินไหวไม่สามารถพยากรณ์ได้ เครื่องมือนี้ช่วยสร้างความตระหนัก"
-              "และการตัดสินใจ ไม่ใช่การพยากรณ์",
-        "hi": "भूकंप की भविष्यवाणी नहीं की जा सकती। यह टूल जागरूकता और निर्णय "
-              "लेने में मदद करता है, भविष्यवाणी नहीं।",
-        "bn": "ভূমিকম্পের পূর্বাভাস দেওয়া সম্ভব নয়। এই টুল সচেতনতা ও সিদ্ধান্ত "
-              "গ্রহণে সহায়তা করে, পূর্বাভাসে নয়।",
-        "te": "భూకంపాలను ముందుగా అంచనా వేయలేము. ఈ సాధనం అవగాహన మరియు "
-              "నిర్ణయాలకు తోడ్పడుతుంది, అంచనాకు కాదు.",
-        "mr": "भूकंपाचा अंदाज वर्तवता येत नाही. हे साधन जागरूकता आणि निर्णयासाठी "
-              "मदत करते, अंदाजासाठी नाही.",
-        "ta": "நிலநடுக்கங்களை முன்கணிக்க முடியாது. இக்கருவி விழிப்புணர்வுக்கும் "
-              "முடிவெடுப்பதற்கும் உதவுகிறது, முன்கணிப்புக்கு அல்ல.",
-    },
-    "built_with": {"en": "Built with", "my": "အသုံးပြုထားသည်", "th": "สร้างด้วย",
-                   "hi": "इनसे निर्मित", "bn": "যা দিয়ে তৈরি", "te": "వీటితో నిర్మితం",
-                   "mr": "यांनी बनवले", "ta": "இவற்றால் உருவாக்கப்பட்டது"},
-    "team": {"en": "Developed by Team KODA", "my": "Team KODA မှ ဖန်တီးသည်",
-             "th": "พัฒนาโดยทีม KODA", "hi": "टीम KODA द्वारा विकसित",
-             "bn": "টিম KODA দ্বারা নির্মিত", "te": "టీమ్ KODA అభివృద్ధి చేసింది",
-             "mr": "टीम KODA ने विकसित केले", "ta": "KODA அணி உருவாக்கியது"},
-    "language": {"en": "Language", "my": "ဘာသာစကား", "th": "ภาษา", "hi": "भाषा",
-                 "bn": "ভাষা", "te": "భాష", "mr": "भाषा", "ta": "மொழி"},
-    "theme": {"en": "Display mode", "my": "မျက်နှာပြင်ပုံစံ", "th": "โหมดการแสดงผล",
-              "hi": "डिस्प्ले मोड", "bn": "ডিসপ্লে মোড", "te": "డిస్‌ప్లే మోడ్",
-              "mr": "डिस्प्ले मोड", "ta": "காட்சி முறை"},
-    "sb_data": {"en": "Data", "my": "ဒေတာ", "th": "ข้อมูล", "hi": "डेटा",
-                "bn": "ডেটা", "te": "డేటా", "mr": "डेटा", "ta": "தரவு"},
-    "sb_prefs": {"en": "Preferences", "my": "နှစ်သက်ရာများ", "th": "การตั้งค่า",
-                 "hi": "प्राथमिकताएं", "bn": "পছন্দসমূহ", "te": "ప్రాధాన్యతలు",
-                 "mr": "प्राधान्ये", "ta": "விருப்பங்கள்"},
-    "sb_feedback": {"en": "Feedback", "my": "အကြံပြုချက်", "th": "ความคิดเห็น",
-                    "hi": "प्रतिक्रिया", "bn": "প্রতিক্রিয়া", "te": "అభిప్రాయం",
-                    "mr": "अभिप्राय", "ta": "கருத்து"},
-    "fb_expander": {"en": "💬 Suggestions & feedback",
-                    "my": "💬 အကြံပြုချက်များ", "th": "💬 ข้อเสนอแนะ",
-                    "hi": "💬 सुझाव और प्रतिक्रिया", "bn": "💬 পরামর্শ ও প্রতিক্রিয়া",
-                    "te": "💬 సూచనలు & అభిప్రాయం", "mr": "💬 सूचना आणि अभिप्राय",
-                    "ta": "💬 பரிந்துரைகள் & கருத்து"},
-    "fb_placeholder": {"en": "Tell us what's working or what's missing...",
-                       "my": "ဘာအလုပ်ဖြစ်လဲ ဒါမှမဟုတ် ဘာလိုနေလဲ ပြောပြပါ...",
-                       "th": "บอกเราว่าอะไรใช้ได้ผลหรืออะไรขาดหายไป...",
-                       "hi": "बताएं क्या काम कर रहा है या क्या कमी है...",
-                       "bn": "কী কাজ করছে বা কী অনুপস্থিত তা আমাদের জানান...",
-                       "te": "ఏది పనిచేస్తుందో లేదా ఏది లేదో మాకు చెప్పండి...",
-                       "mr": "काय चालले आहे किंवा काय कमी आहे ते सांगा...",
-                       "ta": "என்ன வேலை செய்கிறது அல்லது என்ன இல்லை என்று சொல்லுங்கள்..."},
-    "fb_submit": {"en": "Send feedback", "my": "အကြံပြုချက်ပို့ရန်", "th": "ส่งความคิดเห็น",
-                  "hi": "प्रतिक्रिया भेजें", "bn": "প্রতিক্রিয়া পাঠান", "te": "అభిప్రాయం పంపండి",
-                  "mr": "अभिप्राय पाठवा", "ta": "கருத்தை அனுப்பு"},
-    "fb_thanks": {"en": "Thanks for the feedback!", "my": "အကြံပြုချက်အတွက် ကျေးဇူးတင်ပါသည်!",
-                  "th": "ขอบคุณสำหรับความคิดเห็น!", "hi": "प्रतिक्रिया के लिए धन्यवाद!",
-                  "bn": "প্রতিক্রিয়ার জন্য ধন্যবাদ!", "te": "అభిప్రాయానికి ధన్యవాదాలు!",
-                  "mr": "अभिप्रायाबद्दल धन्यवाद!", "ta": "கருத்துக்கு நன்றி!"},
-
-    # ------------------------------------------------------ welcome dialog --
-    "wb_intro": {
-        "en": "Choose how QuakeSense looks and the language of the whole "
-              "interface. You can change both anytime from the sidebar.",
-        "my": "QuakeSense ၏ အသွင်အပြင်နှင့် အသုံးပြုမည့်ဘာသာစကားကို ရွေးချယ်ပါ။ "
-              "နှစ်ခုလုံးကို ဘေးဘားမှ အချိန်မရွေး ပြောင်းနိုင်ပါသည်။",
-        "th": "เลือกรูปลักษณ์ของ QuakeSense และภาษาของอินเทอร์เฟซทั้งหมด "
-              "เปลี่ยนได้ทุกเมื่อจากแถบด้านข้าง",
-        "hi": "QuakeSense का रूप और पूरे इंटरफ़ेस की भाषा चुनें। दोनों को साइडबार "
-              "से कभी भी बदला जा सकता है।",
-        "bn": "QuakeSense-এর চেহারা এবং পুরো ইন্টারফেসের ভাষা বেছে নিন। "
-              "সাইডবার থেকে যেকোনো সময় দুটিই বদলানো যায়।",
-        "te": "QuakeSense రూపాన్ని మరియు మొత్తం ఇంటర్‌ఫేస్ భాషను ఎంచుకోండి. "
-              "రెండింటినీ సైడ్‌బార్ నుండి ఎప్పుడైనా మార్చవచ్చు.",
-        "mr": "QuakeSense चे स्वरूप आणि संपूर्ण इंटरफेसची भाषा निवडा. दोन्ही "
-              "साइडबारमधून केव्हाही बदलता येतात.",
-        "ta": "QuakeSense-இன் தோற்றத்தையும் முழு இடைமுகத்தின் மொழியையும் "
-              "தேர்ந்தெடுங்கள். இரண்டையும் பக்கப்பட்டியில் எப்போதும் மாற்றலாம்.",
-    },
-    "wb_lang": {"en": "Interface language", "my": "အသုံးပြုမည့် ဘာသာစကား",
-                "th": "ภาษาอินเทอร์เฟซ", "hi": "इंटरफ़ेस भाषा",
-                "bn": "ইন্টারফেসের ভাষা", "te": "ఇంటర్‌ఫేస్ భాష",
-                "mr": "इंटरफेस भाषा", "ta": "இடைமுக மொழி"},
-    "wb_theme": {"en": "Appearance", "my": "အသွင်အပြင်", "th": "รูปลักษณ์",
-                 "hi": "रूप", "bn": "চেহারা", "te": "రూపం", "mr": "स्वरूप",
-                 "ta": "தோற்றம்"},
-    "wb_start": {"en": "Start exploring", "my": "စတင်အသုံးပြုရန်",
-                 "th": "เริ่มใช้งาน", "hi": "शुरू करें", "bn": "শুরু করুন",
-                 "te": "ప్రారంభించండి", "mr": "सुरू करा", "ta": "தொடங்குங்கள்"},
-    "th_dark": {"en": "Dark", "my": "အမှောင်", "th": "มืด", "hi": "डार्क",
-                "bn": "ডার্ক", "te": "డార్క్", "mr": "डार्क", "ta": "இருள்"},
-    "th_dark_d": {"en": "Black & deep navy — control-room look",
-                  "my": "အနက်နှင့် နက်ပြာ — ထိန်းချုပ်ခန်းပုံစံ",
-                  "th": "ดำและกรมท่าเข้ม — สไตล์ห้องควบคุม",
-                  "hi": "काला और गहरा नेवी — कंट्रोल-रूम लुक",
-                  "bn": "কালো ও গাঢ় নেভি — কন্ট্রোল-রুম লুক",
-                  "te": "నలుపు & ముదురు నేవీ — కంట్రోల్-రూమ్ శైలి",
-                  "mr": "काळा आणि गडद नेव्ही — कंट्रोल-रूम लुक",
-                  "ta": "கருப்பு & அடர் நீலம் — கட்டுப்பாட்டு அறை பாணி"},
-    "th_light": {"en": "Light", "my": "အလင်း", "th": "สว่าง", "hi": "लाइट",
-                 "bn": "লাইট", "te": "లైట్", "mr": "लाइट", "ta": "வெளிச்சம்"},
-    "th_light_d": {"en": "Clean white & soft gray",
-                   "my": "သန့်ရှင်းသော အဖြူနှင့် နူးညံ့သောမီးခိုး",
-                   "th": "ขาวสะอาดและเทาอ่อน",
-                   "hi": "साफ़ सफ़ेद और हल्का ग्रे",
-                   "bn": "পরিচ্ছন্ন সাদা ও নরম ধূসর",
-                   "te": "శుభ్రమైన తెలుపు & మృదువైన బూడిద",
-                   "mr": "स्वच्छ पांढरा आणि मऊ राखाडी",
-                   "ta": "தூய வெள்ளை & மென் சாம்பல்"},
-    "th_warm": {"en": "Warm sand", "my": "နွေးထွေးသောသဲရောင်", "th": "ทรายอบอุ่น",
-                "hi": "वॉर्म सैंड", "bn": "উষ্ণ বালি", "te": "వెచ్చని ఇసుక",
-                "mr": "उबदार वाळू", "ta": "வெதுவெதுப்பு மணல்"},
-    "th_warm_d": {"en": "Beige, brown & neutral earth tones",
-                  "my": "ဘေ့ရှ်၊ အညိုနှင့် သဘာဝမြေရောင်များ",
-                  "th": "เบจ น้ำตาล และโทนสีเอิร์ธ",
-                  "hi": "बेज, ब्राउन और न्यूट्रल अर्थ टोन",
-                  "bn": "বেইজ, বাদামি ও নিরপেক্ষ আর্থ টোন",
-                  "te": "బేజ్, గోధుమ & సహజ ఎర్త్ టోన్లు",
-                  "mr": "बेज, तपकिरी आणि न्यूट्रल अर्थ टोन",
-                  "ta": "பேழ், பழுப்பு & இயற்கை மண் நிறங்கள்"},
-
-    # ------------------------------------------------------------ live now --
-    "m_events7": {"en": "Events · 7 days · M2.5+", "my": "ဖြစ်ရပ် · ၇ ရက် · M2.5+",
-                  "th": "เหตุการณ์ · 7 วัน · M2.5+", "hi": "घटनाएँ · 7 दिन · M2.5+",
-                  "bn": "ঘটনা · ৭ দিন · M2.5+", "te": "సంఘటనలు · 7 రోజులు · M2.5+",
-                  "mr": "घटना · ७ दिवस · M2.5+", "ta": "நிகழ்வுகள் · 7 நாள் · M2.5+"},
-    "m_last24": {"en": "Last 24 hours", "my": "နောက်ဆုံး ၂၄ နာရီ",
-                 "th": "24 ชั่วโมงล่าสุด", "hi": "पिछले 24 घंटे",
-                 "bn": "গত ২৪ ঘণ্টা", "te": "గత 24 గంటలు", "mr": "गेले २४ तास",
-                 "ta": "கடந்த 24 மணி நேரம்"},
-    "m_strongest": {"en": "Strongest this week", "my": "ဒီအပတ် အပြင်းဆုံး",
-                    "th": "แรงสุดสัปดาห์นี้", "hi": "इस सप्ताह सबसे तेज़",
-                    "bn": "এই সপ্তাহে সবচেয়ে শক্তিশালী", "te": "ఈ వారం అత్యధికం",
-                    "mr": "या आठवड्यात सर्वात तीव्र", "ta": "இவ்வாரம் மிக வலிமையானது"},
-    "m_m5": {"en": "M5+ events", "my": "M5+ ဖြစ်ရပ်များ", "th": "เหตุการณ์ M5+",
-             "hi": "M5+ घटनाएँ", "bn": "M5+ ঘটনা", "te": "M5+ సంఘటనలు",
-             "mr": "M5+ घटना", "ta": "M5+ நிகழ்வுகள்"},
-    "m_tsu": {"en": "Tsunami-flagged", "my": "ဆူနာမီသတိပေးထားသော",
-              "th": "ติดธงสึนามิ", "hi": "सुनामी-चिह्नित", "bn": "সুনামি-চিহ্নিত",
-              "te": "సునామీ-గుర్తించినవి", "mr": "त्सुनामी-चिन्हित",
-              "ta": "சுனாமி-குறியிடப்பட்டவை"},
-    "recent_event": {"en": "Most recent event", "my": "နောက်ဆုံးဖြစ်ရပ်",
-                     "th": "เหตุการณ์ล่าสุด", "hi": "सबसे हालिया घटना",
-                     "bn": "সর্বশেষ ঘটনা", "te": "తాజా సంఘటన",
-                     "mr": "अगदी अलीकडील घटना", "ta": "மிகச் சமீபத்திய நிகழ்வு"},
-    "quick_filters": {"en": "Quick filters", "my": "အမြန်စစ်ထုတ်မှုများ",
-                      "th": "ตัวกรองด่วน", "hi": "त्वरित फ़िल्टर",
-                      "bn": "দ্রুত ফিল্টার", "te": "త్వరిత ఫిల్టర్లు",
-                      "mr": "जलद फिल्टर", "ta": "விரைவு வடிப்பான்கள்"},
-    "preset_custom": {"en": "Custom", "my": "စိတ်ကြိုက်", "th": "กำหนดเอง",
-                      "hi": "कस्टम", "bn": "কাস্টম", "te": "కస్టమ్",
-                      "mr": "सानुकूल", "ta": "தனிப்பயன்"},
-    "preset_24h": {"en": "Last 24 h", "my": "နောက်ဆုံး ၂၄ နာရီ", "th": "24 ชม. ล่าสุด",
-                   "hi": "पिछले 24 घं.", "bn": "গত ২৪ ঘ.", "te": "గత 24 గం.",
-                   "mr": "गेले २४ तास", "ta": "கடந்த 24 ம.நே."},
-    "region_filter": {"en": "Filter by country / region (past 7 days)",
-                      "my": "နိုင်ငံ/ဒေသအလိုက် စစ်ထုတ်ရန် (၇ ရက်)",
-                      "th": "กรองตามประเทศ/ภูมิภาค (7 วัน)",
-                      "hi": "देश / क्षेत्र से फ़िल्टर करें (पिछले 7 दिन)",
-                      "bn": "দেশ / অঞ্চল দিয়ে ফিল্টার করুন (গত ৭ দিন)",
-                      "te": "దేశం / ప్రాంతం ద్వారా ఫిల్టర్ (గత 7 రోజులు)",
-                      "mr": "देश / प्रदेशानुसार फिल्टर (गेले ७ दिवस)",
-                      "ta": "நாடு / பகுதி வாரியாக வடிகட்டவும் (7 நாட்கள்)"},
-    "all_regions": {"en": "All countries / regions", "my": "နိုင်ငံ/ဒေသအားလုံး",
-                    "th": "ทุกประเทศ/ภูมิภาค", "hi": "सभी देश / क्षेत्र",
-                    "bn": "সব দেশ / অঞ্চল", "te": "అన్ని దేశాలు / ప్రాంతాలు",
-                    "mr": "सर्व देश / प्रदेश", "ta": "எல்லா நாடுகள் / பகுதிகள்"},
-    "min_mag": {"en": "Minimum magnitude", "my": "အနည်းဆုံးပြင်းအား",
-                "th": "แมกนิจูดขั้นต่ำ", "hi": "न्यूनतम परिमाण",
-                "bn": "ন্যূনতম মাত্রা", "te": "కనీస తీవ్రత", "mr": "किमान तीव्रता",
-                "ta": "குறைந்தபட்ச அளவு"},
-    "plates": {"en": "Plate boundaries", "my": "ပြားနယ်နိမိတ်များ",
-               "th": "รอยต่อแผ่นเปลือกโลก", "hi": "प्लेट सीमाएँ",
-               "bn": "প্লেট সীমানা", "te": "ప్లేట్ సరిహద్దులు",
-               "mr": "प्लेट सीमा", "ta": "தட்டு எல்லைகள்"},
-    "no_match": {
-        "en": "No events match this filter in the past 7 days. Try a wider "
-              "preset or 'All countries / regions'.",
-        "my": "ပြီးခဲ့သော ၇ ရက်အတွင်း ဤစစ်ထုတ်မှုနှင့် ကိုက်ညီသောဖြစ်ရပ်မရှိပါ။ "
-              "ပိုကျယ်သောရွေးချယ်မှုကို စမ်းကြည့်ပါ။",
-        "th": "ไม่มีเหตุการณ์ตรงกับตัวกรองใน 7 วันที่ผ่านมา ลองตัวกรองที่กว้างขึ้น",
-        "hi": "पिछले 7 दिनों में इस फ़िल्टर से कोई घटना मेल नहीं खाती। व्यापक "
-              "प्रीसेट आज़माएँ।",
-        "bn": "গত ৭ দিনে এই ফিল্টারে কোনো ঘটনা মেলেনি। আরও বিস্তৃত ফিল্টার "
-              "চেষ্টা করুন।",
-        "te": "గత 7 రోజుల్లో ఈ ఫిల్టర్‌కు సరిపోయే సంఘటనలు లేవు. విస్తృత "
-              "ఫిల్టర్ ప్రయత్నించండి.",
-        "mr": "गेल्या ७ दिवसांत या फिल्टरशी जुळणाऱ्या घटना नाहीत. व्यापक "
-              "पर्याय वापरून पहा.",
-        "ta": "கடந்த 7 நாட்களில் இந்த வடிப்பானுக்குப் பொருந்தும் நிகழ்வுகள் "
-              "இல்லை. விரிவான வடிப்பானை முயற்சிக்கவும்.",
-    },
-    "shown_cap": {
-        "en": "{n} events shown · size and color scale with magnitude · faded "
-              "markers are older · teal markers carry a tsunami flag",
-        "my": "ဖြစ်ရပ် {n} ခုပြထားသည် · အရွယ်နှင့်အရောင်သည် ပြင်းအားအလိုက် · "
-              "မှိန်သောအမှတ်များသည် ပိုဟောင်းသည် · စိမ်းပြာရောင်သည် ဆူနာမီသတိပေးချက်",
-        "th": "แสดง {n} เหตุการณ์ · ขนาดและสีตามแมกนิจูด · จุดจางคือเก่ากว่า · "
-              "จุดสีน้ำเงินเขียวมีธงสึนามิ",
-        "hi": "{n} घटनाएँ दिखाई गईं · आकार और रंग परिमाण के अनुसार · धुंधले "
-              "मार्कर पुराने हैं · टील मार्कर पर सुनामी फ़्लैग है",
-        "bn": "{n}টি ঘটনা দেখানো হয়েছে · আকার ও রং মাত্রা অনুযায়ী · ফিকে "
-              "মার্কার পুরোনো · টিল মার্কারে সুনামি ফ্ল্যাগ",
-        "te": "{n} సంఘటనలు చూపబడ్డాయి · పరిమాణం, రంగు తీవ్రతను బట్టి · మసక "
-              "గుర్తులు పాతవి · టీల్ గుర్తులకు సునామీ ఫ్లాగ్",
-        "mr": "{n} घटना दाखवल्या · आकार व रंग तीव्रतेनुसार · फिकट खुणा जुन्या · "
-              "टील खुणांवर त्सुनामी ध्वज",
-        "ta": "{n} நிகழ்வுகள் · அளவும் நிறமும் தீவிரத்தைப் பொறுத்தது · மங்கியவை "
-              "பழையவை · டீல் நிறம் சுனாமி எச்சரிக்கை",
-    },
-    "export_csv": {"en": "Export CSV", "my": "CSV ထုတ်ယူရန်", "th": "ส่งออก CSV",
-                   "hi": "CSV निर्यात करें", "bn": "CSV এক্সপোর্ট", "te": "CSV ఎగుమతి",
-                   "mr": "CSV निर्यात", "ta": "CSV ஏற்றுமதி"},
-    "brief_h": {"en": "AI Situation Briefings", "my": "AI အခြေအနေအကျဉ်းချုပ်များ",
-                "th": "สรุปสถานการณ์ด้วย AI", "hi": "AI स्थिति ब्रीफिंग",
-                "bn": "AI পরিস্থিতি ব্রিফিং", "te": "AI పరిస్థితి బ్రీఫింగ్‌లు",
-                "mr": "AI परिस्थिती ब्रीफिंग", "ta": "AI நிலைமை சுருக்கங்கள்"},
-    "brief_cap": {
-        "en": "Pick any significant event this week - Gemini writes a calm, "
-              "plain-language community briefing from the USGS data.",
-        "my": "ဒီအပတ်အရေးကြီးဖြစ်ရပ်တစ်ခုကိုရွေးပါ — Gemini က USGS ဒေတာမှ "
-              "ရိုးရှင်းသောဘာသာစကားဖြင့် အကျဉ်းချုပ်ရေးပေးပါမည်။",
-        "th": "เลือกเหตุการณ์สำคัญในสัปดาห์นี้ — Gemini เขียนสรุปสำหรับชุมชน"
-              "ด้วยภาษาที่เข้าใจง่ายจากข้อมูล USGS",
-        "hi": "इस सप्ताह की कोई महत्वपूर्ण घटना चुनें — Gemini USGS डेटा से सरल "
-              "भाषा में सामुदायिक ब्रीफिंग लिखेगा।",
-        "bn": "এই সপ্তাহের কোনো গুরুত্বপূর্ণ ঘটনা বেছে নিন — Gemini USGS ডেটা "
-              "থেকে সহজ ভাষায় কমিউনিটি ব্রিফিং লিখবে।",
-        "te": "ఈ వారంలోని ముఖ్య సంఘటనను ఎంచుకోండి — Gemini USGS డేటా నుండి "
-              "సరళమైన భాషలో బ్రీఫింగ్ రాస్తుంది.",
-        "mr": "या आठवड्यातील महत्त्वाची घटना निवडा — Gemini USGS डेटावरून सोप्या "
-              "भाषेत ब्रीफिंग लिहेल.",
-        "ta": "இவ்வார முக்கிய நிகழ்வைத் தேர்ந்தெடுங்கள் — USGS தரவிலிருந்து "
-              "எளிய மொழியில் Gemini சுருக்கம் எழுதும்.",
-    },
-    "event_sel": {"en": "Event (ranked by USGS significance)",
-                  "my": "ဖြစ်ရပ် (USGS အရေးပါမှုအလိုက်)",
-                  "th": "เหตุการณ์ (เรียงตามความสำคัญของ USGS)",
-                  "hi": "घटना (USGS महत्व के अनुसार क्रमित)",
-                  "bn": "ঘটনা (USGS গুরুত্ব অনুযায়ী)",
-                  "te": "సంఘటన (USGS ప్రాముఖ్యత ప్రకారం)",
-                  "mr": "घटना (USGS महत्त्वानुसार)",
-                  "ta": "நிகழ்வு (USGS முக்கியத்துவப்படி)"},
-    "m_mag": {"en": "Magnitude", "my": "ပြင်းအား", "th": "แมกนิจูด", "hi": "परिमाण",
-              "bn": "মাত্রা", "te": "తీవ్రత", "mr": "तीव्रता", "ta": "அளவு"},
-    "m_depth": {"en": "Depth", "my": "အနက်", "th": "ความลึก", "hi": "गहराई",
-                "bn": "গভীরতা", "te": "లోతు", "mr": "खोली", "ta": "ஆழம்"},
-    "m_felt": {"en": "Felt reports", "my": "ခံစားရမှုအစီရင်ခံစာ",
-               "th": "รายงานรับรู้แรงสั่น", "hi": "महसूस रिपोर्टें",
-               "bn": "অনুভবের রিপোর্ট", "te": "అనుభూతి నివేదికలు",
-               "mr": "जाणवल्याचे अहवाल", "ta": "உணர்ந்த அறிக்கைகள்"},
-    "m_pager": {"en": "PAGER alert", "my": "PAGER သတိပေးချက်", "th": "การแจ้งเตือน PAGER",
-                "hi": "PAGER अलर्ट", "bn": "PAGER সতর্কতা", "te": "PAGER హెచ్చరిక",
-                "mr": "PAGER इशारा", "ta": "PAGER எச்சரிக்கை"},
-    "gen_brief": {"en": "Generate community briefing", "my": "အကျဉ်းချုပ်ထုတ်ရန်",
-                  "th": "สร้างสรุปสำหรับชุมชน", "hi": "सामुदायिक ब्रीफिंग बनाएँ",
-                  "bn": "কমিউনিটি ব্রিফিং তৈরি করুন", "te": "బ్రీఫింగ్ రూపొందించండి",
-                  "mr": "ब्रीफिंग तयार करा", "ta": "சுருக்கத்தை உருவாக்கவும்"},
-    "dl_brief": {"en": "Download briefing (.txt)", "my": "အကျဉ်းချုပ်ဒေါင်းလုဒ် (.txt)",
-                 "th": "ดาวน์โหลดสรุป (.txt)", "hi": "ब्रीफिंग डाउनलोड करें (.txt)",
-                 "bn": "ব্রিফিং ডাউনলোড (.txt)", "te": "బ్రీఫింగ్ డౌన్‌లోడ్ (.txt)",
-                 "mr": "ब्रीफिंग डाउनलोड (.txt)", "ta": "சுருக்கம் பதிவிறக்கு (.txt)"},
-    "what_h": {"en": "What happened.", "my": "ဘာဖြစ်ခဲ့သလဲ။", "th": "เกิดอะไรขึ้น",
-               "hi": "क्या हुआ।", "bn": "কী ঘটেছে।", "te": "ఏం జరిగింది.",
-               "mr": "काय घडले.", "ta": "என்ன நடந்தது."},
-    "who_h": {"en": "Who is affected.", "my": "မည်သူတို့ထိခိုက်သလဲ။",
-              "th": "ใครได้รับผลกระทบ", "hi": "कौन प्रभावित है।",
-              "bn": "কারা ক্ষতিগ্রস্ত।", "te": "ఎవరు ప్రభావితం.",
-              "mr": "कोण प्रभावित.", "ta": "யார் பாதிக்கப்பட்டனர்."},
-    "act_h": {"en": "Recommended actions.", "my": "အကြံပြုလုပ်ဆောင်ချက်များ။",
-              "th": "ข้อแนะนำ", "hi": "अनुशंसित कार्रवाइयाँ।",
-              "bn": "প্রস্তাবিত পদক্ষেপ।", "te": "సిఫార్సు చర్యలు.",
-              "mr": "शिफारस केलेल्या कृती.", "ta": "பரிந்துரைக்கப்படும் நடவடிக்கைகள்."},
-    "media_h": {"en": "📺 Global media coverage", "my": "📺 ကမ္ဘာ့မီဒီယာသတင်းများ",
-                "th": "📺 ข่าวจากสื่อทั่วโลก", "hi": "📺 वैश्विक मीडिया कवरेज",
-                "bn": "📺 বিশ্ব মিডিয়া কভারেজ", "te": "📺 ప్రపంచ మీడియా కవరేజ్",
-                "mr": "📺 जागतिक माध्यम कव्हरेज", "ta": "📺 உலக ஊடகச் செய்திகள்"},
-    "media_cap": {
-        "en": "Latest earthquake coverage from world media — click a card to "
-              "read the full story.",
-        "my": "ကမ္ဘာ့မီဒီယာများမှ နောက်ဆုံးငလျင်သတင်းများ — အပြည့်အစုံဖတ်ရန် "
-              "ကတ်ကိုနှိပ်ပါ။",
-        "th": "ข่าวแผ่นดินไหวล่าสุดจากสื่อทั่วโลก — คลิกการ์ดเพื่ออ่านฉบับเต็ม",
-        "hi": "विश्व मीडिया से ताज़ा भूकंप कवरेज — पूरी ख़बर के लिए कार्ड पर "
-              "क्लिक करें।",
-        "bn": "বিশ্ব মিডিয়ার সর্বশেষ ভূমিকম্প সংবাদ — পুরো খবর পড়তে কার্ডে "
-              "ক্লিক করুন।",
-        "te": "ప్రపంచ మీడియా నుండి తాజా భూకంప వార్తలు — పూర్తి కథనానికి "
-              "కార్డుపై క్లిక్ చేయండి.",
-        "mr": "जागतिक माध्यमांतील ताज्या भूकंप बातम्या — संपूर्ण बातमीसाठी "
-              "कार्डवर क्लिक करा.",
-        "ta": "உலக ஊடகங்களின் சமீபத்திய நிலநடுக்கச் செய்திகள் — முழு செய்திக்கு "
-              "அட்டையை அழுத்தவும்.",
-    },
-    "official_h": {"en": "🌐 Official updates", "my": "🌐 တရားဝင်သတင်းများ",
-                   "th": "🌐 ข้อมูลอัปเดตทางการ", "hi": "🌐 आधिकारिक अपडेट",
-                   "bn": "🌐 সরকারি আপডেট", "te": "🌐 అధికారిక అప్‌డేట్లు",
-                   "mr": "🌐 अधिकृत अपडेट", "ta": "🌐 அதிகாரப்பூர்வ புதுப்பிப்புகள்"},
-    "official_cap": {
-        "en": "Significant events from the official USGS record and situation "
-              "reports from UN agencies — tap a card to open the source.",
-        "my": "USGS တရားဝင်မှတ်တမ်းမှ အရေးကြီးဖြစ်ရပ်များနှင့် UN အေဂျင်စီများ၏ "
-              "အခြေအနေအစီရင်ခံစာများ — မူရင်းဖွင့်ရန် ကတ်ကိုနှိပ်ပါ။",
-        "th": "เหตุการณ์สำคัญจากบันทึกทางการของ USGS และรายงานสถานการณ์จาก"
-              "หน่วยงาน UN — แตะการ์ดเพื่อเปิดแหล่งข้อมูล",
-        "hi": "आधिकारिक USGS रिकॉर्ड की महत्वपूर्ण घटनाएँ और UN एजेंसियों की "
-              "स्थिति रिपोर्टें — स्रोत खोलने के लिए कार्ड टैप करें।",
-        "bn": "সরকারি USGS রেকর্ডের গুরুত্বপূর্ণ ঘটনা এবং UN সংস্থার পরিস্থিতি "
-              "রিপোর্ট — উৎস খুলতে কার্ডে ট্যাপ করুন।",
-        "te": "అధికారిక USGS రికార్డులోని ముఖ్య సంఘటనలు మరియు UN సంస్థల "
-              "నివేదికలు — మూలం తెరవడానికి కార్డు నొక్కండి.",
-        "mr": "अधिकृत USGS नोंदीतील महत्त्वाच्या घटना आणि UN संस्थांचे अहवाल — "
-              "स्रोत उघडण्यासाठी कार्डवर टॅप करा.",
-        "ta": "USGS அதிகாரப்பூர்வ பதிவின் முக்கிய நிகழ்வுகள் மற்றும் UN "
-              "அறிக்கைகள் — மூலத்தைத் திறக்க அட்டையைத் தட்டவும்.",
-    },
-    "ticker_label": {"en": "LIVE · THIS WEEK M5+", "my": "တိုက်ရိုက် · ဒီအပတ် M5+",
-                     "th": "สด · สัปดาห์นี้ M5+", "hi": "लाइव · इस सप्ताह M5+",
-                     "bn": "লাইভ · এই সপ্তাহ M5+", "te": "లైవ్ · ఈ వారం M5+",
-                     "mr": "लाइव्ह · या आठवड्यात M5+", "ta": "நேரலை · இவ்வாரம் M5+"},
-
-    # ------------------------------------------------------------- my area --
-    "area_h": {"en": "My Area — community seismic risk profile",
-               "my": "ကျွန်ုပ်၏ဒေသ — ရပ်ရွာငလျင်အန္တရာယ်အခြေအနေ",
-               "th": "พื้นที่ของฉัน — โปรไฟล์ความเสี่ยงแผ่นดินไหวของชุมชน",
-               "hi": "मेरा क्षेत्र — सामुदायिक भूकंपीय जोखिम प्रोफ़ाइल",
-               "bn": "আমার এলাকা — কমিউনিটি ভূমিকম্প ঝুঁকি প্রোফাইল",
-               "te": "నా ప్రాంతం — భూకంప ప్రమాద వివరాలు",
-               "mr": "माझा परिसर — भूकंप जोखीम प्रोफाइल",
-               "ta": "என் பகுதி — நிலநடுக்க அபாய விவரம்"},
-    "area_cap": {
-        "en": "Select your country and town - the agent combines your area's "
-              "50-year record with this week's live activity into a personal "
-              "risk profile, in your language.",
-        "my": "သင့်နိုင်ငံနှင့်မြို့ကိုရွေးပါ — သင့်ဒေသ၏ နှစ် ၅၀ မှတ်တမ်းနှင့် "
-              "ဒီအပတ်လှုပ်ရှားမှုကို ပေါင်းစပ်၍ သင့်ဘာသာစကားဖြင့် "
-              "အန္တရာယ်အခြေအနေထုတ်ပေးပါမည်။",
-        "th": "เลือกประเทศและเมืองของคุณ — ระบบรวมบันทึก 50 ปีของพื้นที่กับ"
-              "กิจกรรมสดสัปดาห์นี้เป็นโปรไฟล์ความเสี่ยงในภาษาของคุณ",
-        "hi": "अपना देश और शहर चुनें — एजेंट आपके क्षेत्र के 50-वर्षीय रिकॉर्ड और "
-              "इस सप्ताह की गतिविधि को मिलाकर आपकी भाषा में जोखिम प्रोफ़ाइल "
-              "बनाता है।",
-        "bn": "আপনার দেশ ও শহর বেছে নিন — এজেন্ট আপনার এলাকার ৫০ বছরের রেকর্ড ও "
-              "এই সপ্তাহের কার্যকলাপ মিলিয়ে আপনার ভাষায় ঝুঁকি প্রোফাইল তৈরি করে।",
-        "te": "మీ దేశం, ఊరు ఎంచుకోండి — 50 ఏళ్ల రికార్డు, ఈ వారపు కార్యకలాపాలను "
-              "కలిపి మీ భాషలో ప్రమాద వివరాలు ఇస్తుంది.",
-        "mr": "तुमचा देश व गाव निवडा — ५० वर्षांची नोंद व या आठवड्याची हालचाल "
-              "एकत्र करून तुमच्या भाषेत जोखीम प्रोफाइल बनवते.",
-        "ta": "உங்கள் நாடு, ஊரைத் தேர்ந்தெடுங்கள் — 50 ஆண்டு பதிவும் இவ்வார "
-              "செயல்பாடும் இணைந்து உங்கள் மொழியில் அபாய விவரம் தரும்.",
-    },
-    "country": {"en": "Country", "my": "နိုင်ငံ", "th": "ประเทศ", "hi": "देश",
-                "bn": "দেশ", "te": "దేశం", "mr": "देश", "ta": "நாடு"},
-    "town": {"en": "Town (type to search the list)",
-             "my": "မြို့ (ရှာဖွေရန်ရိုက်ပါ)", "th": "เมือง (พิมพ์เพื่อค้นหา)",
-             "hi": "शहर (सूची खोजने के लिए टाइप करें)",
-             "bn": "শহর (খুঁজতে টাইপ করুন)", "te": "ఊరు (వెతకడానికి టైప్ చేయండి)",
-             "mr": "गाव (शोधण्यासाठी टाइप करा)", "ta": "ஊர் (தேட தட்டச்சு செய்யவும்)"},
-    "gen_profile": {"en": "Generate risk profile", "my": "အန္တရာယ်အခြေအနေထုတ်ရန်",
-                    "th": "สร้างโปรไฟล์ความเสี่ยง", "hi": "जोखिम प्रोफ़ाइल बनाएँ",
-                    "bn": "ঝুঁকি প্রোফাইল তৈরি করুন", "te": "ప్రమాద వివరాలు రూపొందించండి",
-                    "mr": "जोखीम प्रोफाइल तयार करा", "ta": "அபாய விவரத்தை உருவாக்கவும்"},
-    "profile_for": {"en": "Profile for:", "my": "အခြေအနေပြသည့်နေရာ:",
-                    "th": "โปรไฟล์สำหรับ:", "hi": "प्रोफ़ाइल:", "bn": "প্রোফাইল:",
-                    "te": "వివరాలు:", "mr": "प्रोफाइल:", "ta": "விவரம்:"},
-    "m5_since": {"en": "M5+ since 1975", "my": "၁၉၇၅ မှ M5+", "th": "M5+ ตั้งแต่ 1975",
-                 "hi": "1975 से M5+", "bn": "১৯৭৫ থেকে M5+", "te": "1975 నుండి M5+",
-                 "mr": "१९७५ पासून M5+", "ta": "1975 முதல் M5+"},
-    "per_decade": {"en": "Per decade", "my": "ဆယ်စုနှစ်လျှင်", "th": "ต่อทศวรรษ",
-                   "hi": "प्रति दशक", "bn": "প্রতি দশকে", "te": "దశాబ్దానికి",
-                   "mr": "प्रत्येक दशकात", "ta": "பத்தாண்டுக்கு"},
-    "strongest_ever": {"en": "Strongest ever", "my": "အပြင်းဆုံးမှတ်တမ်း",
-                       "th": "แรงสุดเป็นประวัติการณ์", "hi": "अब तक का सबसे तेज़",
-                       "bn": "সর্বকালের শক্তিশালী", "te": "అత్యధిక తీవ్రత",
-                       "mr": "आतापर्यंतचा सर्वात तीव्र", "ta": "இதுவரை மிக வலிமையானது"},
-    "recent_m5": {"en": "Most recent M5+", "my": "နောက်ဆုံး M5+",
-                  "th": "M5+ ล่าสุด", "hi": "सबसे हालिया M5+", "bn": "সর্বশেষ M5+",
-                  "te": "తాజా M5+", "mr": "अलीकडील M5+", "ta": "சமீபத்திய M5+"},
-    "week500": {"en": "This week · 500 km", "my": "ဒီအပတ် · ၅၀၀ ကီလိုမီတာ",
-                "th": "สัปดาห์นี้ · 500 กม.", "hi": "इस सप्ताह · 500 किमी",
-                "bn": "এই সপ্তাহ · ৫০০ কিমি", "te": "ఈ వారం · 500 కి.మీ",
-                "mr": "या आठवड्यात · ५०० किमी", "ta": "இவ்வாரம் · 500 கி.மீ"},
-    "seis_h": {"en": "Seismic history.", "my": "ငလျင်သမိုင်း။", "th": "ประวัติแผ่นดินไหว",
-               "hi": "भूकंपीय इतिहास।", "bn": "ভূমিকম্পের ইতিহাস।",
-               "te": "భూకంప చరిత్ర.", "mr": "भूकंप इतिहास.", "ta": "நிலநடுக்க வரலாறு."},
-    "now_h": {"en": "Right now.", "my": "ယခုအခြေအနေ။", "th": "ตอนนี้",
-              "hi": "अभी।", "bn": "এই মুহূর্তে।", "te": "ఇప్పుడు.",
-              "mr": "सध्या.", "ta": "இப்போது."},
-    "prep_h": {"en": "Be prepared.", "my": "ကြိုတင်ပြင်ဆင်ပါ။", "th": "เตรียมพร้อม",
-               "hi": "तैयार रहें।", "bn": "প্রস্তুত থাকুন।", "te": "సిద్ధంగా ఉండండి.",
-               "mr": "तयार राहा.", "ta": "தயாராக இருங்கள்."},
-    "chart_decade": {"en": "Events per decade near you",
-                     "my": "သင့်အနီး ဆယ်စုနှစ်အလိုက်ဖြစ်ရပ်များ",
-                     "th": "เหตุการณ์ต่อทศวรรษใกล้คุณ",
-                     "hi": "आपके पास प्रति दशक घटनाएँ",
-                     "bn": "আপনার কাছে প্রতি দশকে ঘটনা",
-                     "te": "మీ దగ్గర దశాబ్దానికి సంఘటనలు",
-                     "mr": "तुमच्याजवळ प्रत्येक दशकातील घटना",
-                     "ta": "உங்களருகே பத்தாண்டுக்கு நிகழ்வுகள்"},
-    "chart_decade_cap": {
-        "en": "Taller recent bars often reflect better instruments, not "
-              "necessarily more earthquakes.",
-        "my": "မကြာသေးမီနှစ်များ၏ မြင့်သောဘားများသည် တိုင်းတာကိရိယာကောင်းလာခြင်း "
-              "ကြောင့်ဖြစ်နိုင်ပြီး ငလျင်ပိုများခြင်းမဟုတ်နိုင်ပါ။",
-        "th": "แท่งที่สูงขึ้นช่วงหลังมักสะท้อนเครื่องมือวัดที่ดีขึ้น "
-              "ไม่จำเป็นต้องมีแผ่นดินไหวมากขึ้น",
-        "hi": "हाल के ऊँचे बार अक्सर बेहतर उपकरणों को दर्शाते हैं, ज़रूरी नहीं "
-              "कि ज़्यादा भूकंप हों।",
-        "bn": "সাম্প্রতিক উঁচু বার প্রায়ই উন্নত যন্ত্রের ফল, বেশি ভূমিকম্পের নয়।",
-        "te": "ఇటీవలి ఎత్తైన బార్లు మెరుగైన పరికరాల వల్ల కావచ్చు, ఎక్కువ "
-              "భూకంపాల వల్ల కాకపోవచ్చు.",
-        "mr": "अलीकडील उंच बार अनेकदा चांगल्या उपकरणांमुळे, जास्त भूकंपांमुळे नव्हे.",
-        "ta": "சமீபத்திய உயரமான பட்டைகள் சிறந்த கருவிகளால் இருக்கலாம், அதிக "
-              "நிலநடுக்கங்களால் அல்ல.",
-    },
-    "chart_strength": {"en": "How strong they were", "my": "မည်မျှပြင်းထန်ခဲ့သနည်း",
-                       "th": "ความรุนแรงเท่าใด", "hi": "वे कितने तेज़ थे",
-                       "bn": "সেগুলো কতটা শক্তিশালী ছিল", "te": "అవి ఎంత తీవ్రంగా ఉన్నాయి",
-                       "mr": "त्या किती तीव्र होत्या", "ta": "எவ்வளவு வலிமையானவை"},
-    "chart_strength_cap": {
-        "en": "Most events cluster at the lower magnitudes - the big ones are "
-              "rare but matter most.",
-        "my": "ဖြစ်ရပ်အများစုသည် ပြင်းအားနိမ့်ဘက်တွင်ရှိပြီး ကြီးမားသောငလျင်များသည် "
-              "ရှားပါးသော်လည်း အရေးအကြီးဆုံးဖြစ်သည်။",
-        "th": "เหตุการณ์ส่วนใหญ่อยู่ที่แมกนิจูดต่ำ — ครั้งใหญ่หายากแต่สำคัญที่สุด",
-        "hi": "अधिकांश घटनाएँ कम परिमाण की होती हैं — बड़ी दुर्लभ हैं पर सबसे "
-              "महत्वपूर्ण हैं।",
-        "bn": "বেশিরভাগ ঘটনা কম মাত্রার — বড়গুলো বিরল কিন্তু সবচেয়ে গুরুত্বপূর্ণ।",
-        "te": "చాలా సంఘటనలు తక్కువ తీవ్రతలోనే — పెద్దవి అరుదు కానీ ముఖ్యమైనవి.",
-        "mr": "बहुतेक घटना कमी तीव्रतेच्या — मोठ्या दुर्मीळ पण सर्वात महत्त्वाच्या.",
-        "ta": "பெரும்பாலான நிகழ்வுகள் குறைந்த அளவில் — பெரியவை அரிது ஆனால் "
-              "மிக முக்கியம்.",
-    },
-    "map_exp": {"en": "Map: every M5+ epicenter within 300 km since 1975",
-                "my": "မြေပုံ — ၁၉၇၅ မှစ၍ ၃၀၀ ကီလိုမီတာအတွင်း M5+ ဗဟိုချက်အားလုံး",
-                "th": "แผนที่: ศูนย์กลาง M5+ ทุกจุดในรัศมี 300 กม. ตั้งแต่ 1975",
-                "hi": "मानचित्र: 1975 से 300 किमी के भीतर हर M5+ केंद्र",
-                "bn": "মানচিত্র: ১৯৭৫ থেকে ৩০০ কিমির মধ্যে সব M5+ কেন্দ্র",
-                "te": "పటం: 1975 నుండి 300 కి.మీ లోపు ప్రతి M5+ కేంద్రం",
-                "mr": "नकाशा: १९७५ पासून ३०० किमीतील प्रत्येक M5+ केंद्र",
-                "ta": "வரைபடம்: 1975 முதல் 300 கி.மீ-க்குள் ஒவ்வொரு M5+ மையம்"},
-
-    # -------------------------------------------------------------- ask ai --
-    "ask_h": {"en": "Ask about Earthquakes — AI agent",
-              "my": "ငလျင်အကြောင်းမေးမြန်းရန် — AI အေးဂျင့်",
-              "th": "ถามเรื่องแผ่นดินไหว — เอเจนต์ AI",
-              "hi": "भूकंप के बारे में पूछें — AI एजेंट",
-              "bn": "ভূমিকম্প সম্পর্কে জিজ্ঞাসা করুন — AI এজেন্ট",
-              "te": "భూకంపాల గురించి అడగండి — AI ఏజెంట్",
-              "mr": "भूकंपाबद्दल विचारा — AI एजंट",
-              "ta": "நிலநடுக்கம் பற்றி கேளுங்கள் — AI முகவர்"},
-    "ask_cap": {
-        "en": "Ask anything, in any language — it replies in yours. Historical "
-              "numbers come from 50 years of USGS data (SQL shown), this "
-              "week's events from the live feed, and current news with web "
-              "sources cited. It remembers follow-ups and can discuss your My "
-              "Area analysis (from the My Area page).",
-        "my": "မည်သည့်ဘာသာစကားဖြင့်မဆို မေးနိုင်သည် — သင့်ဘာသာစကားဖြင့်ဖြေပါမည်။ "
-              "သမိုင်းကိန်းဂဏန်းများသည် USGS နှစ် ၅၀ ဒေတာမှ (SQL ပြသည်)၊ "
-              "ဒီအပတ်ဖြစ်ရပ်များသည် တိုက်ရိုက်ဖီးဒ်မှ ဖြစ်သည်။ နောက်ဆက်တွဲ "
-              "မေးခွန်းများကို မှတ်မိပါသည်။",
-        "th": "ถามอะไรก็ได้ ทุกภาษา — ตอบเป็นภาษาของคุณ ตัวเลขในอดีตมาจากข้อมูล "
-              "USGS 50 ปี (แสดง SQL) เหตุการณ์สัปดาห์นี้จากฟีดสด และข่าวปัจจุบัน"
-              "พร้อมอ้างอิงแหล่งที่มา จำคำถามต่อเนื่องได้",
-        "hi": "कुछ भी पूछें, किसी भी भाषा में — जवाब आपकी भाषा में मिलेगा। "
-              "ऐतिहासिक आँकड़े 50 वर्षों के USGS डेटा से (SQL दिखाया जाता है), "
-              "इस सप्ताह की घटनाएँ लाइव फ़ीड से, और ताज़ा समाचार स्रोतों के साथ। "
-              "यह फ़ॉलो-अप याद रखता है।",
-        "bn": "যেকোনো ভাষায় যা খুশি জিজ্ঞাসা করুন — উত্তর আপনার ভাষায়। "
-              "ঐতিহাসিক সংখ্যা ৫০ বছরের USGS ডেটা থেকে (SQL দেখানো হয়), এই "
-              "সপ্তাহের ঘটনা লাইভ ফিড থেকে। এটি ফলো-আপ মনে রাখে।",
-        "te": "ఏ భాషలోనైనా ఏదైనా అడగండి — మీ భాషలోనే జవాబు. చారిత్రక సంఖ్యలు "
-              "50 ఏళ్ల USGS డేటా నుండి (SQL చూపబడుతుంది), ఈ వారపు సంఘటనలు "
-              "లైవ్ ఫీడ్ నుండి. ఫాలో-అప్‌లను గుర్తుంచుకుంటుంది.",
-        "mr": "कोणत्याही भाषेत काहीही विचारा — उत्तर तुमच्या भाषेत. ऐतिहासिक "
-              "आकडे ५० वर्षांच्या USGS डेटामधून (SQL दाखवले जाते), या आठवड्याच्या "
-              "घटना लाइव्ह फीडमधून. फॉलो-अप लक्षात ठेवते.",
-        "ta": "எந்த மொழியிலும் எதையும் கேளுங்கள் — உங்கள் மொழியிலேயே பதில். "
-              "வரலாற்று எண்கள் 50 ஆண்டு USGS தரவிலிருந்து (SQL காட்டப்படும்), "
-              "இவ்வார நிகழ்வுகள் நேரலை ஊட்டத்திலிருந்து. தொடர் கேள்விகளை "
-              "நினைவில் கொள்ளும்.",
-    },
-    "try_these": {"en": "Try one of these:", "my": "ဤအရာများထဲမှ တစ်ခုစမ်းကြည့်ပါ:",
-                  "th": "ลองหนึ่งในนี้:", "hi": "इनमें से एक आज़माएँ:",
-                  "bn": "এগুলোর একটি চেষ্টা করুন:", "te": "వీటిలో ఒకటి ప్రయత్నించండి:",
-                  "mr": "यापैकी एक वापरून पहा:", "ta": "இவற்றில் ஒன்றை முயற்சிக்கவும்:"},
-    "chat_ph": {
-        "en": "Ask anything about earthquakes — events, science, safety, or "
-              "your area's analysis...",
-        "my": "ငလျင်အကြောင်း မည်သည့်အရာမဆို မေးပါ — ဖြစ်ရပ်၊ သိပ္ပံ၊ "
-              "ဘေးကင်းရေး...",
-        "th": "ถามอะไรก็ได้เกี่ยวกับแผ่นดินไหว — เหตุการณ์ วิทยาศาสตร์ ความปลอดภัย...",
-        "hi": "भूकंप के बारे में कुछ भी पूछें — घटनाएँ, विज्ञान, सुरक्षा...",
-        "bn": "ভূমিকম্প সম্পর্কে যা খুশি জিজ্ঞাসা করুন — ঘটনা, বিজ্ঞান, নিরাপত্তা...",
-        "te": "భూకంపాల గురించి ఏదైనా అడగండి — సంఘటనలు, సైన్స్, భద్రత...",
-        "mr": "भूकंपाबद्दल काहीही विचारा — घटना, विज्ञान, सुरक्षा...",
-        "ta": "நிலநடுக்கம் பற்றி எதையும் கேளுங்கள் — நிகழ்வுகள், அறிவியல், "
-              "பாதுகாப்பு...",
-    },
-    "clear_conv": {"en": "Clear conversation", "my": "စကားဝိုင်းရှင်းရန်",
-                   "th": "ล้างบทสนทนา", "hi": "बातचीत साफ़ करें",
-                   "bn": "কথোপকথন মুছুন", "te": "సంభాషణ క్లియర్ చేయండి",
-                   "mr": "संभाषण साफ करा", "ta": "உரையாடலை அழிக்கவும்"},
-    "ex1": {"en": "How many M6+ earthquakes hit Myanmar since 1990?",
-            "my": "၁၉၉၀ မှစ၍ မြန်မာနိုင်ငံတွင် M6+ ငလျင်ဘယ်နှစ်ခုလှုပ်ခဲ့သလဲ?",
-            "th": "มีแผ่นดินไหว M6+ ในเมียนมากี่ครั้งตั้งแต่ปี 1990?",
-            "hi": "1990 से म्यांमार में कितने M6+ भूकंप आए?",
-            "bn": "১৯৯০ থেকে মিয়ানমারে কতটি M6+ ভূমিকম্প হয়েছে?",
-            "te": "1990 నుండి మయన్మార్‌లో ఎన్ని M6+ భూకంపాలు వచ్చాయి?",
-            "mr": "१९९० पासून म्यानमारमध्ये किती M6+ भूकंप झाले?",
-            "ta": "1990 முதல் மியான்மரில் எத்தனை M6+ நிலநடுக்கங்கள்?"},
-    "ex2": {"en": "Why does Myanmar get so many big earthquakes?",
-            "my": "မြန်မာနိုင်ငံမှာ ဘာကြောင့် ငလျင်ကြီးများ ဒီလောက်များသလဲ?",
-            "th": "ทำไมเมียนมาจึงมีแผ่นดินไหวใหญ่บ่อย?",
-            "hi": "म्यांमार में इतने बड़े भूकंप क्यों आते हैं?",
-            "bn": "মিয়ানমারে এত বড় ভূমিকম্প কেন হয়?",
-            "te": "మయన్మార్‌లో పెద్ద భూకంపాలు ఎందుకు ఎక్కువ?",
-            "mr": "म्यानमारमध्ये एवढे मोठे भूकंप का होतात?",
-            "ta": "மியான்மரில் ஏன் இத்தனை பெரிய நிலநடுக்கங்கள்?"},
-    "ex3": {"en": "What should my family do during strong shaking?",
-            "my": "ပြင်းထန်စွာလှုပ်နေစဉ် ကျွန်ုပ်မိသားစု ဘာလုပ်သင့်သလဲ?",
-            "th": "ครอบครัวของฉันควรทำอย่างไรขณะสั่นแรง?",
-            "hi": "तेज़ झटकों के दौरान मेरे परिवार को क्या करना चाहिए?",
-            "bn": "তীব্র কম্পনের সময় আমার পরিবারের কী করা উচিত?",
-            "te": "బలమైన కంపనల సమయంలో నా కుటుంబం ఏం చేయాలి?",
-            "mr": "जोरदार हादऱ्यांदरम्यान माझ्या कुटुंबाने काय करावे?",
-            "ta": "பலமான அதிர்வின்போது என் குடும்பம் என்ன செய்ய வேண்டும்?"},
-    "ex4": {"en": "Strongest quake ever near Japan - and what made it so deadly?",
-            "my": "ဂျပန်အနီး အပြင်းဆုံးငလျင် — ဘာကြောင့်ဒီလောက်သေဆုံးမှုများသလဲ?",
-            "th": "แผ่นดินไหวแรงสุดใกล้ญี่ปุ่น — อะไรทำให้ร้ายแรงขนาดนั้น?",
-            "hi": "जापान के पास अब तक का सबसे तेज़ भूकंप — यह इतना घातक क्यों था?",
-            "bn": "জাপানের কাছে সবচেয়ে শক্তিশালী ভূমিকম্প — কেন এত প্রাণঘাতী ছিল?",
-            "te": "జపాన్ దగ్గర అత్యంత శక్తివంతమైన భూకంపం — ఎందుకు అంత ప్రాణాంతకం?",
-            "mr": "जपानजवळचा सर्वात तीव्र भूकंप — तो इतका घातक का ठरला?",
-            "ta": "ஜப்பான் அருகே மிக வலிமையான நிலநடுக்கம் — ஏன் அவ்வளவு "
-                  "உயிர்க்கொல்லி?"},
-    "bot_intro": {
-        "en": "Hi, I'm **Terra** ✦ — QuakeSense's AI assistant, powered by "
-              "Google's Gemini 2.5 Flash on Vertex AI.\n\nI can help you with:\n"
-              "- **What you're seeing** on this page — any event, number, or alert\n"
-              "- **Any earthquake question**, in your own language\n"
-              "- **Finding help**: nearest hospitals, fire & police stations and "
-              "national emergency numbers are in the **Response Toolkit**\n\n"
-              "What would you like to know?",
-        "my": "မင်္ဂလာပါ၊ ကျွန်ုပ်သည် **Terra** ✦ — QuakeSense ၏ AI လက်ထောက်၊ "
-              "Google Gemini 2.5 Flash ဖြင့်လည်ပတ်သည်။\n\nကူညီနိုင်သည်များ —\n"
-              "- ဤစာမျက်နှာပေါ်ရှိ **မြင်နေရသည့်အရာများ**\n"
-              "- **ငလျင်ဆိုင်ရာမေးခွန်း** မည်သည့်ဘာသာစကားဖြင့်မဆို\n"
-              "- **အကူအညီရှာခြင်း** — ဆေးရုံ၊ မီးသတ်၊ ရဲစခန်းများကို "
-              "**တုံ့ပြန်ရေးကိရိယာစုံ** တွင်ကြည့်ပါ\n\nဘာသိချင်ပါသလဲ?",
-        "th": "สวัสดี ฉันคือ **Terra** ✦ — ผู้ช่วย AI ของ QuakeSense ขับเคลื่อนโดย "
-              "Gemini 2.5 Flash\n\nฉันช่วยได้เรื่อง:\n- **สิ่งที่คุณเห็น**ในหน้านี้\n"
-              "- **คำถามแผ่นดินไหวใดๆ** ในภาษาของคุณ\n- **หาความช่วยเหลือ**: "
-              "โรงพยาบาล สถานีดับเพลิงและตำรวจอยู่ใน **ชุดเครื่องมือรับมือ**\n\n"
-              "อยากรู้อะไร?",
-        "hi": "नमस्ते, मैं **Terra** ✦ हूँ — QuakeSense का AI सहायक, Google के "
-              "Gemini 2.5 Flash द्वारा संचालित।\n\nमैं मदद कर सकती हूँ:\n"
-              "- इस पेज पर **जो आप देख रहे हैं** — कोई घटना, संख्या या अलर्ट\n"
-              "- **कोई भी भूकंप सवाल**, आपकी भाषा में\n- **मदद खोजना**: नज़दीकी "
-              "अस्पताल, फ़ायर व पुलिस स्टेशन **प्रतिक्रिया टूलकिट** में हैं\n\n"
-              "आप क्या जानना चाहेंगे?",
-        "bn": "নমস্কার, আমি **Terra** ✦ — QuakeSense-এর AI সহকারী, Google-এর "
-              "Gemini 2.5 Flash চালিত।\n\nআমি সাহায্য করতে পারি:\n- এই পাতায় "
-              "**যা দেখছেন** — যেকোনো ঘটনা, সংখ্যা বা সতর্কতা\n- **যেকোনো "
-              "ভূমিকম্প প্রশ্ন**, আপনার ভাষায়\n- **সাহায্য খোঁজা**: নিকটতম "
-              "হাসপাতাল, ফায়ার ও পুলিশ স্টেশন **প্রতিক্রিয়া টুলকিটে**\n\n"
-              "কী জানতে চান?",
-        "te": "నమస్తే, నేను **Terra** ✦ — QuakeSense AI సహాయకురాలిని, Google "
-              "Gemini 2.5 Flash తో నడుస్తాను.\n\nనేను సహాయం చేయగలను:\n- ఈ "
-              "పేజీలో **మీరు చూస్తున్నవి** — ఏ సంఘటన, సంఖ్య లేదా హెచ్చరిక\n"
-              "- **ఏ భూకంప ప్రశ్న అయినా**, మీ భాషలో\n- **సహాయం వెతకడం**: "
-              "ఆసుపత్రులు, ఫైర్ & పోలీస్ స్టేషన్లు **స్పందన సాధనాల్లో**\n\n"
-              "ఏం తెలుసుకోవాలనుకుంటున్నారు?",
-        "mr": "नमस्कार, मी **Terra** ✦ — QuakeSense ची AI सहाय्यक, Google च्या "
-              "Gemini 2.5 Flash वर चालते.\n\nमी मदत करू शकते:\n- या पानावर "
-              "**तुम्ही जे पाहत आहात** — कोणतीही घटना, आकडा किंवा इशारा\n"
-              "- **कोणताही भूकंप प्रश्न**, तुमच्या भाषेत\n- **मदत शोधणे**: जवळची "
-              "रुग्णालये, अग्निशमन व पोलीस स्टेशन **प्रतिसाद साधनांत**\n\n"
-              "काय जाणून घ्यायचे आहे?",
-        "ta": "வணக்கம், நான் **Terra** ✦ — QuakeSense-இன் AI உதவியாளர், Google "
-              "Gemini 2.5 Flash மூலம் இயங்குகிறேன்.\n\nநான் உதவக்கூடியவை:\n"
-              "- இந்தப் பக்கத்தில் **நீங்கள் காண்பவை** — எந்த நிகழ்வு, எண் அல்லது "
-              "எச்சரிக்கை\n- **எந்த நிலநடுக்கக் கேள்வியும்**, உங்கள் மொழியில்\n"
-              "- **உதவி தேடுதல்**: மருத்துவமனைகள், தீயணைப்பு & காவல் நிலையங்கள் "
-              "**மீட்புக் கருவிகளில்** உள்ளன\n\nஎன்ன தெரிந்துகொள்ள விரும்புகிறீர்கள்?",
-    },
-
-    # ------------------------------------------------------- anomaly watch --
-    "anom_h": {"en": "Anomaly Watch — unusual seismic activity",
-               "my": "ထူးခြားမှုစောင့်ကြည့် — ပုံမှန်မဟုတ်သောငလျင်လှုပ်ရှားမှု",
-               "th": "เฝ้าระวังความผิดปกติ — กิจกรรมแผ่นดินไหวผิดปกติ",
-               "hi": "असामान्यता निगरानी — असामान्य भूकंपीय गतिविधि",
-               "bn": "অস্বাভাবিকতা নজরদারি — অস্বাভাবিক ভূমিকম্প কার্যকলাপ",
-               "te": "అసాధారణతల పరిశీలన — అసాధారణ భూకంప కార్యకలాపం",
-               "mr": "विसंगती निरीक्षण — असामान्य भूकंप हालचाल",
-               "ta": "அசாதாரணக் கண்காணிப்பு — வழக்கத்திற்கு மாறான நில அதிர்வு"},
-    "anom_cap": {
-        "en": "Compares this week's M4.5+ activity in every 5-degree region "
-              "against the 50-year historical baseline. Flags swarms and "
-              "intense aftershock sequences.",
-        "my": "ဒေသတိုင်း၏ ဒီအပတ် M4.5+ လှုပ်ရှားမှုကို နှစ် ၅၀ ပျမ်းမျှနှင့် "
-              "နှိုင်းယှဉ်ပြီး ထူးခြားမှုများကို အလံပြပါသည်။",
-        "th": "เปรียบเทียบกิจกรรม M4.5+ สัปดาห์นี้ของแต่ละภูมิภาคกับค่าเฉลี่ย "
-              "50 ปี ติดธงกลุ่มแผ่นดินไหวและอาฟเตอร์ช็อกรุนแรง",
-        "hi": "हर 5-डिग्री क्षेत्र की इस सप्ताह की M4.5+ गतिविधि की तुलना 50-वर्षीय "
-              "आधार रेखा से करता है। झुंड और तीव्र आफ़्टरशॉक चिह्नित करता है।",
-        "bn": "প্রতিটি অঞ্চলের এই সপ্তাহের M4.5+ কার্যকলাপকে ৫০ বছরের গড়ের সাথে "
-              "তুলনা করে। ঝাঁক ও তীব্র আফটারশক চিহ্নিত করে।",
-        "te": "ప్రతి ప్రాంతపు ఈ వారపు M4.5+ కార్యకలాపాన్ని 50 ఏళ్ల సగటుతో "
-              "పోల్చుతుంది. అసాధారణతలను గుర్తిస్తుంది.",
-        "mr": "प्रत्येक प्रदेशाची या आठवड्याची M4.5+ हालचाल ५० वर्षांच्या सरासरीशी "
-              "तुलना करते. विसंगती ध्वजांकित करते.",
-        "ta": "ஒவ்வொரு பகுதியின் இவ்வார M4.5+ செயல்பாட்டை 50 ஆண்டு அடிப்படையுடன் "
-              "ஒப்பிடுகிறது. அசாதாரணங்களைக் கொடியிடுகிறது.",
-    },
-    "anom_ok": {
-        "en": "No regions show anomalously elevated activity this week.",
-        "my": "ဒီအပတ်တွင် ထူးခြားစွာမြင့်တက်နေသောဒေသမရှိပါ။",
-        "th": "สัปดาห์นี้ไม่มีภูมิภาคที่มีกิจกรรมสูงผิดปกติ",
-        "hi": "इस सप्ताह किसी क्षेत्र में असामान्य रूप से बढ़ी गतिविधि नहीं है।",
-        "bn": "এই সপ্তাহে কোনো অঞ্চলে অস্বাভাবিক কার্যকলাপ নেই।",
-        "te": "ఈ వారం ఏ ప్రాంతంలోనూ అసాధారణ కార్యకలాపం లేదు.",
-        "mr": "या आठवड्यात कोणत्याही प्रदेशात असामान्य हालचाल नाही.",
-        "ta": "இவ்வாரம் எந்தப் பகுதியிலும் அசாதாரண செயல்பாடு இல்லை.",
-    },
-    "anom_warn": {
-        "en": "{n} region(s) flagged with unusually high activity",
-        "my": "ဒေသ {n} ခုတွင် ပုံမှန်မဟုတ်သောမြင့်မားသည့်လှုပ်ရှားမှုတွေ့ရှိ",
-        "th": "{n} ภูมิภาคถูกติดธงว่ามีกิจกรรมสูงผิดปกติ",
-        "hi": "{n} क्षेत्र असामान्य रूप से उच्च गतिविधि के साथ चिह्नित",
-        "bn": "{n}টি অঞ্চল অস্বাভাবিক উচ্চ কার্যকলাপে চিহ্নিত",
-        "te": "{n} ప్రాంతాల్లో అసాధారణంగా అధిక కార్యకలాపం గుర్తించబడింది",
-        "mr": "{n} प्रदेश असामान्य उच्च हालचालीसह ध्वजांकित",
-        "ta": "{n} பகுதி(கள்) அசாதாரண அதிக செயல்பாட்டுடன் கொடியிடப்பட்டுள்ளன",
-    },
-    "explain_sel": {"en": "Explain a flagged region", "my": "အလံပြဒေသကိုရှင်းပြရန်",
-                    "th": "อธิบายภูมิภาคที่ติดธง", "hi": "चिह्नित क्षेत्र समझाएँ",
-                    "bn": "চিহ্নিত অঞ্চল ব্যাখ্যা করুন", "te": "గుర్తించిన ప్రాంతాన్ని వివరించండి",
-                    "mr": "ध्वजांकित प्रदेश स्पष्ट करा", "ta": "கொடியிட்ட பகுதியை விளக்கவும்"},
-    "gen_analysis": {"en": "Generate AI analysis", "my": "AI ခွဲခြမ်းစိတ်ဖြာမှုထုတ်ရန်",
-                     "th": "สร้างการวิเคราะห์ AI", "hi": "AI विश्लेषण बनाएँ",
-                     "bn": "AI বিশ্লেষণ তৈরি করুন", "te": "AI విశ్లేషణ రూపొందించండి",
-                     "mr": "AI विश्लेषण तयार करा", "ta": "AI பகுப்பாய்வை உருவாக்கவும்"},
-    "m_week": {"en": "Events this week", "my": "ဒီအပတ်ဖြစ်ရပ်များ",
-               "th": "เหตุการณ์สัปดาห์นี้", "hi": "इस सप्ताह की घटनाएँ",
-               "bn": "এই সপ্তাহের ঘটনা", "te": "ఈ వారం సంఘటనలు",
-               "mr": "या आठवड्यातील घटना", "ta": "இவ்வார நிகழ்வுகள்"},
-    "m_normal": {"en": "Normal week", "my": "ပုံမှန်အပတ်", "th": "สัปดาห์ปกติ",
-                 "hi": "सामान्य सप्ताह", "bn": "স্বাভাবিক সপ্তাহ", "te": "సాధారణ వారం",
-                 "mr": "सामान्य आठवडा", "ta": "இயல்பு வாரம்"},
-    "m_ratio": {"en": "Times above normal", "my": "ပုံမှန်ထက် အဆ",
-                "th": "เท่าของค่าปกติ", "hi": "सामान्य से गुना",
-                "bn": "স্বাভাবিকের গুণ", "te": "సాధారణం కంటే రెట్లు",
-                "mr": "सामान्यच्या पट", "ta": "இயல்பை விட மடங்கு"},
-    "when_h": {"en": "When they struck this week", "my": "ဒီအပတ် ဘယ်အချိန်လှုပ်ခဲ့သလဲ",
-               "th": "เกิดขึ้นเมื่อใดในสัปดาห์นี้", "hi": "इस सप्ताह कब आए",
-               "bn": "এই সপ্তাহে কখন আঘাত হানে", "te": "ఈ వారం ఎప్పుడు వచ్చాయి",
-               "mr": "या आठवड्यात केव्हा आले", "ta": "இவ்வாரம் எப்போது ஏற்பட்டன"},
-    "where_h": {"en": "Where they struck", "my": "ဘယ်နေရာလှုပ်ခဲ့သလဲ",
-                "th": "เกิดขึ้นที่ใด", "hi": "कहाँ आए", "bn": "কোথায় আঘাত হানে",
-                "te": "ఎక్కడ వచ్చాయి", "mr": "कुठे आले", "ta": "எங்கு ஏற்பட்டன"},
-
-    # ----------------------------------------------------- response toolkit --
-    "tk_h": {"en": "Response Toolkit", "my": "တုံ့ပြန်ရေးကိရိယာစုံ",
-             "th": "ชุดเครื่องมือรับมือ", "hi": "प्रतिक्रिया टूलकिट",
-             "bn": "প্রতিক্রিয়া টুলকিট", "te": "స్పందన సాధనాలు",
-             "mr": "प्रतिसाद साधने", "ta": "மீட்புக் கருவிகள்"},
-    "tk_cap": {
-        "en": "Practical tools for the hours after an earthquake - for "
-              "residents waiting for help, and for the officials coordinating it.",
-        "my": "ငလျင်ပြီးနောက်နာရီများအတွက် လက်တွေ့ကိရိယာများ — အကူအညီစောင့်နေသော "
-              "ပြည်သူများနှင့် ညှိနှိုင်းနေသောတာဝန်ရှိသူများအတွက်။",
-        "th": "เครื่องมือใช้งานจริงสำหรับชั่วโมงหลังแผ่นดินไหว — สำหรับผู้รอ"
-              "ความช่วยเหลือและเจ้าหน้าที่ผู้ประสานงาน",
-        "hi": "भूकंप के बाद के घंटों के लिए व्यावहारिक उपकरण — मदद की प्रतीक्षा "
-              "कर रहे निवासियों और समन्वय कर रहे अधिकारियों के लिए।",
-        "bn": "ভূমিকম্পের পরের ঘণ্টাগুলোর জন্য ব্যবহারিক টুল — সাহায্যের অপেক্ষায় "
-              "থাকা বাসিন্দা ও সমন্বয়কারী কর্মকর্তাদের জন্য।",
-        "te": "భూకంపం తర్వాతి గంటలకు ఆచరణాత్మక సాధనాలు — సహాయం కోసం వేచి ఉన్న "
-              "నివాసులకు, సమన్వయం చేసే అధికారులకు.",
-        "mr": "भूकंपानंतरच्या तासांसाठी व्यावहारिक साधने — मदतीची वाट पाहणाऱ्या "
-              "रहिवाशांसाठी आणि समन्वय करणाऱ्या अधिकाऱ्यांसाठी.",
-        "ta": "நிலநடுக்கத்திற்குப் பிந்தைய மணிநேரங்களுக்கான நடைமுறைக் கருவிகள் — "
-              "உதவிக்காக காத்திருப்போருக்கும் ஒருங்கிணைப்பாளர்களுக்கும்.",
-    },
-    "sitrep_h": {"en": "Situation report (SITREP)", "my": "အခြေအနေအစီရင်ခံစာ (SITREP)",
-                 "th": "รายงานสถานการณ์ (SITREP)", "hi": "स्थिति रिपोर्ट (SITREP)",
-                 "bn": "পরিস্থিতি রিপোর্ট (SITREP)", "te": "పరిస్థితి నివేదిక (SITREP)",
-                 "mr": "परिस्थिती अहवाल (SITREP)", "ta": "நிலைமை அறிக்கை (SITREP)"},
-    "sitrep_cap": {
-        "en": "A formal report in the format emergency operations centers use. "
-              "Pick an event, generate, download, distribute.",
-        "my": "အရေးပေါ်စင်တာများအသုံးပြုသောပုံစံဖြင့် တရားဝင်အစီရင်ခံစာ။ "
-              "ဖြစ်ရပ်ရွေး၊ ထုတ်၊ ဒေါင်းလုဒ်၊ ဖြန့်ဝေပါ။",
-        "th": "รายงานทางการในรูปแบบที่ศูนย์ปฏิบัติการฉุกเฉินใช้ เลือกเหตุการณ์ "
-              "สร้าง ดาวน์โหลด แจกจ่าย",
-        "hi": "आपातकालीन केंद्रों के प्रारूप में औपचारिक रिपोर्ट। घटना चुनें, "
-              "बनाएँ, डाउनलोड करें, वितरित करें।",
-        "bn": "জরুরি কেন্দ্রের ফরম্যাটে আনুষ্ঠানিক রিপোর্ট। ঘটনা বাছুন, তৈরি "
-              "করুন, ডাউনলোড ও বিতরণ করুন।",
-        "te": "అత్యవసర కేంద్రాలు వాడే ఫార్మాట్‌లో అధికారిక నివేదిక. సంఘటన "
-              "ఎంచుకుని, రూపొందించి, డౌన్‌లోడ్ చేసి పంచండి.",
-        "mr": "आपत्कालीन केंद्रे वापरतात त्या स्वरूपातील औपचारिक अहवाल. घटना "
-              "निवडा, तयार करा, डाउनलोड करा.",
-        "ta": "அவசர மையங்கள் பயன்படுத்தும் வடிவில் முறையான அறிக்கை. நிகழ்வைத் "
-              "தேர்ந்தெடுத்து, உருவாக்கி, பதிவிறக்கவும்.",
-    },
-    "gen_sitrep": {"en": "Generate SITREP", "my": "SITREP ထုတ်ရန်", "th": "สร้าง SITREP",
-                   "hi": "SITREP बनाएँ", "bn": "SITREP তৈরি করুন", "te": "SITREP రూపొందించండి",
-                   "mr": "SITREP तयार करा", "ta": "SITREP உருவாக்கவும்"},
-    "dl_sitrep": {"en": "Download SITREP (.txt)", "my": "SITREP ဒေါင်းလုဒ် (.txt)",
-                  "th": "ดาวน์โหลด SITREP (.txt)", "hi": "SITREP डाउनलोड करें (.txt)",
-                  "bn": "SITREP ডাউনলোড (.txt)", "te": "SITREP డౌన్‌లోడ్ (.txt)",
-                  "mr": "SITREP डाउनलोड (.txt)", "ta": "SITREP பதிவிறக்கு (.txt)"},
-    "dd_h": {"en": "Before rescue arrives — do's and don'ts",
-             "my": "ကယ်ဆယ်ရေးမရောက်မီ — လုပ်သင့်/မလုပ်သင့်များ",
-             "th": "ก่อนหน่วยกู้ภัยมาถึง — ควรทำและไม่ควรทำ",
-             "hi": "बचाव दल आने से पहले — क्या करें, क्या न करें",
-             "bn": "উদ্ধারকারী আসার আগে — করণীয় ও বর্জনীয়",
-             "te": "రక్షణ బృందం రాకముందు — చేయవలసినవి, చేయకూడనివి",
-             "mr": "बचाव पथक येण्यापूर्वी — काय करावे, काय करू नये",
-             "ta": "மீட்புக் குழு வருமுன் — செய்யவேண்டியவை, கூடாதவை"},
-    "dd_cap": {
-        "en": "Established international guidance (FEMA / Red Cross), written "
-              "for your situation and language. Not a substitute for trained "
-              "rescuers.",
-        "my": "နိုင်ငံတကာလမ်းညွှန်ချက်များ (FEMA / ကြက်ခြေနီ) ကို သင့်အခြေအနေနှင့် "
-              "ဘာသာစကားအတွက်ရေးထားသည်။ လေ့ကျင့်ထားသောကယ်ဆယ်သူများ၏ "
-              "အစားထိုးမဟုတ်ပါ။",
-        "th": "แนวทางสากล (FEMA / กาชาด) เขียนสำหรับสถานการณ์และภาษาของคุณ "
-              "ไม่ใช่การแทนที่หน่วยกู้ภัยมืออาชีพ",
-        "hi": "स्थापित अंतरराष्ट्रीय मार्गदर्शन (FEMA / रेड क्रॉस), आपकी स्थिति और "
-              "भाषा के लिए। प्रशिक्षित बचावकर्ताओं का विकल्प नहीं।",
-        "bn": "প্রতিষ্ঠিত আন্তর্জাতিক নির্দেশনা (FEMA / রেড ক্রস), আপনার পরিস্থিতি "
-              "ও ভাষায়। প্রশিক্ষিত উদ্ধারকারীদের বিকল্প নয়।",
-        "te": "అంతర్జాతీయ మార్గదర్శకాలు (FEMA / రెడ్ క్రాస్), మీ పరిస్థితికి, "
-              "భాషకు అనుగుణంగా. శిక్షణ పొందిన రక్షకులకు ప్రత్యామ్నాయం కాదు.",
-        "mr": "प्रस्थापित आंतरराष्ट्रीय मार्गदर्शन (FEMA / रेड क्रॉस), तुमच्या "
-              "परिस्थिती व भाषेसाठी. प्रशिक्षित बचावकर्त्यांचा पर्याय नाही.",
-        "ta": "நிறுவப்பட்ட சர்வதேச வழிகாட்டுதல் (FEMA / செஞ்சிலுவை), உங்கள் "
-              "சூழலுக்கும் மொழிக்கும் ஏற்ப. பயிற்சி பெற்ற மீட்பாளர்களுக்கு "
-              "மாற்று அல்ல.",
-    },
-    "situation": {"en": "Your situation", "my": "သင့်အခြေအနေ", "th": "สถานการณ์ของคุณ",
-                  "hi": "आपकी स्थिति", "bn": "আপনার পরিস্থিতি", "te": "మీ పరిస్థితి",
-                  "mr": "तुमची परिस्थिती", "ta": "உங்கள் சூழல்"},
-    "gen_guid": {"en": "Generate guidance", "my": "လမ်းညွှန်ထုတ်ရန်",
-                 "th": "สร้างคำแนะนำ", "hi": "मार्गदर्शन बनाएँ",
-                 "bn": "নির্দেশনা তৈরি করুন", "te": "మార్గదర్శకత్వం రూపొందించండి",
-                 "mr": "मार्गदर्शन तयार करा", "ta": "வழிகாட்டுதலை உருவாக்கவும்"},
-    "dl_guid": {"en": "Download guidance (.txt)", "my": "လမ်းညွှန်ဒေါင်းလုဒ် (.txt)",
-                "th": "ดาวน์โหลดคำแนะนำ (.txt)", "hi": "मार्गदर्शन डाउनलोड करें (.txt)",
-                "bn": "নির্দেশনা ডাউনলোড (.txt)", "te": "మార్గదర్శకత్వం డౌన్‌లోడ్ (.txt)",
-                "mr": "मार्गदर्शन डाउनलोड (.txt)", "ta": "வழிகாட்டுதல் பதிவிறக்கு (.txt)"},
-    "res_h": {"en": "Emergency resources in the affected area",
-              "my": "ထိခိုက်ဒေသရှိ အရေးပေါ်အရင်းအမြစ်များ",
-              "th": "ทรัพยากรฉุกเฉินในพื้นที่ประสบภัย",
-              "hi": "प्रभावित क्षेत्र में आपातकालीन संसाधन",
-              "bn": "ক্ষতিগ্রস্ত এলাকায় জরুরি সম্পদ",
-              "te": "ప్రభావిత ప్రాంతంలో అత్యవసర వనరులు",
-              "mr": "प्रभावित भागातील आपत्कालीन संसाधने",
-              "ta": "பாதிக்கப்பட்ட பகுதியில் அவசர வளங்கள்"},
-    "town_sel": {"en": "Affected-area town (nearest first)",
-                 "my": "ထိခိုက်ဒေသမြို့ (အနီးဆုံးအရင်)",
-                 "th": "เมืองในพื้นที่ประสบภัย (ใกล้สุดก่อน)",
-                 "hi": "प्रभावित क्षेत्र का शहर (निकटतम पहले)",
-                 "bn": "ক্ষতিগ্রস্ত এলাকার শহর (নিকটতম আগে)",
-                 "te": "ప్రభావిత ప్రాంత ఊరు (దగ్గరవి ముందు)",
-                 "mr": "प्रभावित भागातील गाव (जवळचे प्रथम)",
-                 "ta": "பாதிக்கப்பட்ட ஊர் (அருகிலுள்ளது முதலில்)"},
-    "hotlines": {"en": "Emergency hotlines", "my": "အရေးပေါ်ဖုန်းလိုင်းများ",
-                 "th": "สายด่วนฉุกเฉิน", "hi": "आपातकालीन हॉटलाइन",
-                 "bn": "জরুরি হটলাইন", "te": "అత్యవసర హాట్‌లైన్లు",
-                 "mr": "आपत्कालीन हॉटलाइन", "ta": "அவசர உதவி எண்கள்"},
-    "verify_cap": {
-        "en": "From public sources - verify locally. Numbers can differ by region.",
-        "my": "အများပြည်သူရင်းမြစ်များမှ — ဒေသတွင်းစစ်ဆေးပါ။ နံပါတ်များ "
-              "ဒေသအလိုက်ကွဲပြားနိုင်သည်။",
-        "th": "จากแหล่งข้อมูลสาธารณะ — ตรวจสอบในพื้นที่ หมายเลขอาจต่างกันตามภูมิภาค",
-        "hi": "सार्वजनिक स्रोतों से — स्थानीय रूप से सत्यापित करें। नंबर क्षेत्र "
-              "अनुसार भिन्न हो सकते हैं।",
-        "bn": "পাবলিক সূত্র থেকে — স্থানীয়ভাবে যাচাই করুন। নম্বর অঞ্চলভেদে ভিন্ন "
-              "হতে পারে।",
-        "te": "పబ్లిక్ మూలాల నుండి — స్థానికంగా ధృవీకరించండి. నంబర్లు ప్రాంతాన్ని "
-              "బట్టి మారవచ్చు.",
-        "mr": "सार्वजनिक स्रोतांमधून — स्थानिक पातळीवर पडताळा. क्रमांक प्रदेशानुसार "
-              "वेगळे असू शकतात.",
-        "ta": "பொது மூலங்களிலிருந்து — உள்ளூரில் சரிபார்க்கவும். எண்கள் பகுதி "
-              "வாரியாக மாறலாம்.",
-    },
-    "no_towns": {
-        "en": "No towns within 150 km of this epicenter - it is likely "
-              "offshore or in a remote area. Select a different event above.",
-        "my": "ဤဗဟိုချက်၏ ၁၅၀ ကီလိုမီတာအတွင်း မြို့မရှိပါ — ပင်လယ်ထဲ သို့မဟုတ် "
-              "ဝေးလံဒေသဖြစ်နိုင်သည်။ အခြားဖြစ်ရပ်ရွေးပါ။",
-        "th": "ไม่มีเมืองในรัศมี 150 กม. จากศูนย์กลาง — น่าจะอยู่นอกชายฝั่งหรือ"
-              "พื้นที่ห่างไกล เลือกเหตุการณ์อื่นด้านบน",
-        "hi": "इस केंद्र के 150 किमी के भीतर कोई शहर नहीं — संभवतः समुद्र में या "
-              "दूरस्थ क्षेत्र में है। ऊपर दूसरी घटना चुनें।",
-        "bn": "এই কেন্দ্রের ১৫০ কিমির মধ্যে কোনো শহর নেই — সম্ভবত সমুদ্রে বা "
-              "দুর্গম এলাকায়। উপরে অন্য ঘটনা বাছুন।",
-        "te": "ఈ కేంద్రానికి 150 కి.మీ లోపు ఊళ్లు లేవు — బహుశా సముద్రంలో లేదా "
-              "మారుమూల ప్రాంతంలో ఉంది. పైన వేరే సంఘటన ఎంచుకోండి.",
-        "mr": "या केंद्राच्या १५० किमीत गावे नाहीत — बहुधा समुद्रात किंवा दुर्गम "
-              "भागात. वर वेगळी घटना निवडा.",
-        "ta": "இந்த மையத்திலிருந்து 150 கி.மீ-க்குள் ஊர்கள் இல்லை — கடலில் அல்லது "
-              "தொலைதூரப் பகுதியாக இருக்கலாம். மேலே வேறு நிகழ்வைத் தேர்வு "
-              "செய்யவும்.",
-    },
-    "find_h": {"en": "⛑️ Find help", "my": "⛑️ အကူအညီရှာရန်", "th": "⛑️ หาความช่วยเหลือ",
-               "hi": "⛑️ मदद खोजें", "bn": "⛑️ সাহায্য খুঁজুন", "te": "⛑️ సహాయం వెతకండి",
-               "mr": "⛑️ मदत शोधा", "ta": "⛑️ உதவி தேடுங்கள்"},
-    "find_cap": {
-        "en": "Powered by Google Maps — starts from you, not the epicenter.",
-        "my": "Google Maps ဖြင့် — ဗဟိုချက်မဟုတ်ဘဲ သင့်တည်နေရာမှစတင်သည်။",
-        "th": "ขับเคลื่อนโดย Google Maps — เริ่มจากคุณ ไม่ใช่ศูนย์กลางแผ่นดินไหว",
-        "hi": "Google Maps द्वारा संचालित — आपसे शुरू होता है, केंद्र से नहीं।",
-        "bn": "Google Maps চালিত — আপনার থেকে শুরু, কেন্দ্র থেকে নয়।",
-        "te": "Google Maps ఆధారితం — కేంద్రం నుండి కాదు, మీ నుండి మొదలవుతుంది.",
-        "mr": "Google Maps द्वारे — केंद्रापासून नव्हे, तुमच्यापासून सुरू होते.",
-        "ta": "Google Maps மூலம் — மையத்திலிருந்து அல்ல, உங்களிடமிருந்து "
-              "தொடங்குகிறது.",
-    },
-    "your_loc": {"en": "Your location:", "my": "သင့်တည်နေရာ:", "th": "ตำแหน่งของคุณ:",
-                 "hi": "आपका स्थान:", "bn": "আপনার অবস্থান:", "te": "మీ స్థానం:",
-                 "mr": "तुमचे स्थान:", "ta": "உங்கள் இடம்:"},
-    "gps_dev": {"en": "🟢 device GPS", "my": "🟢 စက်၏ GPS", "th": "🟢 GPS ของอุปกรณ์",
-                "hi": "🟢 डिवाइस GPS", "bn": "🟢 ডিভাইস GPS", "te": "🟢 పరికర GPS",
-                "mr": "🟢 डिव्हाइस GPS", "ta": "🟢 சாதன GPS"},
-    "gps_hint": {"en": "Tap ◎ to use your device GPS instead.",
-                 "my": "စက်၏ GPS သုံးရန် ◎ ကိုနှိပ်ပါ။",
-                 "th": "แตะ ◎ เพื่อใช้ GPS ของอุปกรณ์แทน",
-                 "hi": "अपने डिवाइस का GPS उपयोग करने के लिए ◎ टैप करें।",
-                 "bn": "ডিভাইসের GPS ব্যবহার করতে ◎ ট্যাপ করুন।",
-                 "te": "పరికర GPS వాడటానికి ◎ నొక్కండి.",
-                 "mr": "डिव्हाइस GPS वापरण्यासाठी ◎ टॅप करा.",
-                 "ta": "சாதன GPS-ஐப் பயன்படுத்த ◎ தட்டவும்."},
-    "need_q": {"en": "What do you need?", "my": "ဘာလိုအပ်ပါသလဲ?", "th": "คุณต้องการอะไร?",
-               "hi": "आपको क्या चाहिए?", "bn": "আপনার কী দরকার?", "te": "మీకేం కావాలి?",
-               "mr": "तुम्हाला काय हवे?", "ta": "உங்களுக்கு என்ன வேண்டும்?"},
-    "cat_Hospitals": {"en": "Hospitals", "my": "ဆေးရုံများ", "th": "โรงพยาบาล",
-                      "hi": "अस्पताल", "bn": "হাসপাতাল", "te": "ఆసుపత్రులు",
-                      "mr": "रुग्णालये", "ta": "மருத்துவமனைகள்"},
-    "cat_Fire stations": {"en": "Fire stations", "my": "မီးသတ်စခန်းများ",
-                          "th": "สถานีดับเพลิง", "hi": "फ़ायर स्टेशन",
-                          "bn": "ফায়ার স্টেশন", "te": "ఫైర్ స్టేషన్లు",
-                          "mr": "अग्निशमन केंद्रे", "ta": "தீயணைப்பு நிலையங்கள்"},
-    "cat_Police": {"en": "Police", "my": "ရဲ", "th": "ตำรวจ", "hi": "पुलिस",
-                   "bn": "পুলিশ", "te": "పోలీస్", "mr": "पोलीस", "ta": "காவல்"},
-    "cat_Pharmacies": {"en": "Pharmacies", "my": "ဆေးဆိုင်များ", "th": "ร้านขายยา",
-                       "hi": "फ़ार्मेसी", "bn": "ফার্মেসি", "te": "ఫార్మసీలు",
-                       "mr": "औषध दुकाने", "ta": "மருந்தகங்கள்"},
-    "cat_Shelters": {"en": "Shelters", "my": "ခိုလှုံရာနေရာများ", "th": "ที่พักพิง",
-                     "hi": "आश्रय", "bn": "আশ্রয়কেন্দ্র", "te": "ఆశ్రయాలు",
-                     "mr": "निवारे", "ta": "தங்குமிடங்கள்"},
-    "cat_Custom search": {"en": "Custom search", "my": "စိတ်ကြိုက်ရှာဖွေမှု",
-                          "th": "ค้นหาเอง", "hi": "कस्टम खोज", "bn": "কাস্টম অনুসন্ধান",
-                          "te": "కస్టమ్ శోధన", "mr": "सानुकूल शोध", "ta": "தனிப்பயன் தேடல்"},
-    "custom_ph": {"en": "Search like on Google Maps", "my": "Google Maps တွင်ကဲ့သို့ရှာပါ",
-                  "th": "ค้นหาเหมือนใน Google Maps", "hi": "Google Maps की तरह खोजें",
-                  "bn": "Google Maps-এর মতো খুঁজুন", "te": "Google Maps లాగా వెతకండి",
-                  "mr": "Google Maps प्रमाणे शोधा", "ta": "Google Maps போலத் தேடுங்கள்"},
-    "ask_terra": {"en": "✦ Ask Terra: where should I go first?",
-                  "my": "✦ Terra ကိုမေးပါ — ဘယ်ကိုအရင်သွားသင့်သလဲ?",
-                  "th": "✦ ถาม Terra: ควรไปที่ไหนก่อน?",
-                  "hi": "✦ Terra से पूछें: पहले कहाँ जाऊँ?",
-                  "bn": "✦ Terra-কে জিজ্ঞাসা করুন: আগে কোথায় যাব?",
-                  "te": "✦ Terra ని అడగండి: ముందు ఎక్కడికి వెళ్లాలి?",
-                  "mr": "✦ Terra ला विचारा: आधी कुठे जाऊ?",
-                  "ta": "✦ Terra-விடம் கேளுங்கள்: முதலில் எங்கு செல்ல வேண்டும்?"},
-    "dest": {"en": "Destination", "my": "သွားမည့်နေရာ", "th": "จุดหมาย", "hi": "गंतव्य",
-             "bn": "গন্তব্য", "te": "గమ్యం", "mr": "गंतव्य", "ta": "சேருமிடம்"},
-    "mode_q": {"en": "Travel mode", "my": "သွားလာမှုပုံစံ", "th": "วิธีเดินทาง",
-               "hi": "यात्रा माध्यम", "bn": "যাতায়াতের ধরন", "te": "ప్రయాణ విధానం",
-               "mr": "प्रवास पद्धत", "ta": "பயண முறை"},
-    "mode_drive": {"en": "🚗 Drive", "my": "🚗 ကားမောင်း", "th": "🚗 ขับรถ",
-                   "hi": "🚗 ड्राइव", "bn": "🚗 গাড়ি", "te": "🚗 డ్రైవ్",
-                   "mr": "🚗 ड्राइव्ह", "ta": "🚗 வண்டி"},
-    "mode_walk": {"en": "🚶 Walk", "my": "🚶 လမ်းလျှောက်", "th": "🚶 เดิน",
-                  "hi": "🚶 पैदल", "bn": "🚶 হাঁটা", "te": "🚶 నడక",
-                  "mr": "🚶 चालणे", "ta": "🚶 நடை"},
-    "mode_bike": {"en": "🚴 Bike", "my": "🚴 စက်ဘီး", "th": "🚴 จักรยาน",
-                  "hi": "🚴 साइकिल", "bn": "🚴 সাইকেল", "te": "🚴 సైకిల్",
-                  "mr": "🚴 सायकल", "ta": "🚴 மிதிவண்டி"},
-    "route_cap": {
-        "en": "The map shows the route and estimated arrival time — tap 🧭 "
-              "Navigate on any card for live turn-by-turn.",
-        "my": "မြေပုံတွင် လမ်းကြောင်းနှင့် ခန့်မှန်းရောက်ရှိချိန်ပြသည် — "
-              "တိုက်ရိုက်လမ်းညွှန်ရန် ကတ်ပေါ်ရှိ 🧭 ကိုနှိပ်ပါ။",
-        "th": "แผนที่แสดงเส้นทางและเวลาถึงโดยประมาณ — แตะ 🧭 นำทาง บนการ์ดใดก็ได้",
-        "hi": "मानचित्र मार्ग और अनुमानित पहुँच समय दिखाता है — लाइव नेविगेशन के "
-              "लिए किसी कार्ड पर 🧭 टैप करें।",
-        "bn": "মানচিত্রে রুট ও আনুমানিক পৌঁছানোর সময় — লাইভ নেভিগেশনে যেকোনো "
-              "কার্ডে 🧭 ট্যাপ করুন।",
-        "te": "పటం మార్గం, చేరే సమయం చూపుతుంది — లైవ్ నావిగేషన్ కోసం కార్డుపై "
-              "🧭 నొక్కండి.",
-        "mr": "नकाशा मार्ग व अंदाजे वेळ दाखवतो — लाइव्ह नेव्हिगेशनसाठी कार्डवर "
-              "🧭 टॅप करा.",
-        "ta": "வரைபடம் வழியையும் சேரும் நேரத்தையும் காட்டும் — நேரடி வழிகாட்டலுக்கு "
-              "அட்டையில் 🧭 தட்டவும்.",
-    },
-    "offline_h": {"en": "📥 Offline library — download before you need it",
-                  "my": "📥 အော့ဖ်လိုင်းစာကြည့်တိုက် — မလိုအပ်မီကြိုဒေါင်းလုဒ်လုပ်ပါ",
-                  "th": "📥 คลังออฟไลน์ — ดาวน์โหลดก่อนจำเป็น",
-                  "hi": "📥 ऑफ़लाइन लाइब्रेरी — ज़रूरत से पहले डाउनलोड करें",
-                  "bn": "📥 অফলাইন লাইব্রেরি — প্রয়োজনের আগে ডাউনলোড করুন",
-                  "te": "📥 ఆఫ్‌లైన్ లైబ్రరీ — అవసరానికి ముందే డౌన్‌లోడ్ చేయండి",
-                  "mr": "📥 ऑफलाइन लायब्ररी — गरजेआधी डाउनलोड करा",
-                  "ta": "📥 ஆஃப்லைன் நூலகம் — தேவைக்கு முன்பே பதிவிறக்குங்கள்"},
-    "offline_cap": {
-        "en": "Official illustrated publications from the American Red Cross, "
-              "FEMA, USGS, Ready.gov and the Earthquake Country Alliance. Save "
-              "them to your phone now — they open without internet when "
-              "networks go down.",
-        "my": "American Red Cross၊ FEMA၊ USGS၊ Ready.gov တို့မှ တရားဝင်ပုံပြ "
-              "စာစောင်များ။ ယခုဖုန်းထဲသိမ်းပါ — ကွန်ရက်ပြတ်တောက်ချိန်တွင် "
-              "အင်တာနက်မလိုဘဲဖွင့်နိုင်သည်။",
-        "th": "เอกสารภาพประกอบทางการจาก American Red Cross, FEMA, USGS, "
-              "Ready.gov บันทึกลงโทรศัพท์ตอนนี้ — เปิดได้โดยไม่ต้องใช้อินเทอร์เน็ต"
-              "เมื่อเครือข่ายล่ม",
-        "hi": "American Red Cross, FEMA, USGS, Ready.gov की आधिकारिक सचित्र "
-              "प्रकाशन। अभी फ़ोन में सहेजें — नेटवर्क बंद होने पर बिना इंटरनेट "
-              "खुलती हैं।",
-        "bn": "American Red Cross, FEMA, USGS, Ready.gov-এর সরকারি সচিত্র "
-              "প্রকাশনা। এখনই ফোনে সংরক্ষণ করুন — নেটওয়ার্ক বন্ধ হলে ইন্টারনেট "
-              "ছাড়াই খোলে।",
-        "te": "American Red Cross, FEMA, USGS, Ready.gov అధికారిక సచిత్ర "
-              "ప్రచురణలు. ఇప్పుడే ఫోన్‌లో సేవ్ చేయండి — నెట్‌వర్క్ పోయినప్పుడు "
-              "ఇంటర్నెట్ లేకుండా తెరుచుకుంటాయి.",
-        "mr": "American Red Cross, FEMA, USGS, Ready.gov ची अधिकृत सचित्र "
-              "प्रकाशने. आताच फोनवर जतन करा — नेटवर्क बंद असताना इंटरनेटशिवाय "
-              "उघडतात.",
-        "ta": "American Red Cross, FEMA, USGS, Ready.gov அதிகாரப்பூர்வ பட "
-              "வெளியீடுகள். இப்போதே சேமியுங்கள் — வலையமைப்பு இல்லாதபோதும் "
-              "திறக்கும்.",
-    },
-
-    # ----------------------------------------------------------- quick ask --
-    "qa_btn": {"en": "💬 Ask QuakeSense", "my": "💬 QuakeSense ကိုမေးရန်",
-               "th": "💬 ถาม QuakeSense", "hi": "💬 QuakeSense से पूछें",
-               "bn": "💬 QuakeSense-কে জিজ্ঞাসা করুন", "te": "💬 QuakeSense ని అడగండి",
-               "mr": "💬 QuakeSense ला विचारा", "ta": "💬 QuakeSense-இடம் கேளுங்கள்"},
-    "qa_about": {"en": "📍 Talking about:", "my": "📍 ပြောနေသည့်အကြောင်း:",
-                 "th": "📍 กำลังพูดถึง:", "hi": "📍 विषय:", "bn": "📍 আলোচ্য বিষয়:",
-                 "te": "📍 మాట్లాడుతున్నది:", "mr": "📍 विषय:", "ta": "📍 பேசுவது:"},
-    "qa_ph": {"en": "Type a message...", "my": "စာရိုက်ပါ...", "th": "พิมพ์ข้อความ...",
-              "hi": "संदेश लिखें...", "bn": "বার্তা লিখুন...", "te": "సందేశం టైప్ చేయండి...",
-              "mr": "संदेश टाइप करा...", "ta": "செய்தியை உள்ளிடவும்..."},
-
-    # ---------------------------------------------------------------- guide --
-    "guide_h": {"en": "How to use QuakeSense", "my": "QuakeSense အသုံးပြုနည်း",
-                "th": "วิธีใช้ QuakeSense", "hi": "QuakeSense का उपयोग कैसे करें",
-                "bn": "QuakeSense কীভাবে ব্যবহার করবেন", "te": "QuakeSense ఎలా వాడాలి",
-                "mr": "QuakeSense कसे वापरावे", "ta": "QuakeSense-ஐ எப்படிப் "
-                "பயன்படுத்துவது"},
-    "guide_md": {
-        "en": """
-QuakeSense answers three questions after an earthquake: **what just happened,
-what does it mean for my community, and is this pattern normal?** The menu is
-organized around those moments:
-
-| Section | Purpose | Data behind it |
-|---|---|---|
-| **Live Now** | What's happening right now, worldwide | USGS live feed (7 days, M2.5+), every 5 min |
-| **Anomaly Watch** | Is this week normal for each region? | Live feed vs 50-year baseline |
-| **My Area** | What's the risk where *I* live? | 50-year USGS catalog (BigQuery) |
-| **Ask AI** | Any earthquake question, any language | Catalog + live feed + web search |
-| **Response Toolkit** | The hours after a quake | All of the above + OpenStreetMap |
-
-The scrolling strip under the header shows this week's M5+ events everywhere in
-the app — orange for M6+, **red for M6.5+ alerts**, blue for tsunami-flagged.
-On most pages a **💬 Ask QuakeSense** chat bubble floats bottom-right: quick
-questions about what's on screen, answered with the exact event/location named.
-
-#### Live Now
-The world map of every earthquake in the last 7 days: magnitude presets and
-slider, location filter, tectonic plate boundaries (red lines — that's where
-quakes happen), tsunami auto-flagging, CSV export. Below the map: **AI Situation
-Briefings** for any significant event, and **global media coverage** — top
-earthquake headlines from world media.
-
-#### Anomaly Watch
-Compares this week's activity in every region against its 50-year average and
-flags what's unusual — swarms, aftershock sequences — with calm AI explanations.
-
-#### My Area
-Pick your country and town from verified dropdowns, choose from 8 languages
-(English, Burmese, Thai, Hindi, Bengali, Telugu, Marathi, Tamil), and get a
-community risk profile grounded in your area's real 50-year record — with
-charts and a map of every M5+ epicenter near you.
-
-#### Ask AI
-Ask anything about earthquakes, in any language — it answers in yours.
-Historical questions are answered from 50 years of USGS records with the SQL
-shown; this-week questions from the live feed; current events with live web
-search, **sources cited**. Every answer takes a 👍/👎 so we keep improving.
-It remembers follow-ups (*"and for Japan?"*) and can discuss your My Area profile.
-
-#### Response Toolkit
-For the hours after a quake: a formal **situation report (SITREP)** with
-web-verified external reports, **do's and don'ts** for people waiting for
-rescue (8 languages, FEMA/Red Cross guidance), and **hospitals, fire and
-police stations** near any affected town, with national emergency hotlines.
-The event you picked on Live Now carries over automatically.
-
----
-*Earthquakes cannot be predicted. QuakeSense supports awareness, communication,
-and preparedness decisions — never prediction.*
-""",
-        "my": """
-ငလျင်လှုပ်ပြီးနောက် QuakeSense သည် မေးခွန်းသုံးခုကိုဖြေပါသည် — **ဘာဖြစ်ခဲ့သလဲ၊
-ကျွန်ုပ်၏ရပ်ရွာအတွက် ဘာအဓိပ္ပာယ်ရှိသလဲ၊ ဤပုံစံသည် ပုံမှန်လား?**
-
-- **ယခုတိုက်ရိုက်** — ကမ္ဘာတစ်ဝန်း ယခုဖြစ်နေသည့်အရာ (USGS တိုက်ရိုက်ဖီးဒ်၊ ၇ ရက်)။
-  မြေပုံ၊ စစ်ထုတ်မှုများ၊ AI အကျဉ်းချုပ်များနှင့် ကမ္ဘာ့မီဒီယာသတင်းများ။
-- **ထူးခြားမှုစောင့်ကြည့်** — ဒေသတိုင်း၏ ဒီအပတ်လှုပ်ရှားမှုကို နှစ် ၅၀ ပျမ်းမျှနှင့်
-  နှိုင်းယှဉ်ပြီး ထူးခြားမှုများကို AI ရှင်းလင်းချက်ဖြင့်ပြသည်။
-- **ကျွန်ုပ်၏ဒေသ** — သင့်မြို့ရွေး၍ ဘာသာစကား ၈ မျိုးဖြင့် နှစ် ၅၀ မှတ်တမ်းအပေါ်
-  အခြေခံသော အန္တရာယ်အခြေအနေရယူပါ။
-- **AI ကိုမေးရန်** — မည်သည့်ဘာသာစကားဖြင့်မဆို မေးနိုင်သည်။ သမိုင်းမေးခွန်းများကို
-  USGS မှတ်တမ်းမှ (SQL ပြသည်)၊ သတင်းများကို ရင်းမြစ်ကိုးကားဖြင့်ဖြေသည်။
-- **တုံ့ပြန်ရေးကိရိယာစုံ** — SITREP၊ လုပ်သင့်/မလုပ်သင့်များ (ဘာသာစကား ၈ မျိုး)၊
-  ဆေးရုံ/မီးသတ်/ရဲစခန်းရှာဖွေမှုနှင့် အရေးပေါ်ဖုန်းနံပါတ်များ။
-
-ခေါင်းစီးအောက်ရှိ လှိမ့်နေသောစာတန်းသည် ဒီအပတ် M5+ ဖြစ်ရပ်များပြသည်။
-စာမျက်နှာအများစုတွင် **💬 Ask QuakeSense** ချတ်ခလုတ် ညာဘက်အောက်တွင်ရှိသည်။
-
----
-*ငလျင်များကို ကြိုတင်ဟောကိန်းထုတ်၍မရပါ။ QuakeSense သည် သတိပြုမှုကိုသာ
-ကူညီပေးပါသည်။*
-""",
-        "th": """
-QuakeSense ตอบคำถามสามข้อหลังแผ่นดินไหว: **เกิดอะไรขึ้น
-มีความหมายอย่างไรต่อชุมชนของฉัน และรูปแบบนี้ปกติหรือไม่?**
-
-- **สดตอนนี้** — สิ่งที่เกิดขึ้นทั่วโลกขณะนี้ (ฟีดสด USGS, 7 วัน) แผนที่
-  ตัวกรอง สรุปสถานการณ์ AI และข่าวจากสื่อทั่วโลก
-- **เฝ้าระวังความผิดปกติ** — เปรียบเทียบกิจกรรมสัปดาห์นี้ของแต่ละภูมิภาค
-  กับค่าเฉลี่ย 50 ปี พร้อมคำอธิบายจาก AI
-- **พื้นที่ของฉัน** — เลือกเมืองของคุณ รับโปรไฟล์ความเสี่ยงจากบันทึกจริง
-  50 ปี ใน 8 ภาษา พร้อมกราฟและแผนที่
-- **ถาม AI** — ถามอะไรก็ได้ทุกภาษา คำถามในอดีตตอบจากบันทึก USGS (แสดง SQL)
-  ข่าวปัจจุบันพร้อมอ้างอิงแหล่งที่มา จำคำถามต่อเนื่องได้
-- **ชุดเครื่องมือรับมือ** — SITREP, ควรทำ/ไม่ควรทำ (8 ภาษา), ค้นหาโรงพยาบาล
-  สถานีดับเพลิงและตำรวจ พร้อมสายด่วนฉุกเฉิน
-
-แถบเลื่อนใต้ส่วนหัวแสดงเหตุการณ์ M5+ สัปดาห์นี้ และปุ่มแชท **💬 Ask
-QuakeSense** ลอยมุมขวาล่างเกือบทุกหน้า
-
----
-*แผ่นดินไหวไม่สามารถพยากรณ์ได้ QuakeSense สนับสนุนการตระหนักรู้เท่านั้น*
-""",
-        "hi": """
-भूकंप के बाद QuakeSense तीन सवालों के जवाब देता है: **अभी क्या हुआ, मेरे
-समुदाय के लिए इसका क्या मतलब है, और क्या यह पैटर्न सामान्य है?**
-
-- **लाइव अभी** — दुनिया भर में अभी क्या हो रहा है (USGS लाइव फ़ीड, 7 दिन)।
-  मानचित्र, फ़िल्टर, AI ब्रीफिंग और वैश्विक मीडिया कवरेज।
-- **असामान्यता निगरानी** — हर क्षेत्र की इस सप्ताह की गतिविधि की तुलना 50-वर्षीय
-  औसत से, AI व्याख्या के साथ।
-- **मेरा क्षेत्र** — अपना शहर चुनें और 8 भाषाओं में असली 50-वर्षीय रिकॉर्ड पर
-  आधारित जोखिम प्रोफ़ाइल पाएँ — चार्ट और मानचित्र के साथ।
-- **AI से पूछें** — किसी भी भाषा में कुछ भी पूछें। ऐतिहासिक सवाल USGS रिकॉर्ड
-  से (SQL दिखाया जाता है), ताज़ा ख़बरें स्रोतों के साथ। फ़ॉलो-अप याद रहते हैं।
-- **प्रतिक्रिया टूलकिट** — SITREP, क्या करें/क्या न करें (8 भाषाएँ), अस्पताल,
-  फ़ायर व पुलिस स्टेशन खोज और आपातकालीन हॉटलाइन।
-
-हेडर के नीचे की पट्टी इस सप्ताह की M5+ घटनाएँ दिखाती है, और अधिकांश पेजों पर
-**💬 Ask QuakeSense** चैट बटन नीचे-दाएँ रहता है।
-
----
-*भूकंप की भविष्यवाणी नहीं की जा सकती। QuakeSense केवल जागरूकता में मदद करता है।*
-""",
-        "bn": """
-ভূমিকম্পের পরে QuakeSense তিনটি প্রশ্নের উত্তর দেয়: **কী ঘটল, আমার
-কমিউনিটির জন্য এর অর্থ কী, এবং এই প্যাটার্ন কি স্বাভাবিক?**
-
-- **এখন লাইভ** — বিশ্বজুড়ে এখন কী ঘটছে (USGS লাইভ ফিড, ৭ দিন)। মানচিত্র,
-  ফিল্টার, AI ব্রিফিং ও বিশ্ব মিডিয়া কভারেজ।
-- **অস্বাভাবিকতা নজরদারি** — প্রতিটি অঞ্চলের এই সপ্তাহের কার্যকলাপকে ৫০ বছরের
-  গড়ের সাথে তুলনা, AI ব্যাখ্যাসহ।
-- **আমার এলাকা** — আপনার শহর বেছে নিন এবং ৮টি ভাষায় ৫০ বছরের প্রকৃত রেকর্ডের
-  ভিত্তিতে ঝুঁকি প্রোফাইল পান — চার্ট ও মানচিত্রসহ।
-- **AI-কে জিজ্ঞাসা** — যেকোনো ভাষায় যা খুশি। ঐতিহাসিক প্রশ্ন USGS রেকর্ড থেকে
-  (SQL দেখানো হয়), খবর সূত্রসহ। ফলো-আপ মনে রাখে।
-- **প্রতিক্রিয়া টুলকিট** — SITREP, করণীয়/বর্জনীয় (৮ ভাষা), হাসপাতাল, ফায়ার ও
-  পুলিশ স্টেশন খোঁজা এবং জরুরি হটলাইন।
-
-হেডারের নিচের স্ট্রিপ এই সপ্তাহের M5+ ঘটনা দেখায়, এবং বেশিরভাগ পাতায়
-**💬 Ask QuakeSense** চ্যাট বোতাম নিচে-ডানে থাকে।
-
----
-*ভূমিকম্পের পূর্বাভাস সম্ভব নয়। QuakeSense শুধু সচেতনতায় সহায়তা করে।*
-""",
-        "te": """
-భూకంపం తర్వాత QuakeSense మూడు ప్రశ్నలకు జవాబిస్తుంది: **ఏం జరిగింది, నా
-కమ్యూనిటీకి దాని అర్థం ఏమిటి, ఈ నమూనా సాధారణమేనా?**
-
-- **ప్రత్యక్షం** — ప్రపంచవ్యాప్తంగా ఇప్పుడు జరుగుతున్నది (USGS లైవ్ ఫీడ్, 7
-  రోజులు). పటం, ఫిల్టర్లు, AI బ్రీఫింగ్‌లు, ప్రపంచ మీడియా కవరేజ్.
-- **అసాధారణతల పరిశీలన** — ప్రతి ప్రాంతపు ఈ వారపు కార్యకలాపాన్ని 50 ఏళ్ల
-  సగటుతో పోల్చి, AI వివరణతో చూపుతుంది.
-- **నా ప్రాంతం** — మీ ఊరు ఎంచుకుని, 8 భాషల్లో 50 ఏళ్ల నిజమైన రికార్డు ఆధారంగా
-  ప్రమాద వివరాలు పొందండి — చార్టులు, పటంతో.
-- **AI ని అడగండి** — ఏ భాషలోనైనా ఏదైనా. చారిత్రక ప్రశ్నలు USGS రికార్డు నుండి
-  (SQL చూపబడుతుంది), వార్తలు మూలాలతో. ఫాలో-అప్‌లు గుర్తుంటాయి.
-- **స్పందన సాధనాలు** — SITREP, చేయవలసినవి/చేయకూడనివి (8 భాషలు), ఆసుపత్రులు,
-  ఫైర్ & పోలీస్ స్టేషన్ల శోధన, అత్యవసర హాట్‌లైన్లు.
-
-హెడర్ కింది స్ట్రిప్ ఈ వారపు M5+ సంఘటనలు చూపుతుంది; చాలా పేజీల్లో **💬 Ask
-QuakeSense** చాట్ బటన్ కుడి-కింద ఉంటుంది.
-
----
-*భూకంపాలను అంచనా వేయలేము. QuakeSense అవగాహనకు మాత్రమే తోడ్పడుతుంది.*
-""",
-        "mr": """
-भूकंपानंतर QuakeSense तीन प्रश्नांची उत्तरे देते: **काय घडले, माझ्या
-समुदायासाठी त्याचा अर्थ काय, आणि हा पॅटर्न सामान्य आहे का?**
-
-- **थेट आता** — जगभरात आत्ता काय घडत आहे (USGS लाइव्ह फीड, ७ दिवस). नकाशा,
-  फिल्टर, AI ब्रीफिंग आणि जागतिक माध्यम कव्हरेज.
-- **विसंगती निरीक्षण** — प्रत्येक प्रदेशाची या आठवड्याची हालचाल ५० वर्षांच्या
-  सरासरीशी तुलना, AI स्पष्टीकरणासह.
-- **माझा परिसर** — तुमचे गाव निवडा आणि ८ भाषांमध्ये ५० वर्षांच्या खऱ्या नोंदीवर
-  आधारित जोखीम प्रोफाइल मिळवा — चार्ट व नकाशासह.
-- **AI ला विचारा** — कोणत्याही भाषेत काहीही. ऐतिहासिक प्रश्न USGS नोंदीतून
-  (SQL दाखवले जाते), बातम्या स्रोतांसह. फॉलो-अप लक्षात राहतात.
-- **प्रतिसाद साधने** — SITREP, काय करावे/करू नये (८ भाषा), रुग्णालये, अग्निशमन
-  व पोलीस स्टेशन शोध आणि आपत्कालीन हॉटलाइन.
-
-हेडरखालील पट्टी या आठवड्यातील M5+ घटना दाखवते; बहुतेक पानांवर **💬 Ask
-QuakeSense** चॅट बटण उजवीकडे-खाली असते.
-
----
-*भूकंपाचा अंदाज वर्तवता येत नाही. QuakeSense फक्त जागरूकतेसाठी मदत करते.*
-""",
-        "ta": """
-நிலநடுக்கத்திற்குப் பிறகு QuakeSense மூன்று கேள்விகளுக்குப் பதிலளிக்கிறது:
-**என்ன நடந்தது, என் சமூகத்திற்கு அதன் பொருள் என்ன, இந்த முறை இயல்பானதா?**
-
-- **நேரலை** — உலகம் முழுவதும் இப்போது நடப்பது (USGS நேரலை ஊட்டம், 7 நாட்கள்).
-  வரைபடம், வடிப்பான்கள், AI சுருக்கங்கள், உலக ஊடகச் செய்திகள்.
-- **அசாதாரணக் கண்காணிப்பு** — ஒவ்வொரு பகுதியின் இவ்வார செயல்பாட்டை 50 ஆண்டு
-  சராசரியுடன் ஒப்பிட்டு, AI விளக்கத்துடன் காட்டுகிறது.
-- **என் பகுதி** — உங்கள் ஊரைத் தேர்ந்தெடுத்து, 8 மொழிகளில் 50 ஆண்டு உண்மைப்
-  பதிவின் அடிப்படையில் அபாய விவரம் பெறுங்கள் — விளக்கப்படங்களுடன்.
-- **AI-யிடம் கேளுங்கள்** — எந்த மொழியிலும் எதையும். வரலாற்றுக் கேள்விகள் USGS
-  பதிவிலிருந்து (SQL காட்டப்படும்), செய்திகள் மூலங்களுடன். தொடர் கேள்விகள்
-  நினைவிலிருக்கும்.
-- **மீட்புக் கருவிகள்** — SITREP, செய்யவேண்டியவை/கூடாதவை (8 மொழிகள்),
-  மருத்துவமனைகள், தீயணைப்பு & காவல் நிலைய தேடல், அவசர எண்கள்.
-
-தலைப்புக்குக் கீழுள்ள நகரும் பட்டை இவ்வார M5+ நிகழ்வுகளைக் காட்டும்; பெரும்பாலான
-பக்கங்களில் **💬 Ask QuakeSense** அரட்டை பொத்தான் வலது-கீழே இருக்கும்.
-
----
-*நிலநடுக்கங்களை முன்கணிக்க முடியாது. QuakeSense விழிப்புணர்வுக்கு மட்டுமே
-உதவுகிறது.*
-""",
-    },
-
-    "feed_unavail": {"en": "Live feed unavailable.", "my": "တိုက်ရိုက်ဖီးဒ် မရနိုင်ပါ။",
-                     "th": "ไม่สามารถใช้งานฟีดสดได้", "hi": "लाइव फ़ीड उपलब्ध नहीं है।",
-                     "bn": "লাইভ ফিড উপলব্ধ নেই।", "te": "లైవ్ ఫీడ్ అందుబాటులో లేదు.",
-                     "mr": "लाइव्ह फीड उपलब्ध नाही.", "ta": "நேரடி ஊட்டம் கிடைக்கவில்லை."},
-    "no_live_data": {"en": "No live data available right now.",
-                     "my": "လောလောဆယ် တိုက်ရိုက်ဒေတာ မရှိသေးပါ။",
-                     "th": "ขณะนี้ยังไม่มีข้อมูลสด", "hi": "अभी कोई लाइव डेटा उपलब्ध नहीं है।",
-                     "bn": "এই মুহূর্তে কোনো লাইভ ডেটা উপলব্ধ নেই।",
-                     "te": "ప్రస్తుతం లైవ్ డేటా అందుబాటులో లేదు.",
-                     "mr": "सध्या कोणताही लाइव्ह डेटा उपलब्ध नाही.",
-                     "ta": "தற்போது நேரடித் தரவு இல்லை."},
-    "tsunami_warn": {"en": "⚠️ Tsunami flag active this week:",
-                     "my": "⚠️ ဤအပတ်တွင် ဆူနာမီအချက်ပြမှု ဖြစ်ပေါ်နေသည်−",
-                     "th": "⚠️ มีการแจ้งเตือนสึนามิในสัปดาห์นี้:",
-                     "hi": "⚠️ इस सप्ताह सुनामी अलर्ट सक्रिय है:",
-                     "bn": "⚠️ এই সপ্তাহে সুনামি সতর্কতা সক্রিয়:",
-                     "te": "⚠️ ఈ వారం సునామీ హెచ్చరిక యాక్టివ్‌గా ఉంది:",
-                     "mr": "⚠️ या आठवड्यात त्सुनामी इशारा सक्रिय आहे:",
-                     "ta": "⚠️ இந்த வாரம் சுனாமி எச்சரிக்கை செயலில் உள்ளது:"},
-    "tsunami_warn_suffix": {
-        "en": "Coastal communities should follow official tsunami advisories.",
-        "my": "ကမ်းရိုးတန်း ပြည်သူများသည် တရားဝင် ဆူနာမီ အကြံပြုချက်များကို "
-              "လိုက်နာသင့်သည်။",
-        "th": "ชุมชนชายฝั่งควรปฏิบัติตามคำแนะนำสึนามิอย่างเป็นทางการ",
-        "hi": "तटीय समुदायों को आधिकारिक सुनामी सलाह का पालन करना चाहिए।",
-        "bn": "উপকূলীয় জনগোষ্ঠীর সরকারি সুনামি পরামর্শ মেনে চলা উচিত।",
-        "te": "తీర ప్రాంత సమాజాలు అధికారిక సునామీ సూచనలను పాటించాలి.",
-        "mr": "किनारपट्टीवरील समुदायांनी अधिकृत त्सुनामी सूचनांचे पालन करावे.",
-        "ta": "கடலோர சமூகங்கள் அதிகாரப்பூர்வ சுனாமி ஆலோசனைகளைப் "
-              "பின்பற்ற வேண்டும்.",
-    },
-    "places_unavail": {"en": "Google Places unavailable", "my": "Google Places မရနိုင်ပါ",
-                       "th": "Google Places ใช้งานไม่ได้", "hi": "Google Places उपलब्ध नहीं है",
-                       "bn": "Google Places উপলব্ধ নেই", "te": "Google Places అందుబాటులో లేదు",
-                       "mr": "Google Places उपलब्ध नाही", "ta": "Google Places கிடைக்கவில்லை"},
-    "hist_layer_unavail": {"en": "Historical layer unavailable:",
-                           "my": "သမိုင်းဆိုင်ရာ အလွှာ မရနိုင်ပါ−",
-                           "th": "ไม่สามารถใช้งานชั้นข้อมูลย้อนหลังได้:",
-                           "hi": "ऐतिहासिक लेयर उपलब्ध नहीं है:",
-                           "bn": "ঐতিহাসিক স্তর উপলব্ধ নেই:",
-                           "te": "చారిత్రక లేయర్ అందుబాటులో లేదు:",
-                           "mr": "ऐतिहासिक स्तर उपलब्ध नाही:",
-                           "ta": "வரலாற்று அடுக்கு கிடைக்கவில்லை:"},
-    "osm_no_facilities": {
-        "en": "OpenStreetMap has no tagged facilities within 20 km of this "
-              "point. Local knowledge may know more.",
-        "my": "ဤနေရာမှ ၂၀ ကီလိုမီတာအတွင်း OpenStreetMap တွင် အမှတ်အသားပြုထားသော "
-              "အဆောက်အအုံများ မရှိပါ။ ဒေသခံများက ပိုသိနိုင်ပါသည်။",
-        "th": "OpenStreetMap ไม่มีสถานที่ที่ติดแท็กไว้ภายในรัศมี 20 กม. จากจุดนี้ "
-              "ผู้รู้ในพื้นที่อาจทราบข้อมูลเพิ่มเติม",
-        "hi": "इस स्थान से 20 किमी के भीतर OpenStreetMap पर कोई टैग की गई सुविधा "
-              "नहीं है। स्थानीय जानकारी अधिक सटीक हो सकती है।",
-        "bn": "এই স্থান থেকে ২০ কিমি-র মধ্যে OpenStreetMap-এ কোনো ট্যাগ করা "
-              "সুবিধা নেই। স্থানীয় জ্ঞান আরও বেশি জানতে পারে।",
-        "te": "ఈ ప్రదేశం నుండి 20 కి.మీ లోపల OpenStreetMap‌లో ట్యాగ్ చేసిన "
-              "సౌకర్యాలు లేవు. స్థానికులకు మరింత తెలిసి ఉండవచ్చు.",
-        "mr": "या ठिकाणापासून २० किमी परिसरात OpenStreetMap वर कोणतीही टॅग "
-              "केलेली सुविधा नाही. स्थानिक माहिती अधिक असू शकते.",
-        "ta": "இந்த இடத்திலிருந்து 20 கி.மீ. சுற்றளவில் OpenStreetMap-இல் "
-              "குறியிடப்பட்ட வசதிகள் இல்லை. உள்ளூர் தகவல் மேலும் தெரிந்திருக்கலாம்.",
-    },
-    "facility_search_unavail": {
-        "en": "Facility search unavailable right now",
-        "my": "လက်ရှိတွင် အဆောက်အအုံရှာဖွေမှု မရနိုင်ပါ",
-        "th": "ขณะนี้ไม่สามารถค้นหาสถานที่ได้",
-        "hi": "अभी सुविधा खोज उपलब्ध नहीं है",
-        "bn": "এই মুহূর্তে সুবিধা অনুসন্ধান উপলব্ধ নেই",
-        "te": "ప్రస్తుతం సౌకర్య శోధన అందుబాటులో లేదు",
-        "mr": "सध्या सुविधा शोध उपलब्ध नाही",
-        "ta": "தற்போது வசதி தேடல் கிடைக்கவில்லை",
-    },
-    "usgs_unreachable": {"en": "USGS live feed unreachable:",
-                         "my": "USGS တိုက်ရိုက်ဖီးဒ်ကို ဆက်သွယ်၍မရပါ−",
-                         "th": "ไม่สามารถเชื่อมต่อฟีดสดของ USGS ได้:",
-                         "hi": "USGS लाइव फ़ीड तक नहीं पहुंचा जा सका:",
-                         "bn": "USGS লাইভ ফিডে পৌঁছানো যায়নি:",
-                         "te": "USGS లైవ్ ఫీడ్‌ను చేరుకోలేకపోయాము:",
-                         "mr": "USGS लाइव्ह फीडपर्यंत पोहोचता आले नाही:",
-                         "ta": "USGS நேரடி ஊட்டத்தை அணுக முடியவில்லை:"},
-    "try_again_min": {"en": "Try again in a minute.",
-                      "my": "မိနစ်အနည်းငယ်ကြာပြီးမှ ထပ်ကြိုးစားပါ။",
-                      "th": "ลองใหม่อีกครั้งในอีกสักครู่", "hi": "एक मिनट में फिर से प्रयास करें।",
-                      "bn": "এক মিনিটের মধ্যে আবার চেষ্টা করুন।",
-                      "te": "ఒక నిమిషంలో మళ్లీ ప్రయత్నించండి.",
-                      "mr": "एका मिनिटात पुन्हा प्रयत्न करा.",
-                      "ta": "ஒரு நிமிடத்தில் மீண்டும் முயற்சிக்கவும்."},
-    "find_facilities_btn": {
-        "en": "Find hospitals, fire & police stations within 20 km",
-        "my": "၂၀ ကီလိုမီတာအတွင်း ဆေးရုံများ၊ မီးသတ်နှင့် ရဲစခန်းများ ရှာပါ",
-        "th": "ค้นหาโรงพยาบาล สถานีดับเพลิงและตำรวจภายใน 20 กม.",
-        "hi": "20 किमी के भीतर अस्पताल, फायर व पुलिस स्टेशन खोजें",
-        "bn": "২০ কিমি-র মধ্যে হাসপাতাল, দমকল ও পুলিশ স্টেশন খুঁজুন",
-        "te": "20 కి.మీ లోపల ఆసుపత్రులు, అగ్నిమాపక & పోలీస్ స్టేషన్లను కనుగొనండి",
-        "mr": "२० किमी परिसरात रुग्णालये, अग्निशमन व पोलीस स्टेशन शोधा",
-        "ta": "20 கி.மீ. சுற்றளவில் மருத்துவமனைகள், தீயணைப்பு & காவல் "
-              "நிலையங்களைக் கண்டறியவும்",
-    },
+    "subline": {"en": "Live · Global real-time earthquake intelligence", "hi": "लाइव · वैश्विक रीयल-टाइम भूकंप इंटेलिजेंस", "ja": "ライブ · グローバルリアルタイム地震情報", "id": "Langsung · Intelijen gempa global waktu nyata", "fil": "Aktibo · Pandaigdigang real-time na impormasyon sa lindol", "es": "En Vivo · Inteligencia sísmica global en tiempo real", "tr": "Canlı · Küresel gerçek zamanlı deprem istihbaratı", "fa": "زنده · هوش زلزله جهانی در زمان واقعی", "zh": "实时 · 全球实时地震情报", "tpi": "Stap lon · Stret long graun long taim tru", "ho": "Bongu · Hiri gule gule e dai", "mi": "Mātau · Te ao katoa i te wā tūturu mō te rū whenua", "ne": "लाइभ · विश्वव्यापी रियल-टाइम भूकम्प सूचना", "el": "Ζωντανά · Παγκόσμια αντικειμενική ενημέρωση για σεισμούς σε πραγματικό χρόνο", "it": "In diretta · Intelligenza sismica globale in tempo reale", "ps": "ژوندی · نړیوال ریښتینی وخت زلزلې استخبارات", "prs": "زنده · اطلاعات جهانی زلزله در زمان واقعی"},
+    "menu": {"en": "MENU", "hi": "मेनू", "ja": "メニュー", "id": "MENU", "fil": "MENU", "es": "MENÚ", "tr": "MENÜ", "fa": "منو", "zh": "菜单", "tpi": "MENU", "ho": "MENIU", "mi": "TAUNAHI", "ne": "मेनु", "el": "Μενού", "it": "MENÙ", "ps": "مینو", "prs": "فهرست"},
+    "nav_live": {"en": "Live Now", "hi": "लाइव अभी", "ja": "ライブ中", "id": "Langsung Sekarang", "fil": "Kasalukuyan", "es": "En Vivo Ahora", "tr": "Şimdi Canlı", "fa": "همین حالا زنده", "zh": "立即直播", "tpi": "Long taim tru nau", "ho": "Bongu ogoa", "mi": "Kei te ora inaianei", "ne": "अहिले लाइभ", "el": "Τώρα Ζωντανά", "it": "In diretta ora", "ps": "اوس ژوندی", "prs": "اکنون زنده"},
+    "cap_live": {"en": "World map · briefings · media", "hi": "विश्व मानचित्र · ब्रीफिंग · मीडिया", "ja": "世界地図 · 解説 · メディア", "id": "Peta dunia · ringkasan · media", "fil": "Mapa ng mundo · mga ulat · media", "es": "Mapa mundial · resúmenes · medios", "tr": "Dünya haritası · özetler · medya", "fa": "نقشه جهان · خلاصه · رسانه", "zh": "世界地图 · 简报 · 媒体", "tpi": "Map bilong graun · stori · piksa", "ho": "Hiri bese · gaurigu · laulau", "mi": "Māhere ao · ngā whakamārama · pāpāho", "ne": "विश्व नक्सा · संक्षिप्त विवरण · मिडिया", "el": "Παγκόσμιος χάρτης · αναφορές · μέσα", "it": "Mappa mondiale · resoconti · media", "ps": "د نړۍ نقشه · لنډیزونه · رسنۍ", "prs": "نقشه جهان · خلاصه ها · رسانه ها"},
+    "nav_anom": {"en": "Anomaly Watch", "hi": "असामान्यता निगरानी", "ja": "異常検知", "id": "Pantauan Anomali", "fil": "Bantay sa Anomaliya", "es": "Vigilancia de Anomalías", "tr": "Anomali Gözcüsü", "fa": "تماشای ناهنجاری", "zh": "异常监测", "tpi": "Lukaut long samting i no stret", "ho": "Anomali Dirao", "mi": "Tirohanga Rerekētanga", "ne": "विसंगति निगरानी", "el": "Παρακολούθηση Ανωμαλιών", "it": "Osservatorio anomalie", "ps": "غیر معمولي څارنه", "prs": "تماشای ناهنجاری"},
+    "cap_anom": {"en": "Is this week normal?", "hi": "क्या यह सप्ताह सामान्य है?", "ja": "今週は通常通り？", "id": "Apakah minggu ini normal?", "fil": "Normal ba ang linggong ito?", "es": "¿Es normal esta semana?", "tr": "Bu hafta normal mi?", "fa": "آیا این هفته عادی است؟", "zh": "本周是否正常？", "tpi": "Dispela wik i olsem wanem?", "ho": "Isi viki normal?", "mi": "He wiki noa tēnei?", "ne": "यो हप्ता सामान्य छ?", "el": "Είναι αυτή η εβδομάδα φυσιολογική;", "it": "Questa settimana è normale?", "ps": "ایا دا اونۍ نورماله ده؟", "prs": "آیا این هفته عادی است؟"},
+    "nav_area": {"en": "My Area", "hi": "मेरा क्षेत्र", "ja": "マイエリア", "id": "Area Saya", "fil": "Aking Lugar", "es": "Mi Zona", "tr": "Bölgem", "fa": "منطقه من", "zh": "我的区域", "tpi": "Stret long ples bilong yu", "ho": "Gauna bema", "mi": "Tō Rohe", "ne": "मेरो क्षेत्र", "el": "Η Περιοχή μου", "it": "La mia zona", "ps": "زما سیمه", "prs": "منطقه من"},
+    "cap_area": {"en": "Your town's risk profile", "hi": "आपके शहर की जोखिम प्रोफ़ाइल", "ja": "あなたの町の危険度", "id": "Profil risiko kota Anda", "fil": "Panganib sa iyong bayan", "es": "Perfil de riesgo de tu pueblo", "tr": "Kasabanızın risk profili", "fa": "پروفایل ریسک شهر شما", "zh": "您所在城镇的风险概况", "tpi": "Risik bilong taun bilong yu", "ho": "Gauna bema ena gauna", "mi": "Te taupū tūpono o tō tāone", "ne": "तपाईंको सहरको जोखिम प्रोफाइल", "el": "Το προφίλ κινδύνου της πόλης σας", "it": "Profilo di rischio della tua città", "ps": "ستاسو د ښار د خطر پروفایل", "prs": "مشخصات خطر شهر شما"},
+    "nav_ask": {"en": "Ask AI", "hi": "AI से पूछें", "ja": "AIに質問", "id": "Tanya AI", "fil": "Tanong sa AI", "es": "Pregúntale a IA", "tr": "Yapay Zekaya Sor", "fa": "از هوش مصنوعی بپرسید", "zh": "AI问答", "tpi": "Sipim long AI", "ho": "Taurai AI", "mi": "Pātai ki te AI", "ne": "एआईलाई सोध्नुहोस्", "el": "Ρωτήστε AI", "it": "Chiedi all'IA", "ps": "له AI څخه پوښتنه وکړئ", "prs": "از هوش مصنوعی بپرسید"},
+    "cap_ask": {"en": "Any question, any language", "hi": "कोई भी सवाल, किसी भी भाषा में", "ja": "どんな質問でも、どの言語でも", "id": "Pertanyaan apa pun, bahasa apa pun", "fil": "Anumang tanong, anumang wika", "es": "Cualquier pregunta, cualquier idioma", "tr": "Her soru, her dil", "fa": "هر سوالی، هر زبانی", "zh": "任何问题，任何语言", "tpi": "Na kaen askim, long wanem toktok", "ho": "Nai anina, nai gado", "mi": "He pātai, he reo rānei", "ne": "कुनै पनि प्रश्न, कुनै पनि भाषा", "el": "Οποιαδήποτε ερώτηση, οποιαδήποτε γλώσσα", "it": "Qualsiasi domanda, qualsiasi lingua", "ps": "هر سوال، هر ژبه", "prs": "هر سوالی، هر زبانی"},
+    "nav_toolkit": {"en": "Response Toolkit", "hi": "प्रतिक्रिया टूलकिट", "ja": "対応ツールキット", "id": "Perangkat Tanggap Darurat", "fil": "Kagamitan sa Pagtugon", "es": "Kit de Respuesta", "tr": "Müdahale Araç Seti", "fa": "جعبه ابزار واکنش", "zh": "应急工具箱", "tpi": "Samting bilong help long taim bilong redi", "ho": "Gaurigu Toolkit", "mi": "Pouaka Hāpai", "ne": "प्रतिक्रिया टूलकिट", "el": "Εργαλειοθήκη Αντιμετώπισης", "it": "Kit di risposta", "ps": "د ځواب وسیله", "prs": "جعبه ابزار پاسخ"},
+    "cap_toolkit": {"en": "SITREP · guidance · facilities", "hi": "SITREP · मार्गदर्शन · सुविधाएँ", "ja": "SITREP · ガイドライン · 施設", "id": "SITREP · panduan · fasilitas", "fil": "SITREP · gabay · pasilidad", "es": "SITREP · guía · instalaciones", "tr": "SITREP · rehberlik · tesisler", "fa": "SITREP · راهنمایی · تسهیلات", "zh": "SITREP · 指导 · 设施", "tpi": "SITREP · skul · ples bilong help", "ho": "SITREP · gaurigu · gauna", "mi": "SITREP · tohutohu · whare", "ne": "SITREP · मार्गदर्शन · सुविधाहरू", "el": "SITREP · οδηγίες · εγκαταστάσεις", "it": "SITREP · guida · strutture", "ps": "SITREP · لارښود · تاسیسات", "prs": "گزارش وضعیت · راهنمایی · تسهیلات"},
+    "nav_guide": {"en": "Guide", "hi": "गाइड", "ja": "案内", "id": "Panduan", "fil": "Gabay", "es": "Guía", "tr": "Rehber", "fa": "راهنما", "zh": "指南", "tpi": "Stap gutpela", "ho": "Tauranama", "mi": "Aratohu", "ne": "मार्गदर्शन", "el": "Οδηγός", "it": "Guida", "ps": "لارښود", "prs": "لارښود"},
+    "cap_guide": {"en": "How it all fits", "hi": "सब कुछ कैसे जुड़ता है", "ja": "仕組みの概要", "id": "Bagaimana semuanya terhubung", "fil": "Paano ito nagtutugma", "es": "Cómo encaja todo", "tr": "Nasıl Birleşiyor?", "fa": "چگونگی ارتباط همه چیز", "zh": "如何协同工作", "tpi": "Orait, yumi putim olgeta samting wantaim", "ho": "Na keda e vakaibalebaleta", "mi": "Me pēhea te hono o ngā mea katoa", "ne": "यो सबै कसरी मिल्छ", "el": "Πώς συνδέονται όλα", "it": "Come funziona", "ps": "دا څنګه سره سمون خوري", "prs": "څنګه دا ټول سره سمون خوري"},
+    "refresh": {"en": "Refresh live feed", "hi": "लाइव फ़ीड रीफ़्रेश करें", "ja": "ライブフィードを更新", "id": "Segarkan umpan langsung", "fil": "I-refresh ang live feed", "es": "Actualizar fuente en vivo", "tr": "Canlı Yayını Yenile", "fa": "تازه‌سازی فید زنده", "zh": "刷新实时信息", "tpi": "Stap lukluk long notis bilong taim stret", "ho": "Vakamatatataka na vula ni ka vou", "mi": "Whakahou i te pātaki ora", "ne": "लाइभ फिड ताजा गर्नुहोस्", "el": "Ανανέωση ροής", "it": "Aggiorna feed in tempo reale", "ps": "ژوندی فیډ تازه کړئ", "prs": "ژوندی فیډ تازه کړئ"},
+    "disclaimer": {"en": "Earthquakes cannot be predicted. This tool supports awareness and decision-making, not prediction.", "hi": "भूकंप की भविष्यवाणी नहीं की जा सकती। यह टूल जागरूकता और निर्णय लेने में मदद करता है, भविष्यवाणी नहीं।", "ja": "地震は予知できません。このツールは予測ではなく、認識と意思決定を支援します。", "id": "Gempa bumi tidak dapat diprediksi. Alat ini mendukung kesadaran dan pengambilan keputusan, bukan prediksi.", "fil": "Hindi mahuhulaan ang mga lindol. Sinusuportahan ng tool na ito ang kamalayan at paggawa ng desisyon, hindi ang prediksyon.", "es": "Los terremotos no se pueden predecir. Esta herramienta apoya la conciencia y la toma de decisiones, no la predicción.", "tr": "Depremler tahmin edilemez. Bu araç tahmin değil, farkındalık ve karar vermeyi destekler.", "fa": "زلزله‌ها قابل پیش‌بینی نیستند. این ابزار از آگاهی و تصمیم‌گیری پشتیبانی می‌کند، نه پیش‌بینی.", "zh": "地震无法预测。本工具旨在提高意识和辅助决策，而非预测。", "tpi": "Yumi no ken save long taim we longwe i ken sanap. Dispela samting i help long save, tasol i no ken sanap long taim.", "ho": "Nai toreka e sega ni rawa ni dikevi. Oqo na isau ni vula ni vula ni vula, sega ni vula ni vula.", "mi": "Kāore e taea te matapae ruu whenua. Kei te tautoko tēnei taputapu i te mōhio me te whakatau, ehara i te matapae.", "ne": "भूकम्पको भविष्यवाणी गर्न सकिँदैन। यो उपकरणले भविष्यवाणीको सट्टा जागरूकता र निर्णय लिन सहयोग गर्दछ।", "el": "Οι σεισμοί δεν μπορούν να προβλεφθούν. Αυτό το εργαλείο υποστηρίζει την ενημέρωση και τη λήψη αποφάσεων, όχι την πρόβλεψη.", "it": "I terremoti non possono essere previsti. Questo strumento supporta la consapevolezza e il processo decisionale, non la previsione.", "ps": "زلزله نشي اټکل کیدی. دا وسیله د پوهاوي او پریکړې کولو ملاتړ کوي، نه د وړاندوینې.", "prs": "د زلزلې وړاندوینه نشي کیدی. دا وسیله پوهاوی او پریکړه کولو ملاتړ کوي، نه وړاندوینه."},
+    "built_with": {"en": "Built with", "hi": "इनसे निर्मित", "ja": "提供", "id": "Dibangun dengan", "fil": "Ginawa gamit ang", "es": "Desarrollado con", "tr": "ile Hazırlanmıştır", "fa": "ساخته شده با", "zh": "由...构建", "tpi": "I bin wok long", "ho": "Vakamatata ena", "mi": "Hangaia ki", "ne": "यसबाट बनेको", "el": "Αναπτύχθηκε με", "it": "Realizzato con", "ps": "جوړ شوی", "prs": "جوړ شوی د"},
+    "team": {"en": "Developed by Team KODA", "hi": "टीम KODA द्वारा विकसित", "ja": "Team KODA 開発", "id": "Dikembangkan oleh Tim KODA", "fil": "Binuo ng Team KODA", "es": "Desarrollado por Team KODA", "tr": "KODA Ekibi Tarafından Geliştirildi", "fa": "توسعه یافته توسط تیم KODA", "zh": "由 Team KODA 开发", "tpi": "I bin wok long Team KODA", "ho": "Vakamatata ena Team KODA", "mi": "Whakawhanakehia e Team KODA", "ne": "टीम KODA द्वारा विकसित", "el": "Αναπτύχθηκε από την Ομάδα KODA", "it": "Sviluppato dal Team KODA", "ps": "د ټیم KODA لخوا جوړ شوی", "prs": "د ټیم KODA لخوا پرمختللی"},
+    "language": {"en": "Language", "hi": "भाषा", "ja": "言語", "id": "Bahasa", "fil": "Wika", "es": "Idioma", "tr": "Dil", "fa": "زبان", "zh": "语言", "tpi": "Tok Inglis", "ho": "Vosa", "mi": "Reo", "ne": "भाषा", "el": "Γλώσσα", "it": "Lingua", "ps": "ژبه", "prs": "ژبه"},
+    "theme": {"en": "Display mode", "hi": "डिस्प्ले मोड", "ja": "表示モード", "id": "Mode tampilan", "fil": "Paraan ng pagpapakita", "es": "Modo de visualización", "tr": "Görüntü Modu", "fa": "حالت نمایش", "zh": "显示模式", "tpi": "Stap lukluk", "ho": "Vakamatata ni vula", "mi": "Aronga whakaatu", "ne": "प्रदर्शन मोड", "el": "Λειτουργία εμφάνισης", "it": "Modalità visualizzazione", "ps": "د ښودلو حالت", "prs": "د ښودلو حالت"},
+    "sb_data": {"en": "Data", "hi": "डेटा", "ja": "データ", "id": "Data", "fil": "Datos", "es": "Datos", "tr": "Veri", "fa": "داده‌ها", "zh": "数据", "tpi": "Toktok", "ho": "Ka", "mi": "Raraunga", "ne": "डाटा", "el": "Δεδομένα", "it": "Dati", "ps": "ډاټا", "prs": "ډاټا"},
+    "sb_prefs": {"en": "Preferences", "hi": "प्राथमिकताएं", "ja": "設定", "id": "Preferensi", "fil": "Mga Kagustuhan", "es": "Preferencias", "tr": "Tercihler", "fa": "تنظیمات", "zh": "偏好设置", "tpi": "Yumi laikim", "ho": "Ka vakaibalebaleta", "mi": "Ngā Manakohanga", "ne": "मनपर्ने", "el": "Προτιμήσεις", "it": "Preferenze", "ps": "ترجیحات", "prs": "ترجیحات"},
+    "sb_feedback": {"en": "Feedback", "hi": "प्रतिक्रिया", "ja": "フィードバック", "id": "Umpan Balik", "fil": "Feedback", "es": "Comentarios", "tr": "Geri Bildirim", "fa": "بازخورد", "zh": "反馈", "tpi": "Toktok long yumi", "ho": "Ka vakaibalebaleta", "mi": "Tukunga kōrero", "ne": "प्रतिक्रिया", "el": "Σχόλια", "it": "Feedback", "ps": "غبرګون", "prs": "بشپړ معلومات"},
+    "fb_expander": {"en": "💬 Suggestions & feedback", "hi": "💬 सुझाव और प्रतिक्रिया", "ja": "💬 ご提案・ご意見", "id": "💬 Saran & umpan balik", "fil": "💬 Mga Mungkahi at puna", "es": "💬 Sugerencias y comentarios", "tr": "💬 Öneriler ve geri bildirim", "fa": "💬 پیشنهادات و بازخورد", "zh": "💬 建议与反馈", "tpi": "💬 Yumi ken stori wantaim na givim tok", "ho": "💬 Vakasuka & ka vakaibalebaleta", "mi": "💬 Ngā whakaaro me ngā urupare", "ne": "💬 सुझाव र प्रतिक्रिया", "el": "💬 Προτάσεις & σχόλια", "it": "💬 Suggerimenti e feedback", "ps": "💬 مشورې او غبرګون", "prs": "💬 وړاندیزونه او بشپړ معلومات"},
+    "fb_placeholder": {"en": "Tell us what's working or what's missing...", "hi": "बताएं क्या काम कर रहा है या क्या कमी है...", "ja": "何がうまくいっているか、または何が足りないか教えてください...", "id": "Beri tahu kami apa yang berfungsi atau apa yang kurang...", "fil": "Sabihin kung ano ang gumagana o ano ang kulang...", "es": "Cuéntanos qué funciona o qué falta...", "tr": "Nelerin iyi çalıştığını veya nelerin eksik olduğunu bize bildirin...", "fa": "به ما بگویید چه چیزی خوب کار می‌کند یا چه چیزی کم است...", "zh": "告诉我们哪些功能有效或缺少了什么...", "tpi": "Tokim yumi wanem samting i wok gut o wanem samting i no stap...", "ho": "Vadao be iai, vadao be noa...", "mi": "Kōrero mai he aha te pai, he aha rānei kei te ngaro...", "ne": "के काम गरिरहेको छ वा के हराइरहेको छ भन्नुहोस्...", "el": "Πείτε μας τι λειτουργεί ή τι λείπει...", "it": "Dicci cosa funziona o cosa manca...", "ps": "خپل نظر شریک کړئ چې څه سم کار کوي یا څه کم دي...", "prs": "برای ما بگویید چه چیزی کار می کند یا چه چیزی کم است..."},
+    "fb_submit": {"en": "Send feedback", "hi": "प्रतिक्रिया भेजें", "ja": "フィードバックを送信", "id": "Kirim masukan", "fil": "Magpadala ng puna", "es": "Enviar comentarios", "tr": "Geri bildirim gönder", "fa": "ارسال بازخورد", "zh": "发送反馈", "tpi": "Siutim tok bilong yu", "ho": "Tukua mai to manao", "mi": "Tukua te urupare", "ne": "प्रतिक्रिया पठाउनुहोस्", "el": "Αποστολή σχολίων", "it": "Invia feedback", "ps": "فیډبیک واستوئ", "prs": "ارسال بازخورد"},
+    "fb_thanks": {"en": "Thanks for the feedback!", "hi": "प्रतिक्रिया के लिए धन्यवाद!", "ja": "フィードバックありがとうございます！", "id": "Terima kasih atas masukannya!", "fil": "Salamat sa iyong puna!", "es": "¡Gracias por tus comentarios!", "tr": "Geri bildiriminiz için teşekkürler!", "fa": "از بازخورد شما سپاسگزاریم!", "zh": "感谢您的反馈！", "tpi": "Tenkiu long tok bilong yu!", "ho": "Guana dina!", "mi": "Ngā mihi mō tō urupare!", "ne": "प्रतिक्रियाको लागि धन्यवाद!", "el": "Ευχαριστούμε για τα σχόλιά σας!", "it": "Grazie per il tuo feedback!", "ps": "ستاسو د فیډبیک لپاره مننه!", "prs": "از بازخورد شما سپاسگزاریم!"},
+    "wb_intro": {"en": "Choose how QuakeSense looks and the language of the whole interface. You can change both anytime from the sidebar.", "hi": "QuakeSense का रूप और पूरे इंटरफ़ेस की भाषा चुनें। दोनों को साइडबार से कभी भी बदला जा सकता है।", "ja": "QuakeSenseの外観と、インターフェース全体の言語を選択します。どちらもサイドバーからいつでも変更できます。", "id": "Pilih tampilan QuakeSense dan bahasa seluruh antarmuka. Anda dapat mengubah keduanya kapan saja dari bilah sisi.", "fil": "Piliin kung paano magmumukha ang QuakeSense at ang wika ng buong interface. Maaari mong baguhin ang pareho anumang oras mula sa sidebar.", "es": "Elige cómo se ve QuakeSense y el idioma de toda la interfaz. Puedes cambiar ambos en cualquier momento desde la barra lateral.", "tr": "QuakeSense'in nasıl görüneceğini ve tüm arayüzün dilini seçin. Her ikisini de istediğiniz zaman kenar çubuğundan değiştirebilirsiniz.", "fa": "نحوه نمایش QuakeSense و زبان کل رابط کاربری را انتخاب کنید. شما می‌توانید هر دو را در هر زمان از نوار کناری تغییر دهید.", "zh": "选择 QuakeSense 的外观和整个界面的语言。您可以随时从侧边栏更改这两项。", "tpi": "Pikim wanem senis yu laik long QuakeSense na tokples bilong olgeta. Yu ken senjim tupela taim longwe long sait.", "ho": "Tavara be do ia doinai, bona do ia doinai hegaia. Umui diba do umui alaha.", "mi": "Tīpakohia te āhua o te QuakeSense me te reo o te atanga katoa. Ka taea e koe te whakarereke i ngā mea e rua i ngā wā katoa mai i te taha.", "ne": "QuakeSense कसरी देखिन्छ र सम्पूर्ण इन्टरफेसको भाषा छान्नुहोस्। तपाईंले जुनसुकै बेला साइडबारबाट दुवै परिवर्तन गर्न सक्नुहुन्छ।", "el": "Επιλέξτε πώς θα φαίνεται το QuakeSense και τη γλώσσα ολόκληρης της διεπαφής. Μπορείτε να αλλάξετε και τα δύο ανά πάσα στιγμή από την πλαϊνή μπάρα.", "it": "Scegli l'aspetto di QuakeSense e la lingua dell'intera interfaccia. Puoi cambiare entrambi in qualsiasi momento dalla barra laterale.", "ps": "وټاکئ چې QuakeSense څنګه ښکاري او د ټولې انٹرفیس ژبه. تاسو کولی شئ دا دواړه هر وخت له سایډبار څخه بدل کړئ.", "prs": "انتخاب کنید که QuakeSense چگونه به نظر برسد و زبان کل رابط کاربری. شما می توانید هر دو را در هر زمان از نوار کناری تغییر دهید."},
+    "wb_lang": {"en": "Interface language", "hi": "इंटरफ़ेस भाषा", "ja": "インターフェース言語", "id": "Bahasa antarmuka", "fil": "Wika ng interface", "es": "Idioma de la interfaz", "tr": "Arayüz dili", "fa": "زبان رابط کاربری", "zh": "界面语言", "tpi": "Tokples bilong intafes", "ho": "Gado biliguna", "mi": "Reo o te atanga", "ne": "इन्टरफेस भाषा", "el": "Γλώσσα διεπαφής", "it": "Lingua dell'interfaccia", "ps": "د انٹرفیس ژبه", "prs": "زبان رابط کاربری"},
+    "wb_theme": {"en": "Appearance", "hi": "रूप", "ja": "外観", "id": "Tampilan", "fil": "Hitsura", "es": "Apariencia", "tr": "Görünüm", "fa": "ظاهر", "zh": "外观", "tpi": "Luk bilong en", "ho": "Hegana", "mi": "Te āhua", "ne": "रूप", "el": "Εμφάνιση", "it": "Aspetto", "ps": "ظاهري بڼه", "prs": "ظاهر"},
+    "wb_start": {"en": "Start exploring", "hi": "शुरू करें", "ja": "探索を開始", "id": "Mulai jelajahi", "fil": "Simulan ang paggalugad", "es": "Comenzar a explorar", "tr": "Keşfetmeye başla", "fa": "شروع کاوش", "zh": "开始探索", "tpi": "Stat lukluk", "ho": "Lalodai", "mi": "Tīmata te torotoro", "ne": "अन्वेषण सुरु गर्नुहोस्", "el": "Ξεκινήστε την εξερεύνηση", "it": "Inizia l'esplorazione", "ps": "سپړنه پیل کړئ", "prs": "شروع به کاوش کنید"},
+    "th_dark": {"en": "Dark", "hi": "डार्क", "ja": "ダーク", "id": "Gelap", "fil": "Madilim", "es": "Oscuro", "tr": "Koyu", "fa": "تیره", "zh": "深色", "tpi": "Longpela tik", "ho": "Po", "mi": "Pōuri", "ne": "गाढा", "el": "Σκοτεινό", "it": "Scuro", "ps": "تیاره", "prs": "تیره"},
+    "th_dark_d": {"en": "Black & deep navy — control-room look", "hi": "काला और गहरा नेवी — कंट्रोल-रूम लुक", "ja": "黒と深いネイビー — コントロールルーム風", "id": "Hitam & biru tua — tampilan ruang kontrol", "fil": "Itim at malalim na navy — itsura ng control room", "es": "Negro y azul marino profundo — aspecto de sala de control", "tr": "Siyah ve koyu lacivert — kontrol odası görünümü", "fa": "سیاه و سرمه‌ای عمیق — ظاهر اتاق کنترل", "zh": "黑色和深海军蓝 — 控制室外观", "tpi": "Laite, blak na navy — luk bilong kontrol rum", "ho": "Bada bona dagedage dina — doinai.", "mi": "Pango me te kākāriki hōhonu — te āhua o te rūma whakahaere", "ne": "कालो र गहिरो नौसेना - कन्ट्रोल-रूम लुक", "el": "Μαύρο & βαθύ μπλε — εμφάνιση κέντρου ελέγχου", "it": "Nero e blu scuro — look da sala di controllo", "ps": "تور او ژور نیلي - د کنټرول خونې بڼه", "prs": "سیاه و سرمه ای عمیق - ظاهر اتاق کنترل"},
+    "th_light": {"en": "Light", "hi": "लाइट", "ja": "ライト", "id": "Terang", "fil": "Maliwanag", "es": "Claro", "tr": "Açık", "fa": "روشن", "zh": "浅色", "tpi": "Laite", "ho": "Sema", "mi": "Mārama", "ne": "उज्यालो", "el": "Φωτεινό", "it": "Chiaro", "ps": "روښانه", "prs": "روشن"},
+    "th_light_d": {"en": "Clean white & soft gray", "hi": "साफ़ सफ़ेद और हल्का ग्रे", "ja": "クリーンな白とソフトグレー", "id": "Putih bersih & abu-abu lembut", "fil": "Malinis na puti at malambot na kulay-abo", "es": "Blanco limpio y gris suave", "tr": "Temiz beyaz ve yumuşak gri", "fa": "سفید تمیز و خاکستری ملایم", "zh": "干净的白色和柔和的灰色", "tpi": "Sipela wait na sof grey", "ho": "Bada bona dagedage dina.", "mi": "Ma ātaahua me te hina ngāwari", "ne": "सफा सेतो र नरम खैरो", "el": "Καθαρό λευκό & απαλό γκρι", "it": "Bianco pulito e grigio tenue", "ps": "سپین او نرم خړ", "prs": "سفید تمیز و خاکستری نرم"},
+    "th_warm": {"en": "Warm sand", "hi": "वॉर्म सैंड", "ja": "ウォームサンド", "id": "Pasir hangat", "fil": "Mainit na buhangin", "es": "Arena cálida", "tr": "Sıcak kum", "fa": "شن گرم", "zh": "暖沙色", "tpi": "Nogut san", "ho": "Dagedage dina", "mi": "Onepū mahana", "ne": "न्यानो बालुवा", "el": "Ζεστή άμμος", "it": "Sabbia calda", "ps": "ګرم شګه", "prs": "شن گرم"},
+    "th_warm_d": {"en": "Beige, brown & neutral earth tones", "hi": "बेज, ब्राउन और न्यूट्रल अर्थ टोन", "ja": "ベージュ、ブラウン、ニュートラルなアースカラー", "id": "Warna krem, cokelat & netral warna bumi", "fil": "Mga kulay na beige, brown at neutral na lupa", "es": "Tonos tierra beige, marrones y neutros", "tr": "Bej, kahverengi ve nötr toprak tonları", "fa": "رنگ‌های خاکی بژ، قهوه‌ای و خنثی", "zh": "米色、棕色和中性大地色系", "tpi": "Lait, pak, na gras bilong graun", "ho": "Bage, braun na mauntain mauntain", "mi": "He tae kirikiri, parauri, me ngā tae whenua kūkupa", "ne": "बेज, खैरो र तटस्थ माटोका रंगहरू", "el": "Μπεζ, καφέ & ουδέτεροι γήινοι τόνοι", "it": "Toni neutri, beige e marroni della terra", "ps": "د خاورې بېج، نسواري او خنثی رنګونه", "prs": "رنگ‌های خاکی بژ، قهوه‌ای و خنثی"},
+    "m_events7": {"en": "Events · 7 days · M2.5+", "hi": "घटनाएँ · 7 दिन · M2.5+", "ja": "発生状況 · 7日間 · M2.5+", "id": "Kejadian · 7 hari · M2.5+", "fil": "Mga Kaganapan · 7 araw · M2.5+", "es": "Eventos · 7 días · M2.5+", "tr": "Olaylar · 7 gün · M2.5+", "fa": "رویدادها · ۷ روز · M2.5+", "zh": "事件 · 7天 · M2.5+", "tpi": "Ol samting we i hapen · 7 de · M2.5+", "ho": "Eventi · 7 dei, M2.5+", "mi": "Ngā Rongo · 7 rā · M2.5+", "ne": "घटनाहरू · ७ दिन · M2.5+", "el": "Σεισμοί · 7 ημέρες · M2.5+", "it": "Eventi · 7 giorni · M2.5+", "ps": "پېښې · 7 ورځې · M2.5+", "prs": "رویدادها · ۷ روز · M2.5+"},
+    "m_last24": {"en": "Last 24 hours", "hi": "पिछले 24 घंटे", "ja": "過去24時間", "id": "24 jam terakhir", "fil": "Huling 24 oras", "es": "Últimas 24 horas", "tr": "Son 24 saat", "fa": "۲۴ ساعت گذشته", "zh": "过去24小时", "tpi": "Nait na de 24", "ho": "24 auwa i mui", "mi": "24 hāora kua pahure", "ne": "अन्तिम २४ घण्टा", "el": "Τελευταίες 24 ώρες", "it": "Ultime 24 ore", "ps": "تېر 24 ساعتونه", "prs": "۲۴ ساعت گذشته"},
+    "m_strongest": {"en": "Strongest this week", "hi": "इस सप्ताह सबसे तेज़", "ja": "今週の最大震度", "id": "Terkuat minggu ini", "fil": "Pinakamalakas ngayong linggo", "es": "Más fuerte de la semana", "tr": "Bu haftanın en güçlüsü", "fa": "قوی‌ترین رویداد هفته", "zh": "本周最强", "tpi": "Sampela samting we i strong tumas long dispela wik", "ho": "Sikini dei i dai", "mi": "Te mea kaha rawa o te wiki nei", "ne": "यस हप्ताको सबैभन्दा बलियो", "el": "Ισχυρότερος αυτή την εβδομάδα", "it": "Più forte della settimana", "ps": "تر ټولو زوروره پېښه دا اونۍ", "prs": "قوی‌ترین رویداد این هفته"},
+    "m_m5": {"en": "M5+ events", "hi": "M5+ घटनाएँ", "ja": "M5以上の地震", "id": "Kejadian M5+", "fil": "Mga Kaganapan na M5+", "es": "Eventos M5+", "tr": "M5+ olayları", "fa": "رویدادهای M5+", "zh": "M5+ 事件", "tpi": "M5+ ol samting we i hapen", "ho": "M5+ eventi", "mi": "Ngā Rongo M5+", "ne": "M5+ घटनाहरू", "el": "Σεισμοί M5+", "it": "Eventi M5+", "ps": "M5+ پېښې", "prs": "رویدادهای M5+"},
+    "m_tsu": {"en": "Tsunami-flagged", "hi": "सुनामी-चिह्नित", "ja": "津波注意報・警報", "id": "Ditandai Tsunami", "fil": "May bandilang Tsunami", "es": "Marcado para tsunami", "tr": "Tsunami uyarısı", "fa": "پرچم‌گذاری شده برای سونامی", "zh": "海啸警报", "tpi": "Tsunami i kamap", "ho": "Tsunami flag", "mi": "Kua tohua te Tsunami", "ne": "सुनामी-फ्ल्याग गरिएका", "el": "Σημασμένα για τσουνάμι", "it": "Segnalati per tsunami", "ps": "د سونامي خبرداری ورکړل شوی", "prs": "پرچم‌گذاری شده برای سونامی"},
+    "recent_event": {"en": "Most recent event", "hi": "सबसे हालिया घटना", "ja": "直近の地震", "id": "Kejadian paling baru", "fil": "Pinakahuling kaganapan", "es": "Evento más reciente", "tr": "En son olay", "fa": "آخرین رویداد", "zh": "最近一次事件", "tpi": "Sampela samting we i hapen long taim liklik i go pinis", "ho": "Eventi i mui", "mi": "Te rongo hou rawa", "ne": "सबैभन्दा भर्खरको घटना", "el": "Πιο πρόσφατος σεισμός", "it": "Evento più recente", "ps": "وروستۍ پېښه", "prs": "آخرین رویداد"},
+    "quick_filters": {"en": "Quick filters", "hi": "त्वरित फ़िल्टर", "ja": "クイックフィルター", "id": "Filter cepat", "fil": "Mabilisang mga filter", "es": "Filtros rápidos", "tr": "Hızlı filtreler", "fa": "فیلترهای سریع", "zh": "快速筛选", "tpi": "Sipela paslain", "ho": "Filter vata", "mi": "Tātari Tere", "ne": "द्रुत फिल्टरहरू", "el": "Γρήγορα φίλτρα", "it": "Filtri rapidi", "ps": "چټک فلټرونه", "prs": "فیلترهای سریع"},
+    "preset_custom": {"en": "Custom", "hi": "कस्टम", "ja": "カスタム", "id": "Kustom", "fil": "Pasadya", "es": "Personalizado", "tr": "Özel", "fa": "سفارشی", "zh": "自定义", "tpi": "Paslain bilong yu", "ho": "Custom", "mi": "Ritenga", "ne": "अनुकूल", "el": "Προσαρμοσμένο", "it": "Personalizzato", "ps": "دودیز", "prs": "دلخواه"},
+    "preset_24h": {"en": "Last 24 h", "hi": "पिछले 24 घं.", "ja": "過去24時間", "id": "24 jam lalu", "fil": "Huling 24 oras", "es": "Últimas 24 h", "tr": "Son 24 saat", "fa": "۲۴ ساعت گذشته", "zh": "过去24小时", "tpi": "24 oras i go pinis", "ho": "24 auwa i mui", "mi": "24 hāora kua pahure", "ne": "अन्तिम २४ घन्टा", "el": "Τελευταίες 24 ώρες", "it": "Ultime 24 ore", "ps": "تېر 24 ساعته", "prs": "۲۴ ساعت گذشته"},
+    "region_filter": {"en": "Filter by country / region (past 7 days)", "hi": "देश / क्षेत्र से फ़िल्टर करें (पिछले 7 दिन)", "ja": "国・地域で絞り込む（過去7日間）", "id": "Filter berdasarkan negara / wilayah (7 hari terakhir)", "fil": "Salain ayon sa bansa / rehiyon (huling 7 araw)", "es": "Filtrar por país / región (últimos 7 días)", "tr": "Ülkeye / bölgeye göre filtrele (son 7 gün)", "fa": "فیلتر بر اساس کشور / منطقه (۷ روز گذشته)", "zh": "按国家/地区筛选（过去7天）", "tpi": "Sori long kantri / ples (7 de i go pinis)", "ho": "Filter na bese / bese (7 dei i mui)", "mi": "Tātari mā te whenua / rohe (7 rā kua pahure)", "ne": "देश / क्षेत्र अनुसार फिल्टर गर्नुहोस् (विगत ७ दिन)", "el": "Φίλτρο ανά χώρα / περιοχή (τελευταίες 7 ημέρες)", "it": "Filtra per paese / regione (ultimi 7 giorni)", "ps": "د هیواد / سیمې له مخې فلټر (تېر 7 ورځې)", "prs": "فیلتر بر اساس کشور / منطقه (۷ روز گذشته)"},
+    "all_regions": {"en": "All countries / regions", "hi": "सभी देश / क्षेत्र", "ja": "すべての国・地域", "id": "Semua negara / wilayah", "fil": "Lahat ng bansa / rehiyon", "es": "Todos los países / regiones", "tr": "Tüm ülkeler / bölgeler", "fa": "همه کشورها / مناطق", "zh": "所有国家/地区", "tpi": "Ol kantri / ples", "ho": "Bese / bese", "mi": "Ngā whenua / rohe katoa", "ne": "सबै देशहरू / क्षेत्रहरू", "el": "Όλες οι χώρες / περιοχές", "it": "Tutti i paesi / regioni", "ps": "ټول هیوادونه / سیمې", "prs": "تمام کشورها / مناطق"},
+    "min_mag": {"en": "Minimum magnitude", "hi": "न्यूनतम परिमाण", "ja": "最小マグニチュード", "id": "Magnitudo minimum", "fil": "Pinakamababang magnitude", "es": "Magnitud mínima", "tr": "Minimum büyüklük", "fa": "حداقل بزرگی", "zh": "最小震级", "tpi": "Liklik bikpela taim", "ho": "Maginitude liki duha", "mi": "Te rahi iti rawa", "ne": "न्यूनतम परिमाण", "el": "Ελάχιστο μέγεθος", "it": "Magnitudo minima", "ps": "لږ تر لږه شدت", "prs": "حداقل بزرگی"},
+    "plates": {"en": "Plate boundaries", "hi": "प्लेट सीमाएँ", "ja": "プレート境界", "id": "Batas lempeng", "fil": "Hangganan ng mga plaka", "es": "Límites de placas", "tr": "Tektonik levha sınırları", "fa": "مرزهای صفحات تکتونیکی", "zh": "板块边界", "tpi": "Stap ples bilong ol plait", "ho": "Gabana bilong ol plait", "mi": "Ngā rohe pereti", "ne": "प्लेट सीमाहरू", "el": "Όρια πλακών", "it": "Confini delle placche", "ps": "د تخته پولې", "prs": "مرزهای صفحات تکتونیکی"},
+    "no_match": {"en": "No events match this filter in the past 7 days. Try a wider preset or 'All countries / regions'.", "hi": "पिछले 7 दिनों में इस फ़िल्टर से कोई घटना मेल नहीं खाती। व्यापक प्रीसेट आज़माएँ।", "ja": "過去7日間、このフィルターに一致するイベントはありません。より広いプリセットまたは「すべての国/地域」をお試しください。", "id": "Tidak ada kejadian yang cocok dengan filter ini dalam 7 hari terakhir. Coba preset yang lebih luas atau 'Semua negara / wilayah'.", "fil": "Walang mga kaganapan na tumutugma sa filter na ito sa nakaraang 7 araw. Subukan ang mas malawak na preset o 'Lahat ng bansa / rehiyon'.", "es": "No se encontraron eventos que coincidan con este filtro en los últimos 7 días. Intente con un ajuste preestablecido más amplio o 'Todos los países / regiones'.", "tr": "Son 7 günde bu filtreyle eşleşen olay yok. Daha geniş bir ön ayar veya 'Tüm ülkeler / bölgeler' deneyin.", "fa": "هیچ رویدادی در ۷ روز گذشته با این فیلتر مطابقت ندارد. یک پیش‌تنظیم گسترده‌تر یا 'همه کشورها / مناطق' را امتحان کنید.", "zh": "过去7天内没有事件符合此筛选条件。请尝试更宽的预设或“所有国家/地区”。", "tpi": "Nogat wanpela samting i painim dispela pas long 7 de i go pinis. Pilai long wanpela moa bikpela pas o 'Ol kantri / ples'.", "ho": "Nogat wanpela samting i painim dispela pas long 7 de i go pinis. Pilai long wanpela gutpela pas o 'Maunten bilong ol kantri / ples'.", "mi": "Kāore he huihuinga e rite ana ki tēnei tātari i ngā rā e 7 kua pahure. Ngaria he tautuhi whānui ake, he 'Whenua / rohe katoa'.", "ne": " विगत ७ दिनमा कुनै पनि घटना यस फिल्टरमा मिल्दैन। फराकिलो प्रिसेट वा 'सबै देशहरू / क्षेत्रहरू' प्रयास गर्नुहोस्।", "el": "Δεν βρέθηκαν συμβάντα που να ταιριάζουν με αυτό το φίλτρο τις τελευταίες 7 ημέρες. Δοκιμάστε μια ευρύτερη προεπιλογή ή 'Όλες οι χώρες / περιοχές'.", "it": "Nessun evento corrisponde a questo filtro negli ultimi 7 giorni. Prova una preselezione più ampia o 'Tutti i paesi / regioni'.", "ps": "په تیرو 7 ورځو کې هیڅ پیښه د دې فلټر سره سمون نه لري. یو پراخ پری سیټ یا 'ټول هیوادونه / سیمې' هڅه وکړئ.", "prs": "هیچ رویدادی در ۷ روز گذشته با این فیلتر مطابقت ندارد. یک پیش‌تنظیم وسیع‌تر یا 'تمام کشورها / مناطق' را امتحان کنید."},
+    "shown_cap": {"en": "{n} events shown · size and color scale with magnitude · faded markers are older · teal markers carry a tsunami flag", "hi": "{n} घटनाएँ दिखाई गईं · आकार और रंग परिमाण के अनुसार · धुंधले मार्कर पुराने हैं · टील मार्कर पर सुनामी फ़्लैग है", "ja": "{n} 件のイベントを表示 · サイズと色はマグニチュードで変化 · フェードしたマーカーは古いものです · ティールマーカーは津波フラグ付きです", "id": "{n} kejadian ditampilkan · ukuran dan warna sesuai magnitudo · penanda pudar lebih lama · penanda teal membawa bendera tsunami", "fil": "{n} na kaganapan ang ipinapakita · laki at kulay ay naaayon sa magnitude · kupas na mga marka ay mas luma · mga teal na marka ay may babala sa tsunami", "es": "{n} eventos mostrados · el tamaño y el color varían según la magnitud · los marcadores atenuados son más antiguos · los marcadores de color verde azulado tienen una alerta de tsunami", "tr": "{n} olay gösteriliyor · boyut ve renk büyüklüğe göre değişir · soluk işaretleyiciler daha eskidir · turkuaz işaretleyiciler tsunami bayrağı taşır", "fa": "{n} رویداد نمایش داده شده · اندازه و رنگ با بزرگی تغییر می‌کنند · نشانگرهای محو شده قدیمی‌تر هستند · نشانگرهای فیروزه‌ای پرچم سونامی دارند", "zh": "{n} 个事件显示中 · 大小和颜色随震级变化 · 褪色的标记表示较旧 · 青色标记带有海啸警报", "tpi": "{n} samting i kamap · bikpela na kolos bilong en i go wantaim bikpela taim · mak i no krul i bilong bipo · mak i kol bilong bluu i gat wanpela tik bilong wara.", "ho": "{n} samting i makim · belo na koloa i soim maginitude · mak i no strong moa i bilong tenpela de · mak bilong sitrin i gat flag bilong tsunami", "mi": "{n} huihuinga kua whakaatuhia · ka piki te rahi me te tae ki te rahi · ka memeha ngā tohu mō ngā mea tawhito · kawea ana e ngā tohu kikorangi te haki tsunami", "ne": "{n} घटनाहरू देखाइयो · आकार र रङ परिमाण अनुसार परिवर्तन हुन्छन् · फिक्का मार्करहरू पुरानो हुन् · टिल मार्करहरूमा सुनामी झण्डा हुन्छ", "el": "{n} συμβάντα που εμφανίζονται · το μέγεθος και το χρώμα κλιμακώνονται με το μέγεθος · αχνά σημάδια είναι παλαιότερα · τα τιρκουάζ σημάδια φέρουν σημαία τσουνάμι", "it": "{n} eventi mostrati · dimensione e colore scalano con la magnitudo · indicatori sbiaditi sono più vecchi · indicatori blu portano una bandiera tsunami", "ps": "{n} پیښې ښودل شوي · اندازه او رنګ د شدت سره سمون لري · خړ نښه کونکي زاړه دي · فیروزي نښه کونکي د سونامي بیرغ لري", "prs": "{n} رویداد نمایش داده شده · اندازه و رنگ با بزرگی مقیاس می‌شوند · نشانگرهای محو شده قدیمی‌تر هستند · نشانگرهای آبی تیره پرچم سونامی را حمل می‌کنند"},
+    "export_csv": {"en": "Export CSV", "hi": "CSV निर्यात करें", "ja": "CSVをエクスポート", "id": "Ekspor CSV", "fil": "I-export ang CSV", "es": "Exportar CSV", "tr": "CSV'yi Dışa Aktar", "fa": "صادر کردن CSV", "zh": "导出 CSV", "tpi": "Eksport CSV", "ho": "Eksport CSV", "mi": "Kaweake CSV", "ne": "CSV निर्यात गर्नुहोस्", "el": "Εξαγωγή CSV", "it": "Esporta CSV", "ps": "CSV صادر کړئ", "prs": "صادر کردن CSV"},
+    "brief_h": {"en": "AI Situation Briefings", "hi": "AI स्थिति ब्रीफिंग", "ja": "AI状況ブリーフィング", "id": "Ringkasan Situasi AI", "fil": "Mga Maikling Ulat ng AI", "es": "Resúmenes de Situación de IA", "tr": "Yapay Zeka Durum Brifingleri", "fa": "خلاصه‌های وضعیت هوش مصنوعی", "zh": "AI 局势简报", "tpi": "Tok bilong AI long ol samting i painim", "ho": "AI SITREP", "mi": "Ngā Whakarāpopototanga Āhuatanga AI", "ne": "AI स्थिति सारांश", "el": "Συντομεύσεις Κατάστασης AI", "it": "Brevetti di Situazione AI", "ps": "د AI وضعیت لنډیزونه", "prs": "خلاصه‌های وضعیت هوش مصنوعی"},
+    "brief_cap": {"en": "Pick any significant event this week - Gemini writes a calm, plain-language community briefing from the USGS data.", "hi": "इस सप्ताह की कोई महत्वपूर्ण घटना चुनें — Gemini USGS डेटा से सरल भाषा में सामुदायिक ब्रीफिंग लिखेगा।", "ja": "今週の注目すべきイベントをどれでも選択してください - GeminiがUSGSデータから、落ち着いた平易な言葉でコミュニティ向けブリーフィングを作成します。", "id": "Pilih kejadian signifikan minggu ini - Gemini menulis ringkasan komunitas yang tenang dan berbahasa sederhana dari data USGS.", "fil": "Pumili ng anumang makabuluhang kaganapan ngayong linggo - Sumusulat ang Gemini ng isang mahinahon, simpleng paliwanag para sa komunidad mula sa datos ng USGS.", "es": "Elija cualquier evento significativo de esta semana - Gemini escribe un resumen comunitario tranquilo y en lenguaje sencillo a partir de los datos del USGS.", "tr": "Bu haftaki önemli olaylardan herhangi birini seçin - Gemini, USGS verilerinden sakin, anlaşılır bir dilde topluluk brifingi yazar.", "fa": "هر رویداد مهم این هفته را انتخاب کنید - Gemini خلاصه‌ای آرام و به زبان ساده برای جامعه از داده‌های USGS می‌نویسد.", "zh": "选择本周任何重大事件 - Gemini 根据 USGS 数据撰写冷静、通俗易懂的社区简报。", "tpi": "Pikim wanpela samting i bikpela long dispela wik - Gemini i raitim wanpela tok bilong komyuniti i no krul, i stret long tok bilong USGS.", "ho": "Pilaim wanpela samting gutpela long wik dispela - Gemini i raitim gutpela tok long ol lain bilong komyuniti long tok bilong USGS.", "mi": "Tīpakohia he huihuinga nui i tēnei wiki - ka tuhia e Gemini he whakamārama hapori marino, ngāwari hoki mai i ngā raraunga USGS.", "ne": "यस हप्ता कुनै पनि महत्त्वपूर्ण घटना छान्नुहोस् - Gemini ले USGS डेटाबाट शान्त, सामान्य भाषामा सामुदायिक सारांश लेख्छ।", "el": "Επιλέξτε οποιοδήποτε σημαντικό συμβάν αυτήν την εβδομάδα - το Gemini γράφει μια ήρεμη, απλή ανακοίνωση κοινότητας από τα δεδομένα της USGS.", "it": "Scegli qualsiasi evento significativo di questa settimana - Gemini scrive un briefing comunitario calmo e in linguaggio semplice dai dati USGS.", "ps": "پدې اونۍ کې کومه مهمه پیښه غوره کړئ - جیمیني د USGS ډیټا څخه یو ارام، ساده ژبې ټولنې لنډیز لیکي.", "prs": "هر رویداد مهم این هفته را انتخاب کنید - Gemini یک خلاصه جامعه آرام و به زبان ساده از داده‌های USGS می‌نویسد."},
+    "event_sel": {"en": "Event (ranked by USGS significance)", "hi": "घटना (USGS महत्व के अनुसार क्रमित)", "ja": "イベント（USGSの重要度でランク付け）", "id": "Kejadian (diurutkan berdasarkan signifikansi USGS)", "fil": "Kaganapan (niraranggo ayon sa kahalagahan ng USGS)", "es": "Evento (clasificado por importancia del USGS)", "tr": "Olay (USGS önemine göre sıralanmış)", "fa": "رویداد (بر اساس اهمیت USGS رتبه‌بندی شده)", "zh": "事件（按 USGS 重要性排名）", "tpi": "Samting (i sanap long bikpela bilong USGS)", "ho": "Samting (i makim gutpela long USGS)", "mi": "Huihuinga (kua tohua e te hiranga o te USGS)", "ne": "घटना (USGS महत्व अनुसार क्रमबद्ध)", "el": "Συμβάν (κατατάσσεται κατά σημασία USGS)", "it": "Evento (classificato per importanza USGS)", "ps": "پیښه (د USGS اهمیت له مخې درجه بندي شوې)", "prs": "رویداد (بر اساس اهمیت USGS رتبه‌بندی شده)"},
+    "m_mag": {"en": "Magnitude", "hi": "परिमाण", "ja": "マグニチュード", "id": "Magnitudo", "fil": "Lakas ng lindol", "es": "Magnitud", "tr": "Büyüklük", "fa": "بزرگی", "zh": "震级", "tpi": "Bikpela taim", "ho": "Maginitude", "mi": "Te rahi", "ne": "परिमाण", "el": "Μέγεθος", "it": "Magnitudo", "ps": "شدت", "prs": "بزرگی"},
+    "m_depth": {"en": "Depth", "hi": "गहराई", "ja": "深さ", "id": "Kedalaman", "fil": "Lalim", "es": "Profundidad", "tr": "Derinlik", "fa": "عمق", "zh": "深度", "tpi": "Longwe", "ho": "Longwe", "mi": "Te hōhonutanga", "ne": "गहिराई", "el": "Βάθος", "it": "Profondità", "ps": "ژوروالی", "prs": "عمق"},
+    "m_felt": {"en": "Felt reports", "hi": "महसूस रिपोर्टें", "ja": "体感報告", "id": "Laporan dirasakan", "fil": "Mga ulat ng nakaramdam", "es": "Reportes de personas que lo sintieron", "tr": "Hissedilen raporlar", "fa": "گزارش‌های احساس شده", "zh": "震感报告", "tpi": "Tok bilong ol man i pilim", "ho": "Tok bilong ol man i pilaim", "mi": "Ngā pūrongo i rongohia", "ne": "महसुस गरिएका रिपोर्टहरू", "el": "Αναφορές αισθήσεων", "it": "Segnalazioni avvertite", "ps": "احساس شوي راپورونه", "prs": "گزارش‌های احساس شده"},
+    "m_pager": {"en": "PAGER alert", "hi": "PAGER अलर्ट", "ja": "PAGERアラート", "id": "Peringatan PAGER", "fil": "Alerto ng PAGER", "es": "Alerta PAGER", "tr": "PAGER uyarısı", "fa": "هشدار PAGER", "zh": "PAGER 警报", "tpi": "Tok bilong PAGER", "ho": "PAGER alert", "mi": "Whakatūpato PAGER", "ne": "PAGER अलर्ट", "el": "Ειδοποίηση PAGER", "it": "Allerta PAGER", "ps": "PAGER خبرتیا", "prs": "هشدار PAGER"},
+    "gen_brief": {"en": "Generate community briefing", "hi": "सामुदायिक ब्रीफिंग बनाएँ", "ja": "地域向け概要を作成", "id": "Buat ringkasan komunitas", "fil": "Bumuo ng briefing para sa komunidad", "es": "Generar resumen comunitario", "tr": "Topluluk bilgilendirmesi oluştur", "fa": "ایجاد گزارش جامعه", "zh": "生成社区简报", "tpi": "Mekim gutpela ripota bilong komyuniti", "ho": "Stapim gutpela toktok long komyuniti", "mi": "Hangaia he whakamārama mō te hapori", "ne": "सामुदायिक संक्षिप्त विवरण तयार गर्नुहोस्", "el": "Δημιουργία ενημέρωσης κοινότητας", "it": "Genera rapporto per la comunità", "ps": "د ټولنې لنډیز جوړ کړئ", "prs": "ایجاد گزارش جامعه"},
+    "dl_brief": {"en": "Download briefing (.txt)", "hi": "ब्रीफिंग डाउनलोड करें (.txt)", "ja": "概要をダウンロード (.txt)", "id": "Unduh ringkasan (.txt)", "fil": "I-download ang briefing (.txt)", "es": "Descargar resumen (.txt)", "tr": "Bilgilendirmeyi indir (.txt)", "fa": "دانلود گزارش (.txt)", "zh": "下载简报(.txt)", "tpi": "Laitim ripota (.txt)", "ho": "Download toktok (.txt)", "mi": "Tāruahia te whakamārama (.txt)", "ne": "संक्षिप्त विवरण डाउनलोड गर्नुहोस् (.txt)", "el": "Λήψη ενημέρωσης (.txt)", "it": "Scarica rapporto (.txt)", "ps": "لنډیز ډاونلوډ کړئ (.txt)", "prs": "بارگیری گزارش (.txt)"},
+    "what_h": {"en": "What happened.", "hi": "क्या हुआ।", "ja": "何が起きたか。", "id": "Apa yang terjadi.", "fil": "Ano ang nangyari.", "es": "Qué ocurrió.", "tr": "Ne oldu.", "fa": "چه اتفاقی افتاد.", "zh": "发生了什么。", "tpi": "Sampela samting i bin hapen.", "ho": "Ating i painap.", "mi": "He aha te putanga.", "ne": "के भयो।", "el": "Τι συνέβη.", "it": "Cosa è successo.", "ps": "څه پیښ شوي.", "prs": "چه اتفاقی افتاد."},
+    "who_h": {"en": "Who is affected.", "hi": "कौन प्रभावित है।", "ja": "誰が影響を受けているか。", "id": "Siapa yang terdampak.", "fil": "Sino ang apektado.", "es": "Quién está afectado.", "tr": "Kimler etkilendi.", "fa": "چه کسانی تحت تأثیر قرار گرفتند.", "zh": "谁受到影响。", "tpi": "Orait, husat i pilim.", "ho": "O moa manmeri i stap long en?", "mi": "Ko wai ka pā ki a ia.", "ne": "को प्रभावित छ।", "el": "Ποιοι επηρεάζονται.", "it": "Chi è interessato.", "ps": "څوک اغیزمن شوي.", "prs": "چه کسانی متأثر شده‌اند."},
+    "act_h": {"en": "Recommended actions.", "hi": "अनुशंसित कार्रवाइयाँ।", "ja": "推奨される行動。", "id": "Tindakan yang direkomendasikan.", "fil": "Mga iminungkahing aksyon.", "es": "Acciones recomendadas.", "tr": "Önerilen eylemler.", "fa": "اقدامات توصیه شده.", "zh": "建议行动。", "tpi": "Sampela gutpela pasin bilong mekim.", "ho": "Mekim gutpela pasin.", "mi": "Ngā mahi e tika ana kia mahia.", "ne": "सिफारिश गरिएका कार्यहरू।", "el": "Προτεινόμενες ενέργειες.", "it": "Azioni consigliate.", "ps": "سپارښت شوي اقدامات.", "prs": "اقدامات توصیه شده."},
+    "media_h": {"en": "📺 Global media coverage", "hi": "📺 वैश्विक मीडिया कवरेज", "ja": "📺 世界のメディア報道", "id": "📺 Liputan media global", "fil": "📺 Pandaigdigang saklaw ng media", "es": "📺 Cobertura mediática global", "tr": "📺 Küresel medya kapsamı", "fa": "📺 پوشش رسانه‌ای جهانی", "zh": "📺 全球媒体报道", "tpi": "📺 Gutpela ripota long olgeta ples long graun", "ho": "📺 Gutpela toktok long graun", "mi": "📺 Āmiomio ā-ao", "ne": "📺 विश्वव्यापी मिडिया कभरेज", "el": "📺 Παγκόσμια κάλυψη μέσων", "it": "📺 Copertura mediatica globale", "ps": "📺 نړیوال رسنیز پوښښ", "prs": "📺 پوشش رسانه‌های جهانی"},
+    "media_cap": {"en": "Latest earthquake coverage from world media — click a card to read the full story.", "hi": "विश्व मीडिया से ताज़ा भूकंप कवरेज — पूरी ख़बर के लिए कार्ड पर क्लिक करें।", "ja": "世界のメディアによる最新の地震報道 — カードをクリックして記事全文をお読みください。", "id": "Liputan gempa terbaru dari media dunia — klik kartu untuk membaca cerita lengkap.", "fil": "Pinakabagong balita sa lindol mula sa media ng mundo — i-click ang isang card para basahin ang buong kuwento.", "es": "Última cobertura de terremotos de medios mundiales — haz clic en una tarjeta para leer la historia completa.", "tr": "Dünya medyasından en son deprem haberleri — tam hikayeyi okumak için bir karta tıklayın.", "fa": "آخرین پوشش زلزله از رسانه‌های جهان — برای خواندن کل داستان روی یک کارت کلیک کنید.", "zh": "来自世界媒体的最新地震报道 — 点击卡片阅读全文。", "tpi": "Nupela ripota long olgeta ples long graun — klikim wanpela ka redim long stori.", "ho": "Nupela toktok long graun long olgeta ples — pulim wanpela kaad long ritim.", "mi": "Ngā purongo ruuāhūri o nāianei mai i ngā pāpāho o te ao — pāwhiritia tētahi kaari kia pānuihia te kōrero katoa.", "ne": "विश्व मिडियाबाट नवीनतम भूकम्प कभरेज — पूर्ण कथा पढ्न कार्डमा क्लिक गर्नुहोस्।", "el": "Τελευταία κάλυψη σεισμών από παγκόσμια μέσα — κάντε κλικ σε μια κάρτα για να διαβάσετε ολόκληρη την ιστορία.", "it": "Ultime notizie sui terremoti dai media mondiali — clicca su una scheda per leggere l'articolo completo.", "ps": "له نړۍ له رسنیو وروستی زلزلې پوښښ — بشپړ کیسه لوستلو لپاره یو کارت کلیک کړئ.", "prs": "آخرین پوشش زلزله از رسانه‌های جهان — برای خواندن داستان کامل روی یک کارت کلیک کنید."},
+    "official_h": {"en": "🌐 Official updates", "hi": "🌐 आधिकारिक अपडेट", "ja": "🌐 公式発表", "id": "🌐 Pembaruan resmi", "fil": "🌐 Opisyal na mga update", "es": "🌐 Actualizaciones oficiales", "tr": "🌐 Resmi güncellemeler", "fa": "🌐 به‌روزرسانی‌های رسمی", "zh": "🌐 官方更新", "tpi": "🌐 Gutpela ripota long ol ofisel", "ho": "🌐 Toktok bilong gavman", "mi": "🌐 Ngā whakahōu mana", "ne": "🌐 आधिकारिक अद्यावधिकहरू", "el": "🌐 Επίσημες ενημερώσεις", "it": "🌐 Aggiornamenti ufficiali", "ps": "🌐 رسمي تازه معلومات", "prs": "🌐 به‌روزرسانی‌های رسمی"},
+    "official_cap": {"en": "Significant events from the official USGS record and situation reports from UN agencies — tap a card to open the source.", "hi": "आधिकारिक USGS रिकॉर्ड की महत्वपूर्ण घटनाएँ और UN एजेंसियों की स्थिति रिपोर्टें — स्रोत खोलने के लिए कार्ड टैप करें।", "ja": "USGS公式記録からの重要なイベントと国連機関からの状況報告 — カードをタップしてソースを開きます。", "id": "Peristiwa penting dari catatan USGS resmi dan laporan situasi dari badan PBB — ketuk kartu untuk membuka sumbernya.", "fil": "Mahahalagang kaganapan mula sa opisyal na talaan ng USGS at mga ulat ng sitwasyon mula sa mga ahensya ng UN — i-tap ang isang card para buksan ang pinagmulan.", "es": "Eventos significativos del registro oficial del USGS e informes de situación de agencias de la ONU — toca una tarjeta para abrir la fuente.", "tr": "Resmi USGS kayıtlarından önemli olaylar ve BM kuruluşlarından durum raporları — kaynağı açmak için bir karta dokunun.", "fa": "رویدادهای مهم از سوابق رسمی USGS و گزارش‌های وضعیت از آژانس‌های سازمان ملل — برای باز کردن منبع روی یک کارت ضربه بزنید.", "zh": "来自 USGS 官方记录的重要事件和联合国机构的 SITREP — 点击卡片打开来源。", "tpi": "Sampela gutpela samting long ofisel USGS ripota na ripota bilong UN — putim ka long opim source.", "ho": "Sapos i gat bikpela samting long USGS na toktok bilong UN — pulim wanpela kaad long lukim.", "mi": "Ngā huihuinga nui mai i ngā rekoata mana o te USGS me ngā pūrongo ā-tuhi mai i ngā tari UN — pāwhiritia tētahi kaari kia whakatuwheratia te pūtake.", "ne": "आधिकारिक USGS रेकर्डबाट महत्त्वपूर्ण घटनाहरू र संयुक्त राष्ट्र एजेन्सीहरूबाट स्थितिको रिपोर्टहरू — स्रोत खोल्न कार्डमा ट्याप गर्नुहोस्।", "el": "Σημαντικά γεγονότα από το επίσημο αρχείο της USGS και αναφορές κατάστασης από υπηρεσίες του ΟΗΕ — πατήστε μια κάρτα για να ανοίξετε την πηγή.", "it": "Eventi significativi dal registro ufficiale USGS e rapporti di situazione dalle agenzie ONU — tocca una scheda per aprire la fonte.", "ps": "د USGS رسمي ریکارډ او د ملګرو ملتونو له ادارو څخه د وضعیت راپورونو مهمې پیښې — سرچینه پرانیستلو لپاره یو کارت ټایپ کړئ.", "prs": "رویدادهای مهم از سوابق رسمی USGS و گزارش‌های وضعیت از آژانس‌های سازمان ملل — برای باز کردن منبع روی یک کارت ضربه بزنید."},
+    "ticker_label": {"en": "LIVE · THIS WEEK M5+", "hi": "लाइव · इस सप्ताह M5+", "ja": "ライブ · 今週 M5+", "id": "LANGSUNG · MINGGU INI M5+", "fil": "LIVE · NGAYONG LINGGO M5+", "es": "EN VIVO · ESTA SEMANA M5+", "tr": "CANLI · BU HAFTA M5+", "fa": "زنده · این هفته M5+", "zh": "直播 · 本周 M5+", "tpi": "LIVE · YA WEK M5+", "ho": "STAP LAIK · DIS WEEK M5+", "mi": "LIVE · TĒNEI WIKI M5+", "ne": "LIVE · यो हप्ता M5+", "el": "LIVE · ΑΥΤΗ ΤΗΝ ΕΒΔΟΜΑΔΑ M5+", "it": "LIVE · QUESTA SETTIMANA M5+", "ps": "ژوندی · دا اونۍ M5+", "prs": "زنده · این هفته M5+"},
+    "area_h": {"en": "My Area — community seismic risk profile", "hi": "मेरा क्षेत्र — सामुदायिक भूकंपीय जोखिम प्रोफ़ाइल", "ja": "マイエリア — 地域別地震リスクプロファイル", "id": "Area Saya — profil risiko seismik komunitas", "fil": "Aking Lugar — profile ng seismic risk ng komunidad", "es": "Mi Zona — perfil de riesgo sísmico comunitario", "tr": "Bölgem — topluluk sismik risk profili", "fa": "منطقه من — مشخصات خطر لرزه‌ای جامعه", "zh": "我的区域 — 社区地震风险概况", "tpi": "Stret long ples bilong mi — risik bilong komyuniti", "ho": "Stret long mi — toktok long ples bilong mi", "mi": "Tōku Rohe — te tauanga wiri o te hapori", "ne": "मेरो क्षेत्र — सामुदायिक भूकम्पीय जोखिम प्रोफाइल", "el": "Η Περιοχή μου — προφίλ σεισμικού κινδύνου κοινότητας", "it": "La mia zona — profilo di rischio sismico della comunità", "ps": "زما سیمه — د ټولنې زلزله خطر پروفایل", "prs": "منطقه من — مشخصات خطر لرزه‌ای جامعه"},
+    "area_cap": {"en": "Select your country and town - the agent combines your area's 50-year record with this week's live activity into a personal risk profile, in your language.", "hi": "अपना देश और शहर चुनें — एजेंट आपके क्षेत्र के 50-वर्षीय रिकॉर्ड और इस सप्ताह की गतिविधि को मिलाकर आपकी भाषा में जोखिम प्रोफ़ाइल बनाता है।", "ja": "国と町を選択してください - エージェントがあなたの地域の過去50年間の記録と今週のライブアクティビティを組み合わせて、あなたの言語で個人のリスクプロファイルを作成します。", "id": "Pilih negara dan kota Anda - agen menggabungkan catatan 50 tahun area Anda dengan aktivitas langsung minggu ini menjadi profil risiko pribadi, dalam bahasa Anda.", "fil": "Piliin ang iyong bansa at bayan - pinagsasama ng ahente ang 50-taong tala ng iyong lugar sa live na aktibidad ngayong linggo sa isang personal na profile ng panganib, sa iyong wika.", "es": "Selecciona tu país y ciudad - el agente combina el registro de 50 años de tu zona con la actividad en vivo de esta semana en un perfil de riesgo personal, en tu idioma.", "tr": "Ülkenizi ve şehrinizi seçin - ajan, bölgenizin 50 yıllık geçmişini bu haftanın canlı etkinliğiyle birleştirerek kişisel bir risk profili oluşturur, kendi dilinizde.", "fa": "کشور و شهر خود را انتخاب کنید - عامل، سابقه ۵۰ ساله منطقه شما را با فعالیت زنده این هفته ترکیب می‌کند تا یک پروفایل ریسک شخصی، به زبان شما، ایجاد کند.", "zh": "选择您的国家和城镇 - 该代理将您所在地区的 50 年记录与本周的实时活动结合起来，生成您语言的个人风险概况。", "tpi": "Filim kantri na taun bilong yu - agent i putim 50-yia ripota bilong ples bilong yu wantaim gutpela samting bilong ya wek i go insait long risik bilong yu, long tok bilong yu.", "ho": "Filim kantri na taun bilong yu - dispela agent i putim 50-yia save bilong ples bilong yu wantaim dispela wik i stap long en i go insait long wanpela toktok bilong risik, long tokples bilong yu.", "mi": "Tīpakohia tō whenua me tō taone — ka whakakotahi te kaihoko i te rekoata 50-tau o tō rohe me ngā mahi ora o tēnei wiki ki roto i tētahi tauanga tūmataiti, i tō reo.", "ne": "आफ्नो देश र सहर चयन गर्नुहोस् - एजेन्टले तपाईंको क्षेत्रको ५०-वर्षको रेकर्डलाई यस हप्ताको प्रत्यक्ष गतिविधिमा मिलाएर तपाईंको भाषामा व्यक्तिगत जोखिम प्रोफाइल बनाउँछ।", "el": "Επιλέξτε τη χώρα και την πόλη σας - ο πράκτορας συνδυάζει το 50ετές αρχείο της περιοχής σας με τη ζωντανή δραστηριότητα αυτής της εβδομάδας σε ένα προσωπικό προφίλ κινδύνου, στη γλώσσα σας.", "it": "Seleziona il tuo paese e la tua città - l'agente combina il record decennale della tua zona con l'attività live di questa settimana in un profilo di rischio personale, nella tua lingua.", "ps": "خپل هیواد او ښار وټاکئ - اجنټ ستاسو د سیمې 50 کلن ریکارډ د دې اونۍ ژوندی فعالیت سره ستاسو شخصي خطر پروفایل ته ترکیب کوي، ستاسو په ژبه.", "prs": "کشور و شهر خود را انتخاب کنید - این عامل سابقه ۵۰ ساله منطقه شما را با فعالیت زنده این هفته ترکیب می‌کند تا یک پروفایل خطر شخصی، به زبان شما ایجاد کند."},
+    "country": {"en": "Country", "hi": "देश", "ja": "国", "id": "Negara", "fil": "Bansa", "es": "País", "tr": "Ülke", "fa": "کشور", "zh": "国家", "tpi": "Nesen", "ho": "Nesi", "mi": "Whenua", "ne": "देश", "el": "Χώρα", "it": "Paese", "ps": "هیواد", "prs": "کشور"},
+    "town": {"en": "Town (type to search the list)", "hi": "शहर (सूची खोजने के लिए टाइप करें)", "ja": "町（リストを検索するには入力）", "id": "Kota (ketik untuk cari daftar)", "fil": "Bayan (i-type para hanapin sa listahan)", "es": "Población (escribe para buscar en la lista)", "tr": "İlçe (listeden aramak için yazın)", "fa": "شهر (برای جستجو در لیست تایپ کنید)", "zh": "城镇 (输入以搜索列表)", "tpi": "Taun (rausim long list)", "ho": "Dorina (higi gi list)", "mi": "Tāone (patohia hei rapu i te rarangi)", "ne": "सहर (सूचीमा खोज्न टाइप गर्नुहोस्)", "el": "Πόλη (πληκτρολογήστε για αναζήτηση στη λίστα)", "it": "Città (digita per cercare nell'elenco)", "ps": "ښار (د لیست لټون لپاره ټایپ کړئ)", "prs": "شهر (برای جستجو در لیست تایپ کنید)"},
+    "gen_profile": {"en": "Generate risk profile", "hi": "जोखिम प्रोफ़ाइल बनाएँ", "ja": "リスクプロファイルを作成", "id": "Buat profil risiko", "fil": "Bumuo ng profile ng panganib", "es": "Generar perfil de riesgo", "tr": "Risk profili oluştur", "fa": "ایجاد پروفایل ریسک", "zh": "生成风险档案", "tpi": "Stapim risik", "ho": "Guama risi profail", "mi": "Hangaia he kōtaha tūraru", "ne": "जोखिम प्रोफाइल उत्पन्न गर्नुहोस्", "el": "Δημιουργία προφίλ κινδύνου", "it": "Genera profilo di rischio", "ps": "د خطر پروفایل جوړ کړئ", "prs": "پروفایل خطر را ایجاد کنید"},
+    "profile_for": {"en": "Profile for:", "hi": "प्रोफ़ाइल:", "ja": "対象:", "id": "Profil untuk:", "fil": "Profile para kay:", "es": "Perfil para:", "tr": "Profil:", "fa": "پروفایل برای:", "zh": "档案:", "tpi": "Stapim bilong:", "ho": "Profail gi:", "mi": "Kōtaha mō:", "ne": "यसको लागि प्रोफाइल:", "el": "Προφίλ για:", "it": "Profilo per:", "ps": "پروفایل د:", "prs": "پروفایل برای:"},
+    "m5_since": {"en": "M5+ since 1975", "hi": "1975 से M5+", "ja": "1975年以降のM5+", "id": "M5+ sejak 1975", "fil": "M5+ simula 1975", "es": "M5+ desde 1975", "tr": "1975'ten beri M5+", "fa": "بزرگتر از ۵ ریشتر از سال ۱۹۷۵", "zh": "1975年以来5级以上地震", "tpi": "M5+ bihain long 1975", "ho": "M5+ tan 1975", "mi": "M5+ mai anō i te 1975", "ne": "सन् १९७५ देखि M5+", "el": "M5+ από το 1975", "it": "M5+ dal 1975", "ps": "د ۱۹۷۵ راهیسې M5+", "prs": "M5+ از سال ۱۹۷۵"},
+    "per_decade": {"en": "Per decade", "hi": "प्रति दशक", "ja": "10年あたり", "id": "Per dekade", "fil": "Bawat dekada", "es": "Por década", "tr": "On yıla göre", "fa": "در هر دهه", "zh": "每十年", "tpi": "Long wanpela dekede", "ho": "Per dekede", "mi": "Ia tekau tau", "ne": "प्रति दशक", "el": "Ανά δεκαετία", "it": "Per decennio", "ps": "په هره لسیزه", "prs": "در هر دهه"},
+    "strongest_ever": {"en": "Strongest ever", "hi": "अब तक का सबसे तेज़", "ja": "過去最大の地震", "id": "Terkuat sepanjang masa", "fil": "Pinakamalakas na naitala", "es": "Más fuerte de la historia", "tr": "En güçlüsü", "fa": "قوی‌ترین زلزله ثبت شده", "zh": "有史以来最强", "tpi": "Sampela strong we i bin i stap", "ho": "Laueha gavana", "mi": "Te kaha rawa atu", "ne": "सबैभन्दा शक्तिशाली कहिल्यै", "el": "Ισχυρότερος όλων των εποχών", "it": "Più forte in assoluto", "ps": "تر ټولو قوي تر اوسه", "prs": "قویترین زلزله تا کنون"},
+    "recent_m5": {"en": "Most recent M5+", "hi": "सबसे हालिया M5+", "ja": "直近のM5+", "id": "M5+ terbaru", "fil": "Pinakahuling M5+", "es": "M5+ más reciente", "tr": "En son M5+", "fa": "آخرین زلزله بزرگتر از ۵ ریشتر", "zh": "最近一次5级以上地震", "tpi": "Sampela M5+ we i kam pinis", "ho": "Laueha M5+", "mi": "M5+ hou rawa atu", "ne": "सबैभन्दा भर्खरको M5+", "el": "Πιο πρόσφατο M5+", "it": "M5+ più recente", "ps": "وروستی M5+", "prs": "آخرین M5+"},
+    "week500": {"en": "This week · 500 km", "hi": "इस सप्ताह · 500 किमी", "ja": "今週 · 500 km", "id": "Minggu ini · 500 km", "fil": "Linggong ito · 500 km", "es": "Esta semana · 500 km", "tr": "Bu hafta · 500 km", "fa": "این هفته · ۵۰۰ کیلومتر", "zh": "本周 · 500公里", "tpi": "Dispela wik · 500 km", "ho": "Dis week · 500 km", "mi": "Tēnei wiki · 500 km", "ne": "यो हप्ता · ५०० किमी", "el": "Αυτή την εβδομάδα · 500 χλμ", "it": "Questa settimana · 500 km", "ps": "دا اونۍ · ۵۰۰ کیلومتره", "prs": "این هفته · ۵۰۰ کیلومتر"},
+    "seis_h": {"en": "Seismic history.", "hi": "भूकंपीय इतिहास।", "ja": "地震履歴。", "id": "Riwayat gempa.", "fil": "Kasaysayan ng lindol.", "es": "Historial sísmico.", "tr": "Sismik geçmiş.", "fa": "تاریخچه لرزه‌نگاری.", "zh": "地震历史。", "tpi": "Stori bilong graun i seksek.", "ho": "Seismik hisori.", "mi": "Ngā rumananga o mua.", "ne": "भूकम्पीय इतिहास।", "el": "Σεισμικό ιστορικό.", "it": "Storia sismica.", "ps": "د زلزلې تاریخ.", "prs": "تاریخچه لرزه ای."},
+    "now_h": {"en": "Right now.", "hi": "अभी।", "ja": "現在。", "id": "Saat ini.", "fil": "Sa ngayon.", "es": "Ahora mismo.", "tr": "Şu anda.", "fa": "هم‌اکنون.", "zh": "立即。", "tpi": "Orait nau.", "ho": "Guama.", "mi": "I teie nei.", "ne": "अहिले।", "el": "Αυτή τη στιγμή.", "it": "Adesso.", "ps": "اوس.", "prs": "در حال حاضر."},
+    "prep_h": {"en": "Be prepared.", "hi": "तैयार रहें।", "ja": "備えましょう。", "id": "Bersiaplah.", "fil": "Maging handa.", "es": "Prepárate.", "tr": "Hazırlıklı olun.", "fa": "آماده باشید.", "zh": "做好准备。", "tpi": "Stanap gut.", "ho": "Guama hari.", "mi": "Kia rite.", "ne": "तयार हुनुहोस्।", "el": "Να είστε προετοιμασμένοι.", "it": "Sii preparato.", "ps": "ځان چمتو کړئ.", "prs": "آماده باشید."},
+    "chart_decade": {"en": "Events per decade near you", "hi": "आपके पास प्रति दशक घटनाएँ", "ja": "お近くの地域での10年ごとの発生件数", "id": "Peristiwa per dekade di dekat Anda", "fil": "Mga pangyayari kada dekada malapit sa iyo", "es": "Eventos por década cerca de ti", "tr": "Yakınınızdaki deprem sıklığı (on yıllık)", "fa": "رویدادها در هر دهه در نزدیکی شما", "zh": "您附近的每十年事件数", "tpi": "Ol samting i bin kamap long wanpela taim bilong ten yia klostu long yu", "ho": "Taun bilong olgeta samting klostu long yu", "mi": "Ngā huihuinga ia tekau tau e tata ana ki a koe", "ne": "तपाईं नजिकका घटनाहरू प्रति दशक", "el": "Γεγονότα ανά δεκαετία κοντά σας", "it": "Eventi per decennio vicino a te", "ps": "پېښې په لسيزه کې ستاسو نږدې", "prs": "رویدادها در هر دهه در نزدیکی شما"},
+    "chart_decade_cap": {"en": "Taller recent bars often reflect better instruments, not necessarily more earthquakes.", "hi": "हाल के ऊँचे बार अक्सर बेहतर उपकरणों को दर्शाते हैं, ज़रूरी नहीं कि ज़्यादा भूकंप हों।", "ja": "最近の棒グラフが高いのは、計器の性能向上によるもので、必ずしも地震の多さを示すものではありません。", "id": "Batang terbaru yang lebih tinggi sering kali mencerminkan instrumen yang lebih baik, bukan berarti gempa bumi lebih banyak.", "fil": "Ang mas matatangkad na bar kamakailan ay kadalasang sumasalamin sa mas mahusay na instrumento, hindi kinakailangang mas maraming lindol.", "es": "Las barras recientes más altas a menudo reflejan mejores instrumentos, no necesariamente más terremotos.", "tr": "Daha uzun son çubuklar genellikle daha iyi cihazları yansıtır, mutlaka daha fazla depremi değil.", "fa": "میله‌های بلندتر اخیر اغلب نشان‌دهنده ابزارهای بهتر است، نه لزوماً زلزله‌های بیشتر.", "zh": "近期较高的柱状图通常反映了更好的仪器，而非必然是地震增多。", "tpi": "Ol lain antap long taim i no longtaim pinis i ken makim gutpela sisten, tasol i no oltaim makim planti moa long ol samting i bin kamap.", "ho": "Ol bikpela lain bilong nau i ken makim gutpela samting bilong lukluk, tasol i no oltaim makim planti samting i painim.", "mi": "Ko ngā pouaka teitei ake nei, he maha ake te whakaatu i ngā taputapu pai ake, ehara i te mea he maha ake ngā rū whenua.", "ne": "हालका अग्ला बारहरूले आवश्यकभन्दा बढी भूकम्पलाई सङ्केत गर्दैनन्, बरु राम्रो उपकरणलाई सङ्केत गर्छन्।", "el": "Οι υψηλότερες πρόσφατες μπάρες συχνά αντικατοπτρίζουν καλύτερα όργανα, όχι απαραίτητα περισσότερους σεισμούς.", "it": "Barre recenti più alte spesso riflettono strumenti migliori, non necessariamente più terremoti.", "ps": "لوړ وروستي بارونه اکثرا ښه وسایل منعکس کوي، نه تل ډیر زلزلې.", "prs": "میله‌های بلندتر اخیر اغلب نشان‌دهنده ابزارهای بهتر است، نه لزوماً زلزله‌های بیشتر."},
+    "chart_strength": {"en": "How strong they were", "hi": "वे कितने तेज़ थे", "ja": "地震の強さ", "id": "Seberapa kuat mereka", "fil": "Gaano kalakas ang mga ito", "es": "Qué tan fuertes fueron", "tr": "Ne kadar güçlü oldukları", "fa": "چقدر قوی بودند", "zh": "它们的强度如何", "tpi": "Olsem wanem ol i gat strong", "ho": "Olsem wanem ol i gat strong", "mi": "Te kaha o ō rātou", "ne": "ती कति बलियो थिए", "el": "Πόσο ισχυροί ήταν", "it": "Quanto sono stati forti", "ps": "څومره قوي وې", "prs": "چقدر قوی بودند"},
+    "chart_strength_cap": {"en": "Most events cluster at the lower magnitudes - the big ones are rare but matter most.", "hi": "अधिकांश घटनाएँ कम परिमाण की होती हैं — बड़ी दुर्लभ हैं पर सबसे महत्वपूर्ण हैं।", "ja": "ほとんどの地震はマグニチュードが小さいですが、大きな地震はまれでも最も重要です。", "id": "Sebagian besar peristiwa terkumpul pada magnitudo rendah - yang besar jarang terjadi tetapi paling penting.", "fil": "Karamihan sa mga kaganapan ay nagkukumpol sa mas mababang magnitude - ang malalaki ay bihira ngunit pinakamahalaga.", "es": "La mayoría de los eventos se agrupan en las magnitudes más bajas; los grandes son raros pero son los que más importan.", "tr": "Çoğu olay düşük büyüklüklerde kümelenir - büyük olanlar nadirdir ancak en önemlileridir.", "fa": "بیشتر رویدادها در بزرگی‌های پایین‌تر جمع می‌شوند - رویدادهای بزرگ نادر هستند اما بیشترین اهمیت را دارند.", "zh": "大多数事件集中在较低的震级——大地震很少见，但最重要。", "tpi": "Planti samting i stap long liklik kain, tasol ol bikpela i no planti tasol ol i gat bikpela mak.", "ho": "Planti samting i stap long liklik kain, tasol ol bikpela i no planti tasol ol i askim.", "mi": "Ko te nuinga o ngā huihuinga ka noho ki ngā rahi iti ake - he onge ngā mea nui engari ko ēnei te mea nui.", "ne": "अधिकांश घटनाहरू कम परिमाणमा केन्द्रित हुन्छन् - ठूला भूकम्पहरू दुर्लभ हुन्छन् तर सबैभन्दा महत्त्वपूर्ण हुन्छन्।", "el": "Τα περισσότερα γεγονότα συγκεντρώνονται στις χαμηλότερες κλίμακες μεγέθους - τα μεγάλα είναι σπάνια αλλά έχουν τη μεγαλύτερη σημασία.", "it": "La maggior parte degli eventi si concentra sulle magnitudo più basse - quelli grandi sono rari ma contano di più.", "ps": "ډیری پیښې په ټیټو اندازو کې ډله ایزې دي - لویې نادر دي مګر خورا مهم دي.", "prs": "بیشتر رویدادها در مقیاس‌های پایین‌تر جمع می‌شوند - رویدادهای بزرگ نادر هستند اما بیشترین اهمیت را دارند."},
+    "map_exp": {"en": "Map: every M5+ epicenter within 300 km since 1975", "hi": "मानचित्र: 1975 से 300 किमी के भीतर हर M5+ केंद्र", "ja": "地図：1975年以降、300km以内のM5+の震源", "id": "Peta: setiap episentrum M5+ dalam jarak 300 km sejak 1975", "fil": "Mapa: bawat M5+ epicenter sa loob ng 300 km mula 1975", "es": "Mapa: cada epicentro M5+ a 300 km desde 1975", "tr": "Harita: 1975'ten beri 300 km içindeki her M5+ merkez üssü", "fa": "نقشه: هر مرکز زلزله M5+ در فاصله ۳۰۰ کیلومتری از سال ۱۹۷۵", "zh": "地图：自1975年以来300公里内的所有M5+震中", "tpi": "Map: Ol epicentre M5+ M5+ long 300 km bihain long 1975", "ho": "Mapi: olgeta M5+ emak we i stap klostu 300 km longtaim 1975", "mi": "Māhere: ia M5+ epicentre i roto i te 300 km mai i te tau 1975", "ne": "नक्सा: सन् १९७५ देखि ३०० किमी भित्रका प्रत्येक M5+ केन्द्रबिन्दु", "el": "Χάρτης: κάθε επίκεντρο M5+ εντός 300 χλμ από το 1975", "it": "Mappa: ogni epicentro M5+ entro 300 km dal 1975", "ps": "نقشه: له ۱۹۷۵ راهیسې په ۳۰۰ کیلومترۍ کې هر M5+ مرکز", "prs": "نقشه: هر مرکز زلزله M5+ در فاصله 300 کیلومتری از سال 1975"},
+    "ask_h": {"en": "Ask about Earthquakes — AI agent", "hi": "भूकंप के बारे में पूछें — AI एजेंट", "ja": "地震について質問する — AIエージェント", "id": "Tanya tentang Gempa Bumi — Agen AI", "fil": "Magtanong tungkol sa Lindol — AI agent", "es": "Pregunta sobre Terremotos — Agente IA", "tr": "Depremler Hakkında Sorun — Yapay Zeka Aracısı", "fa": "درباره زلزله‌ها بپرسید — عامل هوش مصنوعی", "zh": "关于地震提问 — AI助手", "tpi": "Sipela long ol Earthquakes — AI agent", "ho": "Sipia long ol samting we i painim graun — AI", "mi": "Pātai mō ngā Rū Whenua — Kaiwhakaako AI", "ne": "भूकम्पबारे सोध्नुहोस् — AI एजेन्ट", "el": "Ρωτήστε για Σεισμούς — Πράκτορας Τεχνητής Νοημοσύνης", "it": "Chiedi sui Terremoti — Agente AI", "ps": "د زلزلو په اړه پوښتنه وکړئ — AI اجنټ", "prs": "درباره زلزله‌ها بپرسید — عامل هوش مصنوعی"},
+    "ask_cap": {"en": "Ask anything, in any language — it replies in yours. Historical numbers come from 50 years of USGS data (SQL shown), this week's events from the live feed, and current news with web sources cited. It remembers follow-ups and can discuss your My Area analysis (from the My Area page).", "hi": "कुछ भी पूछें, किसी भी भाषा में — जवाब आपकी भाषा में मिलेगा। ऐतिहासिक आँकड़े 50 वर्षों के USGS डेटा से (SQL दिखाया जाता है), इस सप्ताह की घटनाएँ लाइव फ़ीड से, और ताज़ा समाचार स्रोतों के साथ। यह फ़ॉलो-अप याद रखता है।", "ja": "どんなことでも、どんな言語でも質問してください — あなたの言語で回答します。過去のデータはUSGSの50年間のデータ（SQL表示）から、今週のイベントはライブフィードから、現在のニュースはウェブソースを引用しています。フォローアップを記憶し、マイエリア分析（マイエリアページから）について議論できます。", "id": "Tanyakan apa saja, dalam bahasa apa pun — ia akan membalas dalam bahasa Anda. Angka historis berasal dari 50 tahun data USGS (SQL ditampilkan), peristiwa minggu ini dari umpan langsung, dan berita terkini dengan sumber web yang dikutip. Ia mengingat tindak lanjut dan dapat mendiskusikan analisis Area Saya Anda (dari halaman Area Saya).", "fil": "Magtanong ng kahit ano, sa kahit anong wika — sasagot ito sa iyo. Ang mga makasaysayang numero ay mula sa 50 taon ng datos ng USGS (SQL na ipinapakita), ang mga kaganapan ngayong linggo mula sa live feed, at ang kasalukuyang balita na may mga pinagkunan ng web na binanggit. Naaalala nito ang mga follow-up at maaaring talakayin ang iyong pagsusuri sa Aking Lugar (mula sa pahina ng Aking Lugar).", "es": "Pregunta lo que sea, en cualquier idioma; responde en el tuyo. Los números históricos provienen de 50 años de datos de USGS (SQL mostrado), los eventos de esta semana del feed en vivo y noticias actuales con fuentes web citadas. Recuerda seguimientos y puede discutir tu análisis de Mi Área (de la página Mi Área).", "tr": "Her şeyi, her dilde sorun — sizin dilinizde yanıtlar. Tarihsel sayılar 50 yıllık USGS verilerinden (SQL gösterilir), bu haftaki olaylar canlı yayından ve web kaynakları alıntılanan güncel haberlerden gelir. Takip sorularını hatırlar ve Bölge Analizinizi (Bölge Sayfası'ndan) tartışabilir.", "fa": "هر چیزی را به هر زبانی بپرسید — به زبان شما پاسخ می‌دهد. اعداد تاریخی از ۵۰ سال داده‌های USGS (SQL نمایش داده شده) می‌آیند، رویدادهای این هفته از فید زنده، و اخبار فعلی با منابع وب ذکر شده. پیگیری‌ها را به خاطر می‌سپارد و می‌تواند تحلیل منطقه من شما را (از صفحه منطقه من) مورد بحث قرار دهد.", "zh": "用任何语言提问 — 它会用您的语言回复。历史数据来自50年的USGS数据（显示SQL），本周事件来自实时数据流，以及引用了网络来源的最新新闻。它可以记住后续问题，并可以讨论您的“我的区域”分析（来自“我的区域”页面）。", "tpi": "Sipela wanpela samting, long wanpela tokples — em i givim tok long yu. Ol namba bilong bipo i kam long 50 yia bilong USGS data (SQL i so), ol samting bilong dispela wik i kam long live feed, na ol notis bilong nau wantaim web sources i so. Em i memori long ol follow-ups na ken stori long yupla analysis bilong yu (long My Area page).", "ho": "Sipia long wanpela samting, long wanpela tokples — em i givim tok long tokples bilong yu. Ol stori bilong bipo i kam long 50 yia bilong USGS data (SQL i so), ol samting bilong dispela wik i kam long laip feed, na ol notis bilong nau wantaim web sources i raitim. Em i no ken lusim ol tok bilong yu na ken stori long yupla analysis (long My Area page).", "mi": "Pātai i ngā mea katoa, i ngā reo katoa — ka whakautu ia ki tō reo. Ko ngā tau o mua ka ahu mai i te 50 tau o ngā raraunga USGS (SQL kua whakaatuhia), ko ngā huihuinga o tēnei wiki mai i te puna ora, me ngā purongo o nāianei me ngā puna paetukutuku kua tohua. Ka mahara ia ki ngā whai muri, ā, ka taea e ia te matapaki i tō tātaritanga o Tō Rohe (mai i te whārangi Tō Rohe).", "ne": "कुनै पनि भाषामा जे पनि सोध्नुहोस् — यसले तपाईंको भाषामा जवाफ दिन्छ। ऐतिहासिक सङ्ख्याहरू ५० वर्षको USGS डेटा (SQL देखाइएको), लाइभ फिडबाट यस हप्ताका घटनाहरू, र वेब स्रोतहरू उद्धृत गरिएका वर्तमान समाचारहरूबाट आउँछन्। यसले फलो-अपहरू सम्झन्छ र तपाईंको मेरो क्षेत्र विश्लेषण (मेरो क्षेत्र पृष्ठबाट) छलफल गर्न सक्छ।", "el": "Ρωτήστε οτιδήποτε, σε οποιαδήποτε γλώσσα — απαντά στη δική σας. Ιστορικοί αριθμοί προέρχονται από 50 χρόνια δεδομένων USGS (SQL που εμφανίζεται), τα φετινά γεγονότα από τη ζωντανή ροή και τρέχουσες ειδήσεις με αναφερόμενες πηγές στο διαδίκτυο. Θυμάται τις επόμενες ερωτήσεις και μπορεί να συζητήσει την ανάλυση της Περιοχής μου (από τη σελίδα Περιοχή μου).", "it": "Chiedi qualsiasi cosa, in qualsiasi lingua — risponde nella tua. I numeri storici provengono da 50 anni di dati USGS (SQL mostrato), gli eventi di questa settimana dal feed live e le notizie attuali con fonti web citate. Ricorda i follow-up e può discutere la tua analisi della Mia Area (dalla pagina Mia Area).", "ps": "هرڅه په هر ژبه وپوښتئ — دا په ستاسو ژبه ځواب ورکوي. تاریخي شمیرې د USGS له ۵۰ کلونو معلوماتو څخه راځي (SQL ښودل شوی)، د ژوندی فیډ څخه د دې اونۍ پیښې، او اوسني خبرونه د ویب سرچینو سره. دا تعقیبونه په یاد لري او ستاسو د زما ساحې تحلیل (د زما ساحې پاڼې څخه) بحث کولی شي.", "prs": "هر چیزی را به هر زبانی بپرسید — به زبان شما پاسخ می‌دهد. اعداد تاریخی از 50 سال داده‌های USGS (SQL نشان داده شده) می‌آیند، رویدادهای این هفته از فید زنده، و اخبار فعلی با منابع وب ذکر شده. پیگیری‌ها را به خاطر می‌سپارد و می‌تواند تحلیل منطقه من شما را (از صفحه منطقه من) مورد بحث قرار دهد."},
+    "try_these": {"en": "Try one of these:", "hi": "इनमें से एक आज़माएँ:", "ja": "こちらをお試しください：", "id": "Coba salah satu dari ini:", "fil": "Subukan ang isa sa mga ito:", "es": "Prueba uno de estos:", "tr": "Bunlardan birini deneyin:", "fa": "یکی از این‌ها را امتحان کنید:", "zh": "试试这些：", "tpi": "Sipela wanpela long ol dispela:", "ho": "Sipia long wanpela long ol dispela:", "mi": "Whakamātauhia tētahi o ēnei:", "ne": "यी मध्ये एउटा प्रयास गर्नुहोस्:", "el": "Δοκιμάστε ένα από αυτά:", "it": "Prova uno di questi:", "ps": "له دې څخه یوه هڅه وکړئ:", "prs": "یکی از اینها را امتحان کنید:"},
+    "chat_ph": {"en": "Ask anything about earthquakes — events, science, safety, or your area's analysis...", "hi": "भूकंप के बारे में कुछ भी पूछें — घटनाएँ, विज्ञान, सुरक्षा...", "ja": "地震について何でも聞いてください — イベント、科学、安全、またはお住まいの地域の分析について...", "id": "Tanyakan apa saja tentang gempa bumi — peristiwa, sains, keselamatan, atau analisis area Anda...", "fil": "Magtanong ng kahit ano tungkol sa lindol — mga kaganapan, agham, kaligtasan, o pagsusuri ng iyong lugar...", "es": "Pregunta cualquier cosa sobre terremotos: eventos, ciencia, seguridad o el análisis de tu área...", "tr": "Depremler hakkında her şeyi sorun — olaylar, bilim, güvenlik veya bölgenizin analizi...", "fa": "هر چیزی درباره زلزله‌ها بپرسید — رویدادها، علم، ایمنی، یا تحلیل منطقه شما...", "zh": "询问关于地震的任何问题 — 事件、科学、安全或您所在区域的分析...", "tpi": "Sipela wanpela samting long ol earthquakes — ol samting, science, safety, o analysis bilong ples bilong yu...", "ho": "Sipia long wanpela samting long ol samting we i painim graun — ol samting, save, pasin bilong stap gut, o analysis bilong ples bilong yu...", "mi": "Pātai i ngā mea katoa mō ngā rū whenua — ngā huihuinga, te pūtaiao, te haumaru, te tātaringa rānei o tō rohe...", "ne": "भूकम्पबारे जे पनि सोध्नुहोस् — घटनाहरू, विज्ञान, सुरक्षा, वा तपाईंको क्षेत्रको विश्लेषण...", "el": "Ρωτήστε οτιδήποτε για σεισμούς — γεγονότα, επιστήμη, ασφάλεια ή την ανάλυση της περιοχής σας...", "it": "Chiedi qualsiasi cosa sui terremoti — eventi, scienza, sicurezza o l'analisi della tua zona...", "ps": "د زلزلو په اړه هرڅه وپوښتئ - پیښې، ساینس، خوندیتوب، یا ستاسو د ساحې تحلیل...", "prs": "هر چیزی در مورد زلزله‌ها بپرسید — رویدادها، علم، ایمنی، یا تحلیل منطقه شما..."},
+    "clear_conv": {"en": "Clear conversation", "hi": "बातचीत साफ़ करें", "ja": "会話をクリア", "id": "Hapus percakapan", "fil": "Burahin ang usapan", "es": "Borrar conversación", "tr": "Konuşmayı temizle", "fa": "پاک کردن گفتگو", "zh": "清除对话", "tpi": "Klearim stori", "ho": "Klimim olgeta stori", "mi": "Whakawātea te kōrero", "ne": "कुराकानी खाली गर्नुहोस्", "el": "Καθαρισμός συνομιλίας", "it": "Cancella conversazione", "ps": "خبرې اترې پاک کړئ", "prs": "مکالمه را پاک کنید"},
+    "ex1": {"en": "How many M6+ earthquakes hit Myanmar since 1990?", "hi": "1990 से म्यांमार में कितने M6+ भूकंप आए?", "ja": "1990年以降、ミャンマーで発生したM6+の地震は何回ですか？", "id": "Berapa banyak gempa M6+ yang melanda Myanmar sejak 1990?", "fil": "Ilang M6+ lindol ang tumama sa Myanmar mula 1990?", "es": "¿Cuántos terremotos M6+ golpearon Myanmar desde 1990?", "tr": "1990'dan beri Myanmar'ı kaç M6+ deprem vurdu?", "fa": "چه تعداد زلزله M6+ از سال ۱۹۹۰ میانمار را تحت تأثیر قرار داده است؟", "zh": "自1990年以来，缅甸发生了多少次M6+地震？", "tpi": "Planti M6+ earthquakes i bin hit Myanmar bihain long 1990?", "ho": "Planti M6+ samting we i painim Myanmar longtaim 1990?", "mi": "E hia ngā M6+ rū whenua i pa ki a Myanmar mai i te tau 1990?", "ne": "सन् १९९० देखि म्यानमारमा कति M6+ भूकम्प गएका छन्?", "el": "Πόσοι σεισμοί M6+ έπληξαν τη Μιανμάρ από το 1990;", "it": "Quanti terremoti M6+ hanno colpito il Myanmar dal 1990?", "ps": "له ۱۹۹۰ راهیسې په میانمار کې څو M6+ زلزلې شوې دي؟", "prs": "چند زلزله M6+ میانمار را از سال 1990 تاکنون تحت تأثیر قرار داده است؟"},
+    "ex2": {"en": "Why does Myanmar get so many big earthquakes?", "hi": "म्यांमार में इतने बड़े भूकंप क्यों आते हैं?", "ja": "なぜミャンマーでは大きな地震が多いのですか？", "id": "Mengapa Myanmar sering mengalami gempa besar?", "fil": "Bakit maraming malalaking lindol sa Myanmar?", "es": "¿Por qué Myanmar tiene tantos terremotos grandes?", "tr": "Myanmar neden bu kadar çok büyük deprem alıyor?", "fa": "چرا میانمار اینقدر زلزله‌های بزرگ دارد؟", "zh": "为什么缅甸会发生这么多大地震？", "tpi": "Bilong wanem Myanmar i kisim planti bikpela earthquakes?", "ho": "Bilong wanem Myanmar i kisim planti bikpela samting we i painim?", "mi": "He aha a Myanmar ka whiwhi i te maha o ngā rū whenua nui?", "ne": "म्यानमारमा यति धेरै ठूला भूकम्प किन जान्छन्?", "el": "Γιατί η Μιανμάρ έχει τόσους πολλούς μεγάλους σεισμούς;", "it": "Perché il Myanmar riceve così tanti grandi terremoti?", "ps": "ولې میانمار دومره لویې زلزلې لري؟", "prs": "چرا میانمار اینقدر زلزله‌های بزرگ دارد؟"},
+    "ex3": {"en": "What should my family do during strong shaking?", "hi": "तेज़ झटकों के दौरान मेरे परिवार को क्या करना चाहिए?", "ja": "強い揺れの最中に家族はどうすればいいですか？", "id": "Apa yang harus dilakukan keluarga saya saat guncangan kuat?", "fil": "Ano ang dapat gawin ng pamilya ko sa malakas na pagyanig?", "es": "¿Qué debe hacer mi familia durante un temblor fuerte?", "tr": "Güçlü sarsıntı sırasında ailem ne yapmalı?", "fa": "خانواده من هنگام لرزش شدید چه کاری باید انجام دهند؟", "zh": "强震时我的家人应该怎么做？", "tpi": "Sampela pren bilong mi mas ekt long taim bilong strong shaking?", "ho": "Haida na famere duama long taim i gat helen?", "mi": "Me aha taku whānau i te wā o te ruu kaha?", "ne": "कडा भूकम्पको बेला मेरो परिवारले के गर्नुपर्छ?", "el": "Τι πρέπει να κάνει η οικογένειά μου κατά τη διάρκεια ισχυρών δονήσεων;", "it": "Cosa dovrebbe fare la mia famiglia durante una forte scossa?", "ps": "د قوي زلزلې پرمهال زما کورنۍ څه باید وکړي؟", "prs": "در جریان لرزش شدید چه کاری باید خانواده من انجام دهد؟"},
+    "ex4": {"en": "Strongest quake ever near Japan - and what made it so deadly?", "hi": "जापान के पास अब तक का सबसे तेज़ भूकंप — यह इतना घातक क्यों था?", "ja": "日本周辺で過去最大の地震 — その原因と被害の大きさは？", "id": "Gempa terkuat yang pernah ada di dekat Jepang - dan apa yang membuatnya begitu mematikan?", "fil": "Pinakamalakas na lindol na naitala malapit sa Japan - at ano ang dahilan ng pagkamatay nito?", "es": "El sismo más potente cerca de Japón, ¿y qué lo hizo tan mortal?", "tr": "Japonya yakınlarındaki şimdiye kadarki en güçlü deprem - ve onu bu kadar ölümcül yapan neydi?", "fa": "قوی‌ترین زلزله تاریخ نزدیک ژاپن - و چه چیزی آن را اینقدر مرگبار کرد؟", "zh": "日本附近有史以来最强烈的地震——以及是什么导致了如此致命的后果？", "tpi": "Strongest quake ever near Japan - and what made it so deadly?", "ho": "Heleni tru tru we i paina long Japan - na haida na dai?", "mi": "Ko te ruu kaha rawa atu i tēnei wā ki te taha o Japan - ā, nā te aha i mate ai?", "ne": "जापान नजिकैको अहिलेसम्मकै सबैभन्दा ठूलो भूकम्प - र यसलाई यति घातक के बनायो?", "el": "Ο ισχυρότερος σεισμός που έγινε ποτέ κοντά στην Ιαπωνία - και τι τον έκανε τόσο θανατηφόρο;", "it": "Il terremoto più forte mai registrato vicino al Giappone: cosa lo ha reso così letale?", "ps": "تر ټولو قوي زلزله چې جاپان ته نږدې شوې - او څه شی دا دومره وژونکې کړه؟", "prs": "قویترین زلزله تاریخ در نزدیکی جاپان - و چه چیزی آن را چنین مرگبار ساخت؟"},
+    "bot_intro": {"en": "Hi, I'm **Terra** ✦ — QuakeSense's AI assistant, powered by Google's Gemini 2.5 Flash on Vertex AI.\n\nI can help you with:\n- **What you're seeing** on this page — any event, number, or alert\n- **Any earthquake question**, in your own language\n- **Finding help**: nearest hospitals, fire & police stations and national emergency numbers are in the **Response Toolkit**\n\nWhat would you like to know?", "hi": "नमस्ते, मैं **Terra** ✦ हूँ — QuakeSense का AI सहायक, Google के Gemini 2.5 Flash द्वारा संचालित।\n\nमैं मदद कर सकती हूँ:\n- इस पेज पर **जो आप देख रहे हैं** — कोई घटना, संख्या या अलर्ट\n- **कोई भी भूकंप सवाल**, आपकी भाषा में\n- **मदद खोजना**: नज़दीकी अस्पताल, फ़ायर व पुलिस स्टेशन **प्रतिक्रिया टूलकिट** में हैं\n\nआप क्या जानना चाहेंगे?", "ja": "こんにちは、**Terra** ✦ です — QuakeSense の AI アシスタントで、Vertex AI 上の Google Gemini 2.5 Flash を利用しています。\n\n以下のようなお手伝いができます。\n- このページに表示されている内容 — イベント、数値、アラートについて\n- 地震に関するあらゆる質問 — あなたの言語で\n- 支援情報の検索 — 最寄りの病院、消防署、警察署、および国の緊急電話番号は「**レスポンス・ツールキット**」にあります。\n\n何を知りたいですか？", "id": "Hai, saya **Terra** ✦ — asisten AI QuakeSense, didukung oleh Gemini 2.5 Flash dari Google di Vertex AI.\n\nSaya dapat membantu Anda dengan:\n- **Apa yang Anda lihat** di halaman ini — acara, angka, atau peringatan apa pun\n- **Pertanyaan gempa apa pun**, dalam bahasa Anda sendiri\n- **Mencari bantuan**: rumah sakit, kantor pemadam kebakaran & polisi terdekat, dan nomor darurat nasional ada di **Toolkit Respons**\n\nApa yang ingin Anda ketahui?", "fil": "Hi, ako si **Terra** ✦ — AI assistant ng QuakeSense, na pinapagana ng Gemini 2.5 Flash ng Google sa Vertex AI.\n\nMatutulungan kita sa:\n- **Ano ang nakikita mo** sa pahinang ito — anumang kaganapan, numero, o alerto\n- **Anumang tanong tungkol sa lindol**, sa sarili mong wika\n- **Paghahanap ng tulong**: pinakamalapit na ospital, istasyon ng bumbero at pulis, at mga pambansang numero ng emerhensiya ay nasa **Response Toolkit**\n\nAno ang gusto mong malaman?", "es": "Hola, soy **Terra** ✦ — el asistente de IA de QuakeSense, potenciado por Gemini 2.5 Flash de Google en Vertex AI.\n\nPuedo ayudarte con:\n- **Lo que estás viendo** en esta página — cualquier evento, número o alerta\n- **Cualquier pregunta sobre sismos**, en tu propio idioma\n- **Encontrar ayuda**: hospitales, estaciones de bomberos y policía cercanas, y números de emergencia nacionales se encuentran en el **Kit de Respuesta**\n\n¿Qué te gustaría saber?", "tr": "Merhaba, ben **Terra** ✦ — QuakeSense'in yapay zeka asistanıyım, Google'ın Vertex AI üzerindeki Gemini 2.5 Flash'ı ile desteklenmektedir.\n\nSize şu konularda yardımcı olabilirim:\n- Bu sayfada **ne gördüğünüz** — herhangi bir olay, sayı veya uyarı\n- **Herhangi bir deprem sorusu**, kendi dilinizde\n- **Yardım bulma**: en yakın hastaneler, itfaiye ve polis merkezleri ile ulusal acil durum numaraları **Yanıt Araç Kiti**'nde\n\nNe öğrenmek istersiniz?", "fa": "سلام، من **Terra** ✦ هستم — دستیار هوش مصنوعی QuakeSense، که توسط Gemini 2.5 Flash گوگل در Vertex AI پشتیبانی می‌شود.\n\nمن می‌توانم به شما در موارد زیر کمک کنم:\n- **آنچه می‌بینید** در این صفحه — هر رویداد، عدد یا هشداری\n- **هر سوال زلزله**، به زبان خودتان\n- **یافتن کمک**: نزدیک‌ترین بیمارستان‌ها، ایستگاه‌های آتش‌نشانی و پلیس و شماره تلفن‌های اضطراری ملی در **جعبه ابزار واکنش** موجود است.\n\nچه چیزی را می‌خواهید بدانید؟", "zh": "您好，我是**Terra** ✦ — QuakeSense 的 AI 助手，由 Google 的 Gemini 2.5 Flash 在 Vertex AI 上提供支持。\n\n我可以帮助您：\n- **了解**此页面上的内容 — 任何事件、数字或警报\n- 用您自己的语言**回答任何地震问题**\n- **寻找帮助**：**应急工具包**中提供最近的医院、消防和警察局以及国家紧急电话号码。\n\n您想了解什么？", "tpi": "Hi, I'm **Terra** ✦ — QuakeSense's AI assistant, powered by Google's Gemini 2.5 Flash on Vertex AI.\n\nI can help you with:\n- **What you're seeing** on this page — any event, number, or alert\n- **Any earthquake question**, in your own language\n- **Finding help**: nearest hospitals, fire & police stations and national emergency numbers are in the **Response Toolkit**\n\nWhat would you like to know?", "ho": "Hai, mi **Terra** ✦ — QuakeSense AI asisitan, Google Gemini 2.5 Flash long Vertex AI i givim strong.\n\nMi ken helpim yu long:\n- **Haida na yu lukim** long dispela page — ol event, nomba, o alert\n- **Nogat wanpela askim long earthquake**, long toktok bilong yu\n- **Painim help**: hospital, fire & police station we stap klostu, na national emergency nomba i stap long **Response Toolkit**\n\nHaida na yu laik save?", "mi": "Kia ora, ko **Terra** ✦ ahau — te kaiawhina AI a QuakeSense, nā Gemini 2.5 Flash a Google i whakahihiko i runga i a Vertex AI.\n\nKa taea e au te āwhina i a koe ki:\n- **Ngā mea e kite ana koe** i runga i tēnei whārangi — he huihuinga, he tau, he whakaoho rānei\n- **Tētahi pātai ruu**, i tō reo ake\n- **Te kimi awhina**: kei roto i te **Response Toolkit** ngā hōhipera tata, ngā teihana ahi me ngā pirihimana, me ngā nama ohorere a motu\n\nHe aha te mea e hiahia ana koe kia mōhio?", "ne": "नमस्ते, म **Terra** ✦ — QuakeSense को AI सहायक, Vertex AI मा Google को Gemini 2.5 Flash द्वारा संचालित।\n\nम तपाईंलाई यसमा मद्दत गर्न सक्छु:\n- यस पृष्ठमा **तपाईंले के देख्दै हुनुहुन्छ** — कुनै पनि घटना, संख्या, वा सतर्कता\n- **कुनै पनि भूकम्प सम्बन्धी प्रश्न**, तपाईंको आफ्नै भाषामा\n- **मद्दत खोज्नुहोस्**: नजिकका अस्पतालहरू, दमकल र प्रहरी स्टेशनहरू र राष्ट्रिय आपतकालीन नम्बरहरू **प्रतिक्रिया टूलकिट**मा छन्।\n\nतपाईं के जान्न चाहनुहुन्छ?", "el": "Γεια, είμαι η **Terra** ✦ — η βοηθός AI του QuakeSense, με την υποστήριξη του Gemini 2.5 Flash της Google στο Vertex AI.\n\nΜπορώ να σας βοηθήσω με:\n- **Τι βλέπετε** σε αυτή τη σελίδα — οποιοδήποτε συμβάν, αριθμό ή ειδοποίηση\n- **Οποιαδήποτε ερώτηση για σεισμούς**, στη δική σας γλώσσα\n- **Εύρεση βοήθειας**: τα πλησιέστερα νοσοκομεία, πυροσβεστικοί και αστυνομικοί σταθμοί και εθνικοί αριθμοί έκτακτης ανάγκης βρίσκονται στο **Εργαλειοθήκη Αντιμετώπισης**\n\nΤι θα θέλατε να μάθετε;", "it": "Ciao, sono **Terra** ✦ — l'assistente AI di QuakeSense, basato su Gemini 2.5 Flash di Google su Vertex AI.\n\nPosso aiutarti con:\n- **Ciò che vedi** in questa pagina: qualsiasi evento, numero o allerta\n- **Qualsiasi domanda sui terremoti**, nella tua lingua\n- **Trovare aiuto**: ospedali, stazioni di polizia e vigili del fuoco più vicini e numeri di emergenza nazionali si trovano nel **Kit di Risposta**\n\nCosa vorresti sapere?", "ps": "سلام، زه **Terra** ✦ یم — د QuakeSense AI مرستیال، چې د ګوګل Gemini 2.5 Flash لخوا په Vertex AI کې پرمخ وړل کیږي.\n\nزه کولی شم تاسو سره مرسته وکړم:\n- **هغه څه چې تاسو ګورئ** په دې پاڼه کې — کومه پیښه، شمیره، یا خبرتیا\n- **د زلزلې په اړه کومه پوښتنه**، په خپلې ژبې\n- **د مرستې موندل**: نږدې روغتونونه، د اور او پولیسو سټیشنونه او ملي اضطراري شمیرې په **د ځوابونو په وسیله** کې دي\n\nتاسو غواړئ څه پوه شئ؟", "prs": "سلام، من **Terra** ✦ هستم — دستیار هوش مصنوعی QuakeSense، که توسط Gemini 2.5 Flash گوگل در Vertex AI قدرت گرفته است.\n\nمن می توانم به شما در موارد زیر کمک کنم:\n- **آنچه در این صفحه می بینید** — هر رویداد، عدد یا هشدار\n- **هر سوال در مورد زلزله**، به زبان خودتان\n- **یافتن کمک**: نزدیکترین شفاخانه ها، ایستگاه های آتش نشانی و پولیس و شماره های اضطراری ملی در **جعبه ابزار پاسخ** موجود است\n\nچه چیزی را می خواهید بدانید؟"},
+    "anom_h": {"en": "Anomaly Watch — unusual seismic activity", "hi": "असामान्यता निगरानी — असामान्य भूकंपीय गतिविधि", "ja": "異常検知 — 通常とは異なる地震活動", "id": "Pantauan Anomali — aktivitas seismik yang tidak biasa", "fil": "Anomaly Watch — hindi pangkaraniwang aktibidad ng seismic", "es": "Vigilancia de Anomalías — actividad sísmica inusual", "tr": "Anomali Gözlemi — alışılmadık sismik aktivite", "fa": "هشدار ناهنجاری — فعالیت لرزه‌ای غیرمعمول", "zh": "异常监测 — 不寻常的地震活动", "tpi": "Anomaly Watch — unusual seismic activity", "ho": "Anomaly Watch — helen seismic activity we i no mas", "mi": "Te Tirohanga Tauhou — he wiri whenua kē", "ne": "विसंगति निगरानी — असामान्य भूकम्पीय गतिविधि", "el": "Παρακολούθηση Ανωμαλιών — ασυνήθιστη σεισμική δραστηριότητα", "it": "Osservatorio Anomalie — attività sismica insolita", "ps": "د غیر معمولي څارنې - غیر معمولي زلزله فعالیت", "prs": "هشدار ناهنجاری — فعالیت لرزه ای غیرعادی"},
+    "anom_cap": {"en": "Compares this week's M4.5+ activity in every 5-degree region against the 50-year historical baseline. Flags swarms and intense aftershock sequences.", "hi": "हर 5-डिग्री क्षेत्र की इस सप्ताह की M4.5+ गतिविधि की तुलना 50-वर्षीय आधार रेखा से करता है। झुंड और तीव्र आफ़्टरशॉक चिह्नित करता है।", "ja": "今週のM4.5以上の活動を、5度ごとの地域別に50年間の歴史的基準と比較します。群発地震や激しい余震活動を検出します。", "id": "Membandingkan aktivitas M4.5+ minggu ini di setiap wilayah 5 derajat dengan garis dasar historis 50 tahun. Menandai gerombolan dan urutan gempa susulan yang intens.", "fil": "Inihahambing ang aktibidad na M4.5+ ngayong linggo sa bawat rehiyon na may 5-degree laban sa 50-taong historical baseline. Nagba-flag ng mga swarm at matinding sunod-sunod na aftershock.", "es": "Compara la actividad M4.5+ de esta semana en cada región de 5 grados con la línea base histórica de 50 años. Señala enjambres y secuencias de réplicas intensas.", "tr": "Bu haftanın M4.5+ aktivitesini her 5 derecelik bölgede 50 yıllık tarihsel temel çizgiyle karşılaştırır. Sürüleri ve yoğun artçı deprem dizilerini işaretler.", "fa": "فعالیت M4.5+ این هفته را در هر منطقه ۵ درجه‌ای با خط پایه تاریخی ۵۰ ساله مقایسه می‌کند. ازدحام‌ها و توالی پس‌لرزه‌های شدید را پرچم‌گذاری می‌کند.", "zh": "将本周 M4.5+ 的活动与每 5 度区域的 50 年历史基线进行比较。标记蜂群和强烈的余震序列。", "tpi": "Compares this week's M4.5+ activity in every 5-degree region against the 50-year historical baseline. Flags swarms and intense aftershock sequences.", "ho": "I lukim M4.5+ activity long dispela wik long olgeta 5-degree region na i komparim long 50-year historical baseline. I putim flag long swarms na intense aftershock sequences.", "mi": "Ka whakatauritea te kaha o te M4.5+ o tēnei wiki ki ngā rohe 5-tohu katoa ki te tauine o mua o te 50 tau. Ka tohua ngā kahui me ngā raupapa ruu kaha.", "ne": "यस हप्ताको M4.5+ गतिविधि प्रत्येक ५-डिग्री क्षेत्रमा ५०-वर्षीय ऐतिहासिक आधारभूतसँग तुलना गर्दछ। झुण्ड र तीव्र परकम्पन अनुक्रमहरूलाई झण्डा लगाउँछ।", "el": "Συγκρίνει τη δραστηριότητα M4.5+ αυτής της εβδομάδας σε κάθε περιοχή 5 μοιρών με τη 50ετή ιστορική βάση. Επισημαίνει σμήνη και έντονες ακολουθίες μετασεισμών.", "it": "Confronta l'attività M4.5+ di questa settimana in ogni regione di 5 gradi con la baseline storica di 50 anni. Segnala sciami e intense sequenze di scosse di assestamento.", "ps": "د دې اونۍ M4.5+ فعالیت په هر 5-درجو سیمه کې د 50 کلن تاریخي اساس په مقابل کې پرتله کوي. د ګڼې ګوڼې او شدید وروسته ټکانونو لړۍ په نښه کوي.", "prs": "فعالیت M4.5+ این هفته را در هر منطقه 5 درجه ای در برابر خط مبنای تاریخی 50 ساله مقایسه می کند. ازدحام ها و توالی های پس لرزه شدید را پرچم گذاری می کند."},
+    "anom_ok": {"en": "No regions show anomalously elevated activity this week.", "hi": "इस सप्ताह किसी क्षेत्र में असामान्य रूप से बढ़ी गतिविधि नहीं है।", "ja": "今週、異常に高い活動を示している地域はありません。", "id": "Tidak ada wilayah yang menunjukkan aktivitas yang meningkat secara anomali minggu ini.", "fil": "Walang rehiyon ang nagpapakita ng hindi pangkaraniwang mataas na aktibidad ngayong linggo.", "es": "Ninguna región muestra actividad anómalamente elevada esta semana.", "tr": "Bu hafta olağandışı derecede yüksek aktivite gösteren bölge yok.", "fa": "هیچ منطقه‌ای این هفته فعالیت غیرعادی بالایی را نشان نمی‌دهد.", "zh": "本周没有区域显示异常升高的活动。", "tpi": "No regions show anomalously elevated activity this week.", "ho": "Nogata wanpela region i gat helen activity long wik.", "mi": "Kāore he rohe e whakaatu ana i te kaha nui ake o te wiri i tēnei wiki.", "ne": "यस हप्ता कुनै पनि क्षेत्रमा असामान्य रूपमा बढेको गतिविधि देखिएन।", "el": "Καμία περιοχή δεν παρουσιάζει ανώμαλα αυξημένη δραστηριότητα αυτήν την εβδομάδα.", "it": "Nessuna regione mostra attività insolitamente elevata questa settimana.", "ps": "پدې اونۍ کې کومه سیمه غیر معمولي لوړ فعالیت نه ښیې.", "prs": "هیچ منطقه ای در این هفته فعالیت به طور غیرعادی بالا را نشان نمی دهد."},
+    "anom_warn": {"en": "{n} region(s) flagged with unusually high activity", "hi": "{n} क्षेत्र असामान्य रूप से उच्च गतिविधि के साथ चिह्नित", "ja": "{n}地域で異常に高い活動を検出しました", "id": "{n} wilayah ditandai dengan aktivitas yang sangat tinggi", "fil": "{n} rehiyon ang na-flag na may hindi pangkaraniwang mataas na aktibidad", "es": "{n} región(es) señalada(s) con actividad inusualmente alta", "tr": "{n} bölge(ler) alışılmadık derecede yüksek aktivite ile işaretlendi", "fa": "{n} منطقه(ها) با فعالیت غیرمعمول بالا پرچم‌گذاری شده است", "zh": "标记了 {n} 个活动异常高的区域", "tpi": "{n} region(s) flagged with unusually high activity", "ho": "{n} region i gat helen activity we i no mas", "mi": "Kua tohua a {n} rohe ki te kaha nui ake o te wiri", "ne": "{n} क्षेत्र(हरू) असामान्य रूपमा उच्च गतिविधि सहित झण्डा लगाइएको", "el": "{n} περιοχή(ες) επισημασμένες με ασυνήθιστα υψηλή δραστηριότητα", "it": "{n} regione/i segnalata/e con attività insolitamente alta", "ps": "{n} سیمه(و) د غیر معمولي لوړ فعالیت سره نښه شوې", "prs": "{n} منطقه(ها) با فعالیت غیرمعمول بالا پرچم گذاری شده است"},
+    "explain_sel": {"en": "Explain a flagged region", "hi": "चिह्नित क्षेत्र समझाएँ", "ja": "検出された地域の説明", "id": "Jelaskan wilayah yang ditandai", "fil": "Ipaliwanag ang isang na-flag na rehiyon", "es": "Explicar una región señalada", "tr": "İşaretlenen bir bölgeyi açıkla", "fa": "توضیح منطقه پرچم‌گذاری شده", "zh": "解释标记区域", "tpi": "Explain a flagged region", "ho": "Explain wanpela region we i gat flag", "mi": "Whakamārama i tētahi rohe kua tohua", "ne": "झण्डा लगाइएको क्षेत्रको व्याख्या गर्नुहोस्", "el": "Επεξήγηση επισημασμένης περιοχής", "it": "Spiega una regione segnalata", "ps": "د نښه شوي سیمې تشریح کړئ", "prs": "توضیح یک منطقه پرچم گذاری شده"},
+    "gen_analysis": {"en": "Generate AI analysis", "hi": "AI विश्लेषण बनाएँ", "ja": "AI分析を生成", "id": "Hasilkan analisis AI", "fil": "Bumuo ng AI analysis", "es": "Generar análisis de IA", "tr": "Yapay zeka analizi oluştur", "fa": "تولید تحلیل هوش مصنوعی", "zh": "生成 AI 分析", "tpi": "Generate AI analysis", "ho": "Generate AI analysis", "mi": "Hangaia he tātaritanga AI", "ne": "AI विश्लेषण उत्पन्न गर्नुहोस्", "el": "Δημιουργία ανάλυσης AI", "it": "Genera analisi AI", "ps": "د AI تحلیل تولید کړئ", "prs": "تولید تحلیل هوش مصنوعی"},
+    "m_week": {"en": "Events this week", "hi": "इस सप्ताह की घटनाएँ", "ja": "今週の発生件数", "id": "Peristiwa minggu ini", "fil": "Mga kaganapan ngayong linggo", "es": "Eventos esta semana", "tr": "Bu haftaki olaylar", "fa": "رویدادهای این هفته", "zh": "本周事件", "tpi": "Events this week", "ho": "Event long wik", "mi": "Ngā huihuinga o tēnei wiki", "ne": "यस हप्ताका घटनाहरू", "el": "Συμβάντα αυτήν την εβδομάδα", "it": "Eventi questa settimana", "ps": "پدې اونۍ کې پیښې", "prs": "رویدادهای این هفته"},
+    "m_normal": {"en": "Normal week", "hi": "सामान्य सप्ताह", "ja": "通常の週", "id": "Minggu normal", "fil": "Normal na linggo", "es": "Semana normal", "tr": "Normal hafta", "fa": "هفته عادی", "zh": "正常周", "tpi": "Normal week", "ho": "Wik i normal", "mi": "Te wiki noa", "ne": "सामान्य हप्ता", "el": "Κανονική εβδομάδα", "it": "Settimana normale", "ps": "معمولي اونۍ", "prs": "هفته عادی"},
+    "m_ratio": {"en": "Times above normal", "hi": "सामान्य से गुना", "ja": "通常時の何倍", "id": "Kali di atas normal", "fil": "Mga oras na higit sa normal", "es": "Veces por encima de lo normal", "tr": "Normalden fazla zaman", "fa": "زمان‌های بالاتر از حد معمول", "zh": "高于正常次数", "tpi": "Times above normal", "ho": "Times above normal", "mi": "Ngā wā i runga ake i te noa", "ne": "सामान्य भन्दा बढी पटक", "el": "Φορές πάνω από το κανονικό", "it": "Volte sopra la norma", "ps": "له عادي څخه ډیر ځله", "prs": "زمان های بالاتر از حد معمول"},
+    "when_h": {"en": "When they struck this week", "hi": "इस सप्ताह कब आए", "ja": "今週発生した地震", "id": "Saat terjadi minggu ini", "fil": "Kailan sila tumama ngayong linggo", "es": "Cuándo ocurrieron esta semana", "tr": "Bu hafta vurduklarında", "fa": "وقوع زلزله در این هفته", "zh": "本周发生的地震", "tpi": "Onde ol i sanap long dispela wik", "ho": "Bihauni gohira", "mi": "I te wiki i pa ai", "ne": "यस हप्ता कहाँ भूकम्प गयो", "el": "Πότε χτύπησαν αυτή την εβδομάδα", "it": "Quando hanno colpito questa settimana", "ps": "کله چې دوی پدې اونۍ کې ووهل", "prs": "در هفته‌ای که گذشت"},
+    "where_h": {"en": "Where they struck", "hi": "कहाँ आए", "ja": "発生場所", "id": "Lokasi kejadian", "fil": "Saan sila tumama", "es": "Dónde ocurrieron", "tr": "Nerede vurdukları", "fa": "محل وقوع زلزله", "zh": "地震发生地点", "tpi": "Onde ol i sanap", "ho": "Wehira gohira", "mi": "Te wāhi i pa ai", "ne": "कहाँ भूकम्प गयो", "el": "Πού χτύπησαν", "it": "Dove hanno colpito", "ps": "چیرې چې دوی ووهل", "prs": "محل وقوع"},
+    "tk_h": {"en": "Response Toolkit", "hi": "प्रतिक्रिया टूलकिट", "ja": "対応ツールキット", "id": "Perangkat Tanggap Darurat", "fil": "Kagamitan sa Pagtugon", "es": "Kit de herramientas de respuesta", "tr": "Müdahale Araç Kiti", "fa": "جعبه ابزار واکنش", "zh": "应急工具箱", "tpi": "Rait Buk bilong Sanap", "ho": "Hana bilong amamas", "mi": "Pouaka Whakaora", "ne": "प्रतिक्रिया टूलकिट", "el": "Εργαλειοθήκη Αντιμετώπισης", "it": "Kit di pronto intervento", "ps": "د ځواب وسیلې", "prs": "ابزار پاسخگویی"},
+    "tk_cap": {"en": "Practical tools for the hours after an earthquake - for residents waiting for help, and for the officials coordinating it.", "hi": "भूकंप के बाद के घंटों के लिए व्यावहारिक उपकरण — मदद की प्रतीक्षा कर रहे निवासियों और समन्वय कर रहे अधिकारियों के लिए।", "ja": "地震発生後の数時間のための実用的なツール。支援を待つ住民と、それを調整する担当者向けです。", "id": "Alat praktis untuk jam-jam setelah gempa bumi - bagi penduduk yang menunggu bantuan, dan bagi pejabat yang mengoordinasikannya.", "fil": "Praktikal na mga kagamitan para sa mga oras pagkatapos ng lindol - para sa mga residente na naghihintay ng tulong, at para sa mga opisyal na nag-uugnay nito.", "es": "Herramientas prácticas para las horas posteriores a un terremoto: para residentes que esperan ayuda y para los funcionarios que la coordinan.", "tr": "Bir deprem sonrası saatler için pratik araçlar - yardım bekleyen sakinler ve onları koordine eden yetkililer için.", "fa": "ابزارهای عملی برای ساعات پس از زلزله - برای ساکنانی که منتظر کمک هستند و برای مسئولانی که آن را هماهنگ می‌کنند.", "zh": "地震发生后的实用工具——供等待救援的居民以及协调救援的官员使用。", "tpi": "Stap gut long taim bihain long sanap — bilong ol manmeri i wet long amamas, na ol ofisa i putim gut.", "ho": "Hana bilong amamas bilong taim gavaman no stap gut - em i no ken hariap, tasol em i ken hariap long taim gavaman i no ken hariap.", "mi": "Ngā taputapu whai hua mō ngā haora i muri i te ruu – mō ngā tangata e tatari ana ki te āwhina, me ngā rangatira e whakarite ana.", "ne": "भूकम्प गएको केही घण्टाका लागि व्यावहारिक उपकरणहरू - सहयोगको पर्खाइमा रहेका बासिन्दाहरूका लागि, र यसको समन्वय गर्ने अधिकारीहरूका लागि।", "el": "Πρακτικά εργαλεία για τις ώρες μετά από έναν σεισμό - για κατοίκους που περιμένουν βοήθεια και για τους αξιωματούχους που την συντονίζουν.", "it": "Strumenti pratici per le ore successive a un terremoto - per i residenti in attesa di aiuto e per i funzionari che lo coordinano.", "ps": "د زلزلې وروسته ساعتونو لپاره عملي وسایل - د اوسیدونکو لپاره چې د مرستې په تمه دي، او د هغو چارواکو لپاره چې دا همغږي کوي.", "prs": "ابزارهای عملی برای ساعات پس از زلزله - برای ساکنان منتظر کمک و مقامات هماهنگ کننده آن."},
+    "sitrep_h": {"en": "Situation report (SITREP)", "hi": "स्थिति रिपोर्ट (SITREP)", "ja": "状況報告 (SITREP)", "id": "Laporan situasi (SITREP)", "fil": "Ulat ng sitwasyon (SITREP)", "es": "Informe de situación (SITREP)", "tr": "Durum raporu (SITREP)", "fa": "گزارش وضعیت (SITREP)", "zh": "情况报告 (SITREP)", "tpi": "Ripot long Sanap (SITREP)", "ho": "Ripota bilong siti (SITREP)", "mi": "Pūrongo āhuatanga (SITREP)", "ne": "स्थिति रिपोर्ट (SITREP)", "el": "Έκθεση κατάστασης (SITREP)", "it": "Rapporto sulla situazione (SITREP)", "ps": "د وضعیت راپور (SITREP)", "prs": "گزارش وضعیت (SITREP)"},
+    "sitrep_cap": {"en": "A formal report in the format emergency operations centers use. Pick an event, generate, download, distribute.", "hi": "आपातकालीन केंद्रों के प्रारूप में औपचारिक रिपोर्ट। घटना चुनें, बनाएँ, डाउनलोड करें, वितरित करें।", "ja": "緊急オペレーションセンターが使用する形式の正式な報告書。イベントを選択し、生成、ダウンロード、配布します。", "id": "Laporan formal dalam format yang digunakan pusat operasi darurat. Pilih kejadian, hasilkan, unduh, distribusikan.", "fil": "Isang pormal na ulat sa format na ginagamit ng mga sentro ng operasyong pang-emergency. Pumili ng isang kaganapan, bumuo, mag-download, mamahagi.", "es": "Un informe formal en el formato que utilizan los centros de operaciones de emergencia. Seleccione un evento, genere, descargue, distribuya.", "tr": "Acil durum merkezlerinin kullandığı formatta resmi bir rapor. Bir olay seçin, oluşturun, indirin, dağıtın.", "fa": "گزارش رسمی در قالبی که مراکز عملیات اضطراری استفاده می‌کنند. یک رویداد را انتخاب کنید، تولید کنید، دانلود کنید، توزیع کنید.", "zh": "应急指挥中心使用的正式报告格式。选择一个事件，生成、下载、分发。", "tpi": "Wanpela ofisel ripoti long rot emensesi ofis i yusim. Filim wanpela sanap, givim, daunim, autim.", "ho": "Ripota bilong gavaman em gavaman i save yusim. Filim wanpela samting, karim i go, daunim, autim.", "mi": "He pūrongo whaimana i te āhua e whakamahia ana e ngā tari whakahaere ohorere. Kōwhiria tētahi otinga, whakaputa, tikiake, toha.", "ne": "आपतकालीन सञ्चालन केन्द्रहरूले प्रयोग गर्ने ढाँचामा एक औपचारिक रिपोर्ट। एउटा घटना छान्नुहोस्, उत्पन्न गर्नुहोस्, डाउनलोड गर्नुहोस्, वितरण गर्नुहोस्।", "el": "Μια επίσημη έκθεση στη μορφή που χρησιμοποιούν τα κέντρα επιχειρήσεων έκτακτης ανάγκης. Επιλέξτε ένα συμβάν, δημιουργήστε, κατεβάστε, διανείμετε.", "it": "Un rapporto formale nel formato utilizzato dai centri operativi di emergenza. Scegli un evento, genera, scarica, distribuisci.", "ps": "د بیړني عملیاتو مرکزونو لخوا کارول شوي بڼه کې رسمي راپور. یوه پیښه غوره کړئ، تولید کړئ، ډاونلوډ کړئ، توزیع کړئ.", "prs": "یک گزارش رسمی در قالبی که مراکز عملیات اضطراری استفاده می‌کنند. یک رویداد را انتخاب کنید، تولید کنید، دانلود کنید، توزیع کنید."},
+    "gen_sitrep": {"en": "Generate SITREP", "hi": "SITREP बनाएँ", "ja": "SITREPを生成", "id": "Buat SITREP", "fil": "Bumuo ng SITREP", "es": "Generar SITREP", "tr": "SITREP Oluştur", "fa": "تولید SITREP", "zh": "生成情况报告", "tpi": "Mekim SITREP", "ho": "Karim Ripota bilong siti", "mi": "Whakaputa SITREP", "ne": "SITREP उत्पन्न गर्नुहोस्", "el": "Δημιουργία SITREP", "it": "Genera SITREP", "ps": "د SITREP تولیدول", "prs": "تولید SITREP"},
+    "dl_sitrep": {"en": "Download SITREP (.txt)", "hi": "SITREP डाउनलोड करें (.txt)", "ja": "SITREPをダウンロード (.txt)", "id": "Unduh SITREP (.txt)", "fil": "Mag-download ng SITREP (.txt)", "es": "Descargar SITREP (.txt)", "tr": "SITREP İndir (.txt)", "fa": "دانلود SITREP (.txt)", "zh": "下载情况报告 (.txt)", "tpi": "Daunim SITREP (.txt)", "ho": "Daunim Ripota bilong siti (.txt)", "mi": "Tikiake SITREP (.txt)", "ne": "SITREP डाउनलोड गर्नुहोस् (.txt)", "el": "Λήψη SITREP (.txt)", "it": "Scarica SITREP (.txt)", "ps": "د SITREP ډاونلوډ کړئ (.txt)", "prs": "دانلود SITREP (.txt)"},
+    "dd_h": {"en": "Before rescue arrives — do's and don'ts", "hi": "बचाव दल आने से पहले — क्या करें, क्या न करें", "ja": "救助隊到着前の注意点", "id": "Sebelum penyelamat tiba — boleh dan jangan", "fil": "Bago dumating ang saklolo — mga dapat at hindi dapat gawin", "es": "Antes de que llegue el rescate: qué hacer y qué no hacer", "tr": "Kurtarma gelmeden önce — yapılacaklar ve kaçınılması gerekenler", "fa": "قبل از رسیدن امدادگران — بایدها و نبایدها", "zh": "救援到达前——注意事项", "tpi": "Long taim help i no kam yet — samting bilong mekim na no mekim", "ho": "Taim help i no kam yet — behaim na no behaim", "mi": "I mua i te taenga mai o te whakaora — me me kaua", "ne": "उद्धार आउनु अघि — के गर्ने र के नगर्ने", "el": "Πριν φτάσει η διάσωση — τι να κάνετε και τι όχι", "it": "Prima dell'arrivo dei soccorsi — cosa fare e non fare", "ps": "د ژغورنې له راتګ دمخه — څه باید وشي او څه باید ونه شي", "prs": "قبل از رسیدن نجاتگران — کارهایی که باید انجام داد و نباید انجام داد"},
+    "dd_cap": {"en": "Established international guidance (FEMA / Red Cross), written for your situation and language. Not a substitute for trained rescuers.", "hi": "स्थापित अंतरराष्ट्रीय मार्गदर्शन (FEMA / रेड क्रॉस), आपकी स्थिति और भाषा के लिए। प्रशिक्षित बचावकर्ताओं का विकल्प नहीं।", "ja": "あなたの状況と言語に合わせて作成された、確立された国際的なガイダンス（FEMA / 赤十字）。訓練を受けた救助員の代わりにはなりません。", "id": "Panduan internasional yang telah ditetapkan (FEMA / Palang Merah), ditulis untuk situasi dan bahasa Anda. Bukan pengganti penyelamat terlatih.", "fil": "Naitatag na internasyonal na gabay (FEMA / Red Cross), isinulat para sa iyong sitwasyon at wika. Hindi kapalit ng mga sinanay na tagapagligtas.", "es": "Directrices internacionales establecidas (FEMA / Cruz Roja), escritas para su situación e idioma. No sustituye a los rescatistas capacitados.", "tr": "Durumunuza ve dilinize göre yazılmış yerleşik uluslararası kılavuz (FEMA / Kızılhaç). Eğitimli kurtarıcıların yerini tutmaz.", "fa": "دستورالعمل‌های بین‌المللی تثبیت شده (FEMA / Red Cross)، نوشته شده برای وضعیت و زبان شما. جایگزین امدادگران آموزش دیده نیست.", "zh": "根据您的具体情况和语言编写的国际通用指南（FEMA / 红十字会）。不能替代专业救援人员。", "tpi": "Stap gut long olgeta lain bilong help (FEMA / Red Cross), raitim long stori bilong yu na tokples bilong yu. No ken tingting olsem dispela i ken ananit long ol lain i save mekim.", "ho": "Tok bilong olgeta manmeri we ol i save helpim, em i bin raitim long toktok bilong yu. Em i no ken pulapim ol manmeri we ol i save helpim.", "mi": "Ngā aratohu kua whakaritea ā-ao (FEMA / Rūpeke Whero), i tuhia mō tō āhuatanga me tō reo. Ehara i te whakakapi mō ngā kaiwhakaora kua whakangungua.", "ne": "स्थापित अन्तर्राष्ट्रिय निर्देशन (FEMA / रेड क्रस), तपाईंको स्थिति र भाषाको लागि लेखिएको। प्रशिक्षित उद्धारकर्ताहरूको विकल्प होइन।", "el": "Καθιερωμένες διεθνείς οδηγίες (FEMA / Ερυθρός Σταυρός), γραμμένες για την περίπτωσή σας και τη γλώσσα σας. Δεν υποκαθιστούν εκπαιδευμένους διασώστες.", "it": "Linee guida internazionali consolidate (FEMA / Croce Rossa), scritte per la tua situazione e lingua. Non sostituiscono i soccorritori addestrati.", "ps": "د تاسیس شوي نړیوال لارښود (FEMA / سره صلیب)، ستاسو د وضعیت او ژبې لپاره لیکل شوی. د روزل شوي ژغورونکو لپاره بدیل ندی.", "prs": "رهنمودهای بین‌المللی تثبیت شده (FEMA / صلیب سرخ)، نوشته شده برای وضعیت و زبان شما. جایگزین نجاتگران آموزش دیده نیست."},
+    "situation": {"en": "Your situation", "hi": "आपकी स्थिति", "ja": "現在の状況", "id": "Situasi Anda", "fil": "Ang iyong sitwasyon", "es": "Su situación", "tr": "Durumunuz", "fa": "وضعیت شما", "zh": "您的情况", "tpi": "Sanap bilong yu", "ho": "Yupla i stap we?", "mi": "Tō āhuatanga", "ne": "तपाईंको स्थिति", "el": "Η κατάστασή σας", "it": "La tua situazione", "ps": "ستاسو وضعیت", "prs": "وضعیت شما"},
+    "gen_guid": {"en": "Generate guidance", "hi": "मार्गदर्शन बनाएँ", "ja": "ガイダンスを生成", "id": "Buat panduan", "fil": "Bumuo ng gabay", "es": "Generar directrices", "tr": "Kılavuz Oluştur", "fa": "تولید راهنمایی", "zh": "生成指南", "tpi": "Mekim gutpela", "ho": "Karim tok", "mi": "Whakaputa aratohu", "ne": "मार्गदर्शन उत्पन्न गर्नुहोस्", "el": "Δημιουργία οδηγιών", "it": "Genera guida", "ps": "لارښود تولیدول", "prs": "تولید رهنمود"},
+    "dl_guid": {"en": "Download guidance (.txt)", "hi": "मार्गदर्शन डाउनलोड करें (.txt)", "ja": "ガイダンスをダウンロード (.txt)", "id": "Unduh panduan (.txt)", "fil": "I-download ang gabay (.txt)", "es": "Descargar guía (.txt)", "tr": "Kılavuz indir (.txt)", "fa": "راهنمای دانلود (.txt)", "zh": "下载指南 (.txt)", "tpi": "Laitim save long tok (.txt)", "ho": "Givasi guidana (.txt)", "mi": "Tikiake aratohu (.txt)", "ne": "मार्गदर्शन डाउनलोड गर्नुहोस् (.txt)", "el": "Λήψη οδηγιών (.txt)", "it": "Scarica le istruzioni (.txt)", "ps": "لارښود ډاونلوډ کړئ (.txt)", "prs": "راهنمای دانلود (.txt)"},
+    "res_h": {"en": "Emergency resources in the affected area", "hi": "प्रभावित क्षेत्र में आपातकालीन संसाधन", "ja": "被災地の緊急支援情報", "id": "Sumber daya darurat di area terdampak", "fil": "Mga mapagkukunan para sa emerhensiya sa apektadong lugar", "es": "Recursos de emergencia en la zona afectada", "tr": "Etkilenen bölgedeki acil durum kaynakları", "fa": "منابع اضطراری در منطقه آسیب‌دیده", "zh": "受灾区域的应急资源", "tpi": "Stap gut long hap we bagarap i painim", "ho": "Kaibabana kwatana goada", "mi": "Ngā rauemi mō ngā tūraru i te rohe kua pā", "ne": "प्रभावित क्षेत्रमा आपतकालीन स्रोतहरू", "el": "Πόροι έκτακτης ανάγκης στην πληγείσα περιοχή", "it": "Risorse di emergenza nell'area colpita", "ps": "په اغیزمنه سیمه کې د بیړنيو مرستو معلومات", "prs": "منابع اضطراری در منطقه آسیب‌دیده"},
+    "town_sel": {"en": "Affected-area town (nearest first)", "hi": "प्रभावित क्षेत्र का शहर (निकटतम पहले)", "ja": "被災地の町（最も近い順）", "id": "Kota di area terdampak (terdekat dulu)", "fil": "Bayan sa apektadong lugar (pinakamalapit muna)", "es": "Pueblo de la zona afectada (el más cercano primero)", "tr": "Etkilenen bölgedeki ilçe (önce en yakını)", "fa": "شهر منطقه آسیب‌دیده (نزدیک‌ترین اول)", "zh": "受灾区域城镇（最近的优先）", "tpi": "Maunten we bagarap i painim (stap klosap long en)", "ho": "Hanua kwatana goada (hanua bese)", "mi": "Tāone kua pā (tīmata ki te tata rawa)", "ne": "प्रभावित क्षेत्रको सहर (सबैभन्दा नजिकको पहिले)", "el": "Πόλη πληγείσας περιοχής (πρώτα η πλησιέστερη)", "it": "Città nell'area colpita (prima la più vicina)", "ps": "اغیزمنه سیمه (لومړی نږدې ښار)", "prs": "شهر منطقه آسیب‌دیده (نزدیکترین اول)"},
+    "hotlines": {"en": "Emergency hotlines", "hi": "आपातकालीन हॉटलाइन", "ja": "緊急ホットライン", "id": "Hotline darurat", "fil": "Mga hotline para sa emerhensiya", "es": "Líneas de ayuda de emergencia", "tr": "Acil durum yardım hatları", "fa": "خطوط اضطراری", "zh": "紧急热线", "tpi": "Toktok long ol lain we inap helpim", "ho": "Hotlain kwatana goada", "mi": "Ngā raina āwhina mō ngā tūraru", "ne": "आपतकालीन हटलाइनहरू", "el": "Γραμμές έκτακτης ανάγκης", "it": "Numeri di emergenza", "ps": "د بیړنيو مرستو ګرمې کرښې", "prs": "خطوط اضطراری"},
+    "verify_cap": {"en": "From public sources - verify locally. Numbers can differ by region.", "hi": "सार्वजनिक स्रोतों से — स्थानीय रूप से सत्यापित करें। नंबर क्षेत्र अनुसार भिन्न हो सकते हैं।", "ja": "公的情報より - 地域でご確認ください。地域によって番号が異なる場合があります。", "id": "Dari sumber publik - verifikasi secara lokal. Angka dapat berbeda per wilayah.", "fil": "Mula sa pampublikong mapagkukunan - beripikahin sa lokal. Maaaring magkaiba ang mga numero bawat rehiyon.", "es": "De fuentes públicas - verifique localmente. Los números pueden variar por región.", "tr": "Kamu kaynaklarından - yerel olarak doğrulayın. Sayılar bölgeye göre değişebilir.", "fa": "از منابع عمومی - محلی تأیید کنید. اعداد می‌توانند بسته به منطقه متفاوت باشند.", "zh": "来自公共来源 - 请在当地核实。数字可能因地区而异。", "tpi": "Long tok bilong ol man long ples - lukautim long ples. Ol namba inap i ken i go long narapela hap.", "ho": "Mai hanua bese - kwatana kwatana hanua. Hanani beha bese hanua.", "mi": "Nō ngā pūtake a te iwi - whakamanatia ki te rohe. Ka rerekē ngā tau i te rohe.", "ne": "सार्वजनिक स्रोतहरूबाट - स्थानीय रूपमा प्रमाणित गर्नुहोस्। नम्बरहरू क्षेत्र अनुसार फरक हुन सक्छन्।", "el": "Από δημόσιες πηγές - επαληθεύστε τοπικά. Οι αριθμοί μπορεί να διαφέρουν ανά περιοχή.", "it": "Da fonti pubbliche - verifica localmente. I numeri possono variare per regione.", "ps": "له عامه سرچینو څخه - په سیمه کې یې تایید کړئ. شمیرې ممکن په سیمه کې توپیر ولري.", "prs": "از منابع عمومی - به صورت محلی تأیید کنید. اعداد می‌توانند در مناطق مختلف متفاوت باشند."},
+    "no_towns": {"en": "No towns within 150 km of this epicenter - it is likely offshore or in a remote area. Select a different event above.", "hi": "इस केंद्र के 150 किमी के भीतर कोई शहर नहीं — संभवतः समुद्र में या दूरस्थ क्षेत्र में है। ऊपर दूसरी घटना चुनें।", "ja": "震源から150km以内に町はありません。沖合または遠隔地の可能性があります。上の別のイベントを選択してください。", "id": "Tidak ada kota dalam jarak 150 km dari pusat gempa ini - kemungkinan besar di lepas pantai atau area terpencil. Pilih kejadian lain di atas.", "fil": "Walang mga bayan sa loob ng 150 km mula sa episentro na ito - malamang na nasa dagat o malayo ito. Pumili ng ibang kaganapan sa itaas.", "es": "No hay pueblos a 150 km de este epicentro; es probable que esté en alta mar o en una zona remota. Seleccione un evento diferente arriba.", "tr": "Bu merkez üssünden 150 km içinde ilçe yok - muhtemelen açık denizde veya uzak bir bölgede. Yukarıdan farklı bir olay seçin.", "fa": "هیچ شهری در فاصله ۱۵۰ کیلومتری این مرکز لرزه‌خیزی وجود ندارد - احتمالاً در دریا یا منطقه‌ای دورافتاده است. رویداد دیگری را در بالا انتخاب کنید.", "zh": "震中150公里内无城镇 - 可能在近海或偏远地区。请选择上方其他事件。", "tpi": "Nogat maunten insait long 150 km long ples we bagarap i stat long en - em i ken i stap long solwara o long ples we nogat man i stap. Filim narapela samting we i bin painim.", "ho": "Noguhanu beha 150 km mai iai - ia beha goana beha hanua. Kwata hanua bese.", "mi": "Kāore he tāone i roto i te 150 km o tēnei pokapū ruu - kei te moana pea, kei te wāhi tawhiti rānei. Kōwhiria tētahi atu huihuinga i runga ake nei.", "ne": "यस केन्द्रबिन्दुबाट १५० किमी भित्र कुनै सहर छैन - यो सम्भवतः तटमा वा दुर्गम क्षेत्रमा छ। माथिको फरक घटना चयन गर्नुहोस्।", "el": "Δεν υπάρχουν πόλεις εντός 150 χλμ από αυτό το επίκεντρο - είναι πιθανώς στην θάλασσα ή σε απομακρυσμένη περιοχή. Επιλέξτε διαφορετικό συμβάν παραπάνω.", "it": "Nessuna città entro 150 km da questo epicentro - è probabile che sia in mare o in un'area remota. Seleziona un evento diverso sopra.", "ps": "له دې مرکز څخه ۱۵۰ کیلومتره فاصله کې کوم ښار نشته - دا احتمالاً په سمندر کې یا په لیرې پرتو سیمو کې دی. له پورته څخه بل پیښه وټاکئ.", "prs": "هیچ شهری در فاصله ۱۵۰ کیلومتری این مرکز لرزه وجود ندارد - احتمالاً در دریا یا منطقه دورافتاده است. رویداد دیگری را در بالا انتخاب کنید."},
+    "find_h": {"en": "⛑️ Find help", "hi": "⛑️ मदद खोजें", "ja": "⛑️ 支援を探す", "id": "⛑️ Cari bantuan", "fil": "⛑️ Maghanap ng tulong", "es": "⛑️ Buscar ayuda", "tr": "⛑️ Yardım bul", "fa": "⛑️ کمک پیدا کنید", "zh": "⛑️ 寻找帮助", "tpi": "⛑️ Painim help", "ho": "⛑️ Kwatana hiri", "mi": "⛑️ Kimihia he āwhina", "ne": "⛑️ सहयोग खोज्नुहोस्", "el": "⛑️ Βρείτε βοήθεια", "it": "⛑️ Trova aiuto", "ps": "⛑️ مرسته ومومئ", "prs": "⛑️ کمک پیدا کنید"},
+    "find_cap": {"en": "Powered by Google Maps — starts from you, not the epicenter.", "hi": "Google Maps द्वारा संचालित — आपसे शुरू होता है, केंद्र से नहीं।", "ja": "Google マップ提供 - 震源ではなく、現在地から開始します。", "id": "Didukung oleh Google Maps — dimulai dari Anda, bukan pusat gempa.", "fil": "Pinapagana ng Google Maps — nagsisimula sa iyo, hindi sa episentro.", "es": "Impulsado por Google Maps — comienza desde usted, no desde el epicentro.", "tr": "Google Haritalar tarafından desteklenmektedir — merkez üssünden değil, sizden başlar.", "fa": "با استفاده از Google Maps — از موقعیت شما شروع می‌شود، نه از مرکز لرزه‌خیزی.", "zh": "由 Google Maps 提供支持 — 从您开始，而非震中。", "tpi": "Google Maps i givim strongpela - em i stat long yu, nogat long ples we bagarap i stat long en.", "ho": "Google Maps — mai oi, noguhana iai.", "mi": "Ka whakahaeretia e Google Maps — ka tīmata mai i a koe, ehara i te pokapū ruu.", "ne": "Google Maps द्वारा संचालित — तपाईंको स्थानबाट सुरु हुन्छ, केन्द्रबिन्दुबाट होइन।", "el": "Με την υποστήριξη του Google Maps — ξεκινά από εσάς, όχι από το επίκεντρο.", "it": "Basato su Google Maps — parte da te, non dall'epicentro.", "ps": "د ګوګل نقشې لخوا پرمخ وړل کیږي — له تاسو څخه پیل کیږي، نه له مرکز څخه.", "prs": "با استفاده از Google Maps — از موقعیت شما شروع می‌شود، نه از مرکز لرزه."},
+    "your_loc": {"en": "Your location:", "hi": "आपका स्थान:", "ja": "現在地:", "id": "Lokasi Anda:", "fil": "Lokasyon mo:", "es": "Su ubicación:", "tr": "Konumunuz:", "fa": "موقعیت مکانی شما:", "zh": "您的位置：", "tpi": "We yu stap:", "ho": "Oi hanua:", "mi": "Tō wāhi:", "ne": "तपाईंको स्थान:", "el": "Η τοποθεσία σας:", "it": "La tua posizione:", "ps": "ستاسو موقعیت:", "prs": "موقعیت شما:"},
+    "gps_dev": {"en": "🟢 device GPS", "hi": "🟢 डिवाइस GPS", "ja": "🟢 デバイスGPS", "id": "🟢 GPS perangkat", "fil": "🟢 GPS ng device", "es": "🟢 GPS del dispositivo", "tr": "🟢 cihaz GPS'i", "fa": "🟢 GPS دستگاه", "zh": "🟢 设备 GPS", "tpi": "🟢 GPS bilong stia", "ho": "🟢 Oi GPS", "mi": "🟢 GPS o te pūrere", "ne": "🟢 यन्त्रको GPS", "el": "🟢 GPS συσκευής", "it": "🟢 GPS del dispositivo", "ps": "🟢 د وسیلې GPS", "prs": "🟢 GPS دستگاه"},
+    "gps_hint": {"en": "Tap ◎ to use your device GPS instead.", "hi": "अपने डिवाइस का GPS उपयोग करने के लिए ◎ टैप करें।", "ja": "◎をタップして、代わりにデバイスGPSを使用してください。", "id": "Ketuk ◎ untuk menggunakan GPS perangkat Anda sebagai gantinya.", "fil": "I-tap ang ◎ para gamitin ang GPS ng iyong device.", "es": "Toque ◎ para usar el GPS de su dispositivo en su lugar.", "tr": "Bunun yerine cihaz GPS'inizi kullanmak için ◎'e dokunun.", "fa": "برای استفاده از GPS دستگاه خود، روی ◎ ضربه بزنید.", "zh": "点击 ◎ 以使用您的设备 GPS。", "tpi": "Pasim ◎ long yusim GPS bilong stia.", "ho": "Tap ◎ oi GPS.", "mi": "Paoa ◎ kia whakamahi i tō GPS pūrere hei utu.", "ne": "यन्त्रको GPS प्रयोग गर्न ◎ मा ट्याप गर्नुहोस्।", "el": "Πατήστε ◎ για να χρησιμοποιήσετε το GPS της συσκευής σας αντ' αυτού.", "it": "Tocca ◎ per usare il GPS del tuo dispositivo.", "ps": "د خپل وسیلې GPS کارولو لپاره ◎ ټایپ کړئ.", "prs": "برای استفاده از GPS دستگاه خود، روی ◎ ضربه بزنید."},
+    "need_q": {"en": "What do you need?", "hi": "आपको क्या चाहिए?", "ja": "何が必要ですか？", "id": "Apa yang Anda butuhkan?", "fil": "Ano ang kailangan mo?", "es": "¿Qué necesita?", "tr": "Neye ihtiyacınız var?", "fa": "به چه چیزی نیاز دارید؟", "zh": "您需要什么？", "tpi": "Yu laikim wanem?", "ho": "Koabada?", "mi": "Me aha koe?", "ne": "तपाईंलाई के चाहिन्छ?", "el": "Τι χρειάζεστε;", "it": "Di cosa hai bisogno?", "ps": "تاسو څه ته اړتیا لرئ؟", "prs": "چه چیزی نیاز دارید؟"},
+    "cat_Hospitals": {"en": "Hospitals", "hi": "अस्पताल", "ja": "病院", "id": "Rumah Sakit", "fil": "Mga Ospital", "es": "Hospitales", "tr": "Hastaneler", "fa": "بیمارستان‌ها", "zh": "医院", "tpi": "Hospital", "ho": "Hospitels", "mi": "Hōhipera", "ne": "अस्पतालहरू", "el": "Νοσοκομεία", "it": "Ospedali", "ps": "روغتونونه", "prs": "روغتونونه"},
+    "cat_Fire stations": {"en": "Fire stations", "hi": "फ़ायर स्टेशन", "ja": "消防署", "id": "Pos Pemadam Kebakaran", "fil": "Mga Istasyon ng Pulis", "es": "Estaciones de bomberos", "tr": "İtfaiye binaları", "fa": "ایستگاه‌های آتش‌نشانی", "zh": "消防站", "tpi": "Stesen hai", "ho": "Stesen belo", "mi": "Teihana ahi", "ne": "अग्निशमन स्टेसनहरू", "el": "Πυροσβεστικοί σταθμοί", "it": "Stazioni dei pompieri", "ps": "د اور وژنې سټیشنونه", "prs": "د اور وژنې سټېشنونه"},
+    "cat_Police": {"en": "Police", "hi": "पुलिस", "ja": "警察署", "id": "Polisi", "fil": "Mga Istasyon ng Pulis", "es": "Policía", "tr": "Karakollar", "fa": "پلیس", "zh": "警察局", "tpi": "Polisim", "ho": "Polis", "mi": "Pāihana", "ne": "प्रहरी चौकीहरू", "el": "Αστυνομικά τμήματα", "it": "Polizia", "ps": "پولیس", "prs": "پولیس"},
+    "cat_Pharmacies": {"en": "Pharmacies", "hi": "फ़ार्मेसी", "ja": "薬局", "id": "Apotek", "fil": "Mga Botika", "es": "Farmacias", "tr": "Eczaneler", "fa": "داروخانه‌ها", "zh": "药店", "tpi": "Apotek", "ho": "Apoteik", "mi": "Rongoā", "ne": "फार्मेसीहरू", "el": "Φαρμακεία", "it": "Farmacie", "ps": "درملتونونه", "prs": "درملتونونه"},
+    "cat_Shelters": {"en": "Shelters", "hi": "आश्रय", "ja": "避難所", "id": "Tempat Berlindung", "fil": "Mga Silungan", "es": "Refugios", "tr": "Sığınaklar", "fa": "پناهگاه‌ها", "zh": "避难所", "tpi": "Haus bilong sindaun", "ho": "Haus bilong stap", "mi": "Nohonga", "ne": "आश्रयस्थलहरू", "el": "Καταφύγια", "it": "Rifugi", "ps": "سرپناوې", "prs": "سرپناوې"},
+    "cat_Custom search": {"en": "Custom search", "hi": "कस्टम खोज", "ja": "カスタム検索", "id": "Pencarian Kustom", "fil": "Pasadyang Paghahanap", "es": "Búsqueda personalizada", "tr": "Özel arama", "fa": "جستجوی سفارشی", "zh": "自定义搜索", "tpi": "Sarese", "ho": "Sarese", "mi": "Rapu ritenga", "ne": "अनुकूलित खोजी", "el": "Προσαρμοσμένη αναζήτηση", "it": "Ricerca personalizzata", "ps": "دودیز لټون", "prs": "دودیز لټون"},
+    "custom_ph": {"en": "Search like on Google Maps", "hi": "Google Maps की तरह खोजें", "ja": "Google マップのように検索", "id": "Cari seperti di Google Maps", "fil": "Maghanap tulad sa Google Maps", "es": "Busca como en Google Maps", "tr": "Google Haritalar'da olduğu gibi ara", "fa": "جستجو مانند Google Maps", "zh": "像在谷歌地图上一样搜索", "tpi": "Sarese olsem long Google Maps", "ho": "Sarese olsem long Google Maps", "mi": "Rapua kia rite ki a Google Maps", "ne": "गुगल नक्सामा जस्तै खोज्नुहोस्", "el": "Αναζήτηση όπως στο Google Maps", "it": "Cerca come su Google Maps", "ps": "د ګوګل نقشې په څیر لټون وکړئ", "prs": "لکه څنګه چې په ګوګل نقشه کې لټون وکړئ"},
+    "ask_terra": {"en": "✦ Ask Terra: where should I go first?", "hi": "✦ Terra से पूछें: पहले कहाँ जाऊँ?", "ja": "✦ Terraに質問: まずどこへ行くべき？", "id": "✦ Tanya Terra: ke mana saya harus pergi dulu?", "fil": "✦ Magtanong kay Terra: saan muna ako dapat pumunta?", "es": "✦ Pregúntale a Terra: ¿a dónde debo ir primero?", "tr": "✦ Terra'ya sor: Önce nereye gitmeliyim?", "fa": "✦ از Terra بپرسید: اول کجا باید بروم؟", "zh": "✦ 询问 Terra：我应该先去哪里？", "tpi": "✦ Ask Terra: weplas mi go long staim?", "ho": "✦ Ask Terra: wea mi ken go kwik?", "mi": "✦ Pātai ki a Terra: ki hea ahau haere tuatahi?", "ne": "✦ Terra लाई सोध्नुहोस्: म पहिले कहाँ जानुपर्छ?", "el": "✦ Ρωτήστε την Terra: πού να πάω πρώτα;", "it": "✦ Chiedi a Terra: dove dovrei andare prima?", "ps": "✦ له ټیرا څخه پوښتنه وکړئ: لومړی چیرته لاړ شم؟", "prs": "✦ له ټیرا څخه پوښتنه وکړئ: لومړی چیرته لاړ شم؟"},
+    "dest": {"en": "Destination", "hi": "गंतव्य", "ja": "目的地", "id": "Tujuan", "fil": "Patutunguhan", "es": "Destino", "tr": "Varış noktası", "fa": "مقصد", "zh": "目的地", "tpi": "We long go", "ho": "Wea bai mi go", "mi": "Tauranga", "ne": "गन्तव्य", "el": "Προορισμός", "it": "Destinazione", "ps": "مقصود", "prs": "مقصد"},
+    "mode_q": {"en": "Travel mode", "hi": "यात्रा माध्यम", "ja": "移動手段", "id": "Mode Perjalanan", "fil": "Paraan ng Paglalakbay", "es": "Modo de viaje", "tr": "Seyahat modu", "fa": "حالت سفر", "zh": "出行模式", "tpi": "Sarese rot", "ho": "Sarese", "mi": "Momo haere", "ne": "यात्राको तरिका", "el": "Τρόπος μετακίνησης", "it": "Modalità di viaggio", "ps": "د سفر طریقه", "prs": "د سفر طریقه"},
+    "mode_drive": {"en": "🚗 Drive", "hi": "🚗 ड्राइव", "ja": "🚗 車", "id": "🚗 Berkendara", "fil": "🚗 Magmaneho", "es": "🚗 Conducir", "tr": "🚗 Araba ile", "fa": "🚗 رانندگی", "zh": "🚗 开车", "tpi": "🚗 Drive", "ho": "🚗 Drive", "mi": "🚗 Taraiwa", "ne": "🚗 ड्राइभ", "el": "🚗 Οδήγηση", "it": "🚗 In auto", "ps": "🚗 ډرایو", "prs": "🚗 موټر چلوونه"},
+    "mode_walk": {"en": "🚶 Walk", "hi": "🚶 पैदल", "ja": "🚶 徒歩", "id": "🚶 Jalan Kaki", "fil": "🚶 Maglakad", "es": "🚶 Caminar", "tr": "🚶 Yaya", "fa": "🚶 پیاده‌روی", "zh": "🚶 步行", "tpi": "🚶 Walk", "ho": "🚶 Walk", "mi": "🚶 Hīkoi", "ne": "🚶 हिँड्नु", "el": "🚶 Περπάτημα", "it": "🚶 A piedi", "ps": "🚶 پیدل", "prs": "🚶 مزل"},
+    "mode_bike": {"en": "🚴 Bike", "hi": "🚴 साइकिल", "ja": "🚴 自転車", "id": "🚴 Sepeda", "fil": "🚴 Bisikleta", "es": "🚴 Bicicleta", "tr": "🚴 Bisiklet", "fa": "🚴 دوچرخه", "zh": "🚴 自行车", "tpi": "🚴 Paslain long bisikol", "ho": "🚴 Vaitoko", "mi": "🚴 Paihikara", "ne": "🚴 बाइक", "el": "🚴 Ποδήλατο", "it": "🚴 Bicicletta", "ps": "🚴 بایسکل", "prs": "🚴 بایسکل"},
+    "route_cap": {"en": "The map shows the route and estimated arrival time — tap 🧭 Navigate on any card for live turn-by-turn.", "hi": "मानचित्र मार्ग और अनुमानित पहुँच समय दिखाता है — लाइव नेविगेशन के लिए किसी कार्ड पर 🧭 टैप करें।", "ja": "地図にはルートと到着予定時刻が表示されます — ライブのナビゲーションをご利用いただくには、各カードの🧭 ナビを開始をタップしてください。", "id": "Peta menampilkan rute dan perkiraan waktu kedatangan — ketuk 🧭 Navigasi pada kartu mana pun untuk navigasi belokan demi belokan secara langsung.", "fil": "Ipinapakita ng mapa ang ruta at tinatayang oras ng pagdating — i-tap ang 🧭 Mag-navigate sa anumang card para sa live turn-by-turn.", "es": "El mapa muestra la ruta y la hora estimada de llegada — toca 🧭 Navegar en cualquier tarjeta para obtener indicaciones giro a giro.", "tr": "Harita rotayı ve tahmini varış zamanını gösterir — canlı yol tarifi için herhangi bir kartta 🧭 Yönlendir'e dokunun.", "fa": "نقشه مسیر و زمان تخمینی رسیدن را نشان می‌دهد — برای مسیریابی زنده، روی 🧭 مسیریابی در هر کارت ضربه بزنید.", "zh": "地图显示路线和预计到达时间 — 点击任意卡片上的 🧭 导航 以获取实时逐向导航。", "tpi": "Mapi i soim rot na taim bilong kam — putim 🧭 Naviget long wanpela ka long eni ka i ken lukim olgeta lain.", "ho": "A ladana e holongu bona nega oi oi — tomamu 🧭 Vaka-la-la-gu longi oi oi.", "mi": "E whakaatu ana te mapi i te huarahi me te wā ka tae atu ai — pāwhiritia 🧭 Whakatere i runga i tētahi kāri mō te whakatere ora.", "ne": "नक्साले मार्ग र अनुमानित आगमन समय देखाउँछ — प्रत्यक्ष टर्न-बाइ-टर्नका लागि कुनै पनि कार्डमा 🧭 नेभिगेट ट्याप गर्नुहोस्।", "el": "Ο χάρτης δείχνει τη διαδρομή και την εκτιμώμενη ώρα άφιξης — πατήστε 🧭 Πλοήγηση σε οποιαδήποτε κάρτα για ζωντανές οδηγίες στροφή προς στροφή.", "it": "La mappa mostra il percorso e l'orario di arrivo stimato — tocca 🧭 Naviga su qualsiasi scheda per indicazioni turn-by-turn in tempo reale.", "ps": "نقشه لاره او د رسیدو اټکل شوی وخت ښیې — د ژوندیو لارښوونو لپاره په هر کارت کې 🧭 لارښود وټاکئ.", "prs": "نقشه مسیر و زمان تخمینی رسیدن را نشان می‌دهد — برای هدایت زنده روی 🧭 ناوبری در هر کارت ضربه بزنید."},
+    "offline_h": {"en": "📥 Offline library — download before you need it", "hi": "📥 ऑफ़लाइन लाइब्रेरी — ज़रूरत से पहले डाउनलोड करें", "ja": "📥 オフラインライブラリ — 必要になる前にダウンロード", "id": "📥 Pustaka luring — unduh sebelum Anda membutuhkannya", "fil": "📥 Offline na aklatan — i-download bago mo kailanganin", "es": "📥 Biblioteca sin conexión — descárgala antes de que la necesites", "tr": "📥 Çevrimdışı kütüphane — ihtiyacınız olmadan önce indirin", "fa": "📥 کتابخانه آفلاین — قبل از نیاز دانلود کنید", "zh": "📥 离线资料库 — 在需要前下载", "tpi": "📥 Buk bilong oflain — daunloa long eni taim yu ken vivim", "ho": "📥 Laibare ni laulau — hakani oi oi.", "mi": "📥 Puna raraunga ā-tinana — tikiake i mua i te hiahiatanga", "ne": "📥 अफलाइन पुस्तकालय — आवश्यक पर्नु अघि डाउनलोड गर्नुहोस्", "el": "📥 Βιβλιοθήκη εκτός σύνδεσης — κατεβάστε πριν τη χρειαστείτε", "it": "📥 Libreria offline — scarica prima che ti serva", "ps": "📥 آفلاین کتابتون — مخکې له دې چې ورته اړتیا ولرئ ډاونلوډ کړئ", "prs": "📥 کتابخانه آفلاین — قبل از نیاز آن را دانلود کنید"},
+    "offline_cap": {"en": "Official illustrated publications from the American Red Cross, FEMA, USGS, Ready.gov and the Earthquake Country Alliance. Save them to your phone now — they open without internet when networks go down.", "hi": "American Red Cross, FEMA, USGS, Ready.gov की आधिकारिक सचित्र प्रकाशन। अभी फ़ोन में सहेजें — नेटवर्क बंद होने पर बिना इंटरनेट खुलती हैं।", "ja": "アメリカ赤十字社、FEMA、USGS、Ready.gov、およびEarthquake Country Allianceの公式イラスト入り出版物。今すぐ携帯電話に保存してください — ネットワークがダウンしてもインターネットなしで開けます。", "id": "Publikasi resmi bergambar dari American Red Cross, FEMA, USGS, Ready.gov, dan Earthquake Country Alliance. Simpan ke ponsel Anda sekarang — terbuka tanpa internet saat jaringan mati.", "fil": "Opisyal na mga ilustradong publikasyon mula sa American Red Cross, FEMA, USGS, Ready.gov at Earthquake Country Alliance. I-save ang mga ito sa iyong telepono ngayon — magbubukas ang mga ito nang walang internet kapag bumagsak ang mga network.", "es": "Publicaciones ilustradas oficiales de la Cruz Roja Americana, FEMA, USGS, Ready.gov y la Earthquake Country Alliance. Guárdalas en tu teléfono ahora — se abren sin internet cuando las redes fallan.", "tr": "Amerikan Kızılayı, FEMA, USGS, Ready.gov ve Deprem Ülkesi İttifakı'ndan resmi resimli yayınlar. Ağlar çöktüğünde internet olmadan açılırlar, şimdi telefonunuza kaydedin.", "fa": "نشریات رسمی مصور از American Red Cross، FEMA، USGS، Ready.gov و Earthquake Country Alliance. اکنون آن‌ها را در تلفن خود ذخیره کنید — وقتی شبکه‌ها قطع می‌شوند، بدون اینترنت باز می‌شوند.", "zh": "来自美国红十字会、FEMA、USGS、Ready.gov 和地震国家联盟的官方图文出版物。立即将它们保存到您的手机 — 在网络中断时，无需互联网即可打开。", "tpi": "Buk bilong American Red Cross, FEMA, USGS, Ready.gov na Earthquake Country Alliance. Save long fon bilong yu nau — ol i ken op long taim we internet i no stap.", "ho": "Buk ni buk mai Amerika Red Kros, FEMA, USGS, Ready.gov bona Earthquake Country Alliance. Hakani oi oi — oi oi oi.", "mi": "Ngā whakaputanga mana me ngā whakaahua mai i te American Red Cross, FEMA, USGS, Ready.gov me te Earthquake Country Alliance. Tiakina ki tō waea ināianei — ka whakatuwheratia ki waho o te ipurangi ka mutu ana ngā whatunga.", "ne": "अमेरिकन रेड क्रस, FEMA, USGS, Ready.gov र भूकम्प देश गठबन्धनका आधिकारिक सचित्र प्रकाशनहरू। तिनीहरूलाई अहिले नै आफ्नो फोनमा बचत गर्नुहोस् — नेटवर्क डाउन हुँदा इन्टरनेट बिना खुल्छन्।", "el": "Επίσημες εικονογραφημένες εκδόσεις από τον Αμερικανικό Ερυθρό Σταυρό, FEMA, USGS, Ready.gov και την Earthquake Country Alliance. Αποθηκεύστε τις στο τηλέφωνό σας τώρα — ανοίγουν χωρίς internet όταν τα δίκτυα πέφτουν.", "it": "Pubblicazioni ufficiali illustrate dall'American Red Cross, FEMA, USGS, Ready.gov e dall'Earthquake Country Alliance. Salvale subito sul tuo telefono — si aprono senza internet quando le reti cadono.", "ps": "د امریکایی سور کراس، FEMA، USGS، Ready.gov او د زلزلې هیواد ایتلاف رسمي انځوریز خپرونې. اوس یې خپل تلیفون ته خوندي کړئ — کله چې شبکې بندې شي نو انټرنیټ پرته خلاصېږي.", "prs": "نشریات رسمی مصور از American Red Cross، FEMA، USGS، Ready.gov و Earthquake Country Alliance. اکنون آنها را در تلفن خود ذخیره کنید — آنها بدون اینترنت باز می‌شوند زمانی که شبکه‌ها قطع می‌شوند."},
+    "qa_btn": {"en": "💬 Ask QuakeSense", "hi": "💬 QuakeSense से पूछें", "ja": "💬 QuakeSenseに質問", "id": "💬 Tanya QuakeSense", "fil": "💬 Magtanong sa QuakeSense", "es": "💬 Pregúntale a QuakeSense", "tr": "💬 QuakeSense'e Sor", "fa": "💬 از QuakeSense بپرسید", "zh": "💬 询问 QuakeSense", "tpi": "💬 Ask QuakeSense", "ho": "💬 Vada QuakeSense", "mi": "💬 Ui atu ki a QuakeSense", "ne": "💬 QuakeSense लाई सोध्नुहोस्", "el": "💬 Ρωτήστε το QuakeSense", "it": "💬 Chiedi a QuakeSense", "ps": "💬 له QuakeSense څخه پوښتنه وکړئ", "prs": "💬 از QuakeSense بپرسید"},
+    "qa_about": {"en": "📍 Talking about:", "hi": "📍 विषय:", "ja": "📍 話題:", "id": "📍 Bicara tentang:", "fil": "📍 Pinag-uusapan:", "es": "📍 Hablando de:", "tr": "📍 Hakkında konuşuluyor:", "fa": "📍 درباره این صحبت می‌کنیم:", "zh": "📍 关于：", "tpi": "📍 Tok long:", "ho": "📍 Vada:", "mi": "📍 Kōrero mō:", "ne": "📍 यसको बारेमा कुरा गर्दै:", "el": "📍 Συζητάμε για:", "it": "📍 Parlando di:", "ps": "📍 په اړه خبرې کول:", "prs": "📍 در مورد صحبت می‌کنیم:"},
+    "qa_ph": {"en": "Type a message...", "hi": "संदेश लिखें...", "ja": "メッセージを入力...", "id": "Ketik pesan...", "fil": "Mag-type ng mensahe...", "es": "Escribe un mensaje...", "tr": "Mesaj yazın...", "fa": "یک پیام تایپ کنید...", "zh": "输入消息...", "tpi": "Stapim tok...", "ho": "Hakani...", "mi": "Tuhia he karere...", "ne": "सन्देश टाइप गर्नुहोस्...", "el": "Πληκτρολογήστε ένα μήνυμα...", "it": "Scrivi un messaggio...", "ps": "یو پیغام ولیکئ...", "prs": "یک پیام تایپ کنید..."},
+    "guide_h": {"en": "How to use QuakeSense", "hi": "QuakeSense का उपयोग कैसे करें", "ja": "QuakeSenseの使い方", "id": "Cara menggunakan QuakeSense", "fil": "Paano gamitin ang QuakeSense", "es": "Cómo usar QuakeSense", "tr": "QuakeSense nasıl kullanılır", "fa": "نحوه استفاده از QuakeSense", "zh": "如何使用 QuakeSense", "tpi": "Orait, yusim QuakeSense", "ho": "Vada QuakeSense", "mi": "Me pēhea te whakamahi i a QuakeSense", "ne": "QuakeSense कसरी प्रयोग गर्ने", "el": "Πώς να χρησιμοποιήσετε το QuakeSense", "it": "Come usare QuakeSense", "ps": "څنګه QuakeSense وکاروئ", "prs": "چگونه از QuakeSense استفاده کنیم"},
+    "guide_md": {"en": "\nQuakeSense answers three questions after an earthquake: **what just happened,\nwhat does it mean for my community, and is this pattern normal?** The menu is\norganized around those moments:\n\n| Section | Purpose | Data behind it |\n|---|---|---|\n| **Live Now** | What's happening right now, worldwide | USGS live feed (7 days, M2.5+), every 5 min |\n| **Anomaly Watch** | Is this week normal for each region? | Live feed vs 50-year baseline |\n| **My Area** | What's the risk where *I* live? | 50-year USGS catalog (BigQuery) |\n| **Ask AI** | Any earthquake question, any language | Catalog + live feed + web search |\n| **Response Toolkit** | The hours after a quake | All of the above + OpenStreetMap |\n\nThe scrolling strip under the header shows this week's M5+ events everywhere in\nthe app — orange for M6+, **red for M6.5+ alerts**, blue for tsunami-flagged.\nOn most pages a **💬 Ask QuakeSense** chat bubble floats bottom-right: quick\nquestions about what's on screen, answered with the exact event/location named.\n\n#### Live Now\nThe world map of every earthquake in the last 7 days: magnitude presets and\nslider, location filter, tectonic plate boundaries (red lines — that's where\nquakes happen), tsunami auto-flagging, CSV export. Below the map: **AI Situation\nBriefings** for any significant event, and **global media coverage** — top\nearthquake headlines from world media.\n\n#### Anomaly Watch\nCompares this week's activity in every region against its 50-year average and\nflags what's unusual — swarms, aftershock sequences — with calm AI explanations.\n\n#### My Area\nPick your country and town from verified dropdowns, choose from 8 languages\n(English, Burmese, Thai, Hindi, Bengali, Telugu, Marathi, Tamil), and get a\ncommunity risk profile grounded in your area's real 50-year record — with\ncharts and a map of every M5+ epicenter near you.\n\n#### Ask AI\nAsk anything about earthquakes, in any language — it answers in yours.\nHistorical questions are answered from 50 years of USGS records with the SQL\nshown; this-week questions from the live feed; current events with live web\nsearch, **sources cited**. Every answer takes a 👍/👎 so we keep improving.\nIt remembers follow-ups (*\"and for Japan?\"*) and can discuss your My Area profile.\n\n#### Response Toolkit\nFor the hours after a quake: a formal **situation report (SITREP)** with\nweb-verified external reports, **do's and don'ts** for people waiting for\nrescue (8 languages, FEMA/Red Cross guidance), and **hospitals, fire and\npolice stations** near any affected town, with national emergency hotlines.\nThe event you picked on Live Now carries over automatically.\n\n---\n*Earthquakes cannot be predicted. QuakeSense supports awareness, communication,\nand preparedness decisions — never prediction.*\n", "hi": "\nभूकंप के बाद QuakeSense तीन सवालों के जवाब देता है: **अभी क्या हुआ, मेरे\nसमुदाय के लिए इसका क्या मतलब है, और क्या यह पैटर्न सामान्य है?**\n\n- **लाइव अभी** — दुनिया भर में अभी क्या हो रहा है (USGS लाइव फ़ीड, 7 दिन)।\n  मानचित्र, फ़िल्टर, AI ब्रीफिंग और वैश्विक मीडिया कवरेज।\n- **असामान्यता निगरानी** — हर क्षेत्र की इस सप्ताह की गतिविधि की तुलना 50-वर्षीय\n  औसत से, AI व्याख्या के साथ।\n- **मेरा क्षेत्र** — अपना शहर चुनें और 8 भाषाओं में असली 50-वर्षीय रिकॉर्ड पर\n  आधारित जोखिम प्रोफ़ाइल पाएँ — चार्ट और मानचित्र के साथ।\n- **AI से पूछें** — किसी भी भाषा में कुछ भी पूछें। ऐतिहासिक सवाल USGS रिकॉर्ड\n  से (SQL दिखाया जाता है), ताज़ा ख़बरें स्रोतों के साथ। फ़ॉलो-अप याद रहते हैं।\n- **प्रतिक्रिया टूलकिट** — SITREP, क्या करें/क्या न करें (8 भाषाएँ), अस्पताल,\n  फ़ायर व पुलिस स्टेशन खोज और आपातकालीन हॉटलाइन।\n\nहेडर के नीचे की पट्टी इस सप्ताह की M5+ घटनाएँ दिखाती है, और अधिकांश पेजों पर\n**💬 Ask QuakeSense** चैट बटन नीचे-दाएँ रहता है।\n\n---\n*भूकंप की भविष्यवाणी नहीं की जा सकती। QuakeSense केवल जागरूकता में मदद करता है।*\n", "ja": "\nQuakeSenseは、地震発生後に3つの質問に答えます。**何が起こったのか、\n私の地域にとって何を意味するのか、そしてこのパターンは通常なのか？** メニューは\nこれらの瞬間に合わせて構成されています。\n\n| セクション | 目的 | その背後にあるデータ |\n|---|---|---|\n| **ライブ中** | 世界中で今何が起こっているか | USGSライブフィード（7日間、M2.5以上）、5分ごと |\n| **異常監視** | 各地域にとって今週は通常か？ | ライブフィード vs 50年間のベースライン |\n| **私の地域** | *私が*住んでいる場所のリスクは？ | 50年間のUSGSカタログ（BigQuery） |\n| **AIに質問** | 地震に関するあらゆる質問、あらゆる言語で | カタログ + ライブフィード + ウェブ検索 |\n| **対応ツールキット** | 地震発生後の数時間 | 上記すべて + OpenStreetMap |\n\nヘッダーの下のスクロールストリップには、アプリ内のすべてのM5+イベントが今週表示されます。\nM6+はオレンジ、**M6.5+の警報は赤**、津波フラグ付きは青です。\nほとんどのページで、右下に**💬 QuakeSenseに質問**チャットバブルが浮かんでいます。画面上の\n内容に関する簡単な質問に、正確なイベント/場所を挙げて答えます。\n\n#### ライブ中\n過去7日間のすべての地震の世界地図：マグニチュードのプリセットと\nスライダー、場所フィルター、プレート境界（赤線 — ここで地震が発生します）、\n津波の自動フラグ付け、CSVエクスポート。地図の下には、重要なイベントごとの**AI状況\nブリーフィング**と、**世界のメディア報道** — 世界のメディアからの主要な\n地震ヘッドラインがあります。\n\n#### 異常監視\n今週の各地域の活動を50年間の平均と比較し、異常なもの（群発地震、\n余震シーケンスなど）を穏やかなAIの説明とともにフラグ付けします。\n\n#### 私の地域\n検証済みのドロップダウンから国と都市を選択し、8つの言語\n（英語、ビルマ語、タイ語、ヒンディー語、ベンガル語、テルグ語、マラーティー語、タミル語）から選択して、\nお住まいの地域の実際の50年間の記録に基づいたコミュニティリスクプロファイルを取得します。\nこれには、チャートと近くのすべてのM5+震源地の地図が含まれます。\n\n#### AIに質問\n地震について、どんな言語でも質問してください — あなたの言語で答えます。\n歴史的な質問には、50年間のUSGS記録からSQLを表示して回答します。\n今週の質問にはライブフィードから、現在のイベントにはライブウェブ検索で、\n**情報源を引用して**回答します。すべての回答には👍/👎を付けて、改善を続けます。\nフォローアップ（*「日本については？」*）を記憶し、あなたの「私の地域」プロファイルについて議論できます。\n\n#### 対応ツールキット\n地震発生後の数時間のために：ウェブで検証された外部レポートを含む正式な**状況報告書（SITREP）**、\n救助を待つ人々のための**すべきこととすべきでないこと**（8言語、FEMA/赤十字のガイダンス）、\nおよび影響を受けた町の近くの**病院、消防署、警察署**、\nそして全国の緊急ホットライン。ライブ中で選択したイベントは自動的に引き継がれます。\n\n---\n*地震は予測できません。QuakeSenseは、意識、コミュニケーション、\nおよび準備の決定をサポートします — 予測ではありません。*\n", "id": "\nQuakeSense menjawab tiga pertanyaan setelah gempa bumi: **apa yang baru saja terjadi,\napa artinya bagi komunitas saya, dan apakah pola ini normal?** Menu ini\ndiorganisir berdasarkan momen-momen tersebut:\n\n| Bagian | Tujuan | Data di baliknya |\n|---|---|---|\n| **Langsung Sekarang** | Apa yang terjadi sekarang, di seluruh dunia | Umpan langsung USGS (7 hari, M2.5+), setiap 5 menit |\n| **Pengawasan Anomali** | Apakah minggu ini normal untuk setiap wilayah? | Umpan langsung vs. dasar 50 tahun |\n| **Area Saya** | Apa risiko di tempat *saya* tinggal? | Katalog USGS 50 tahun (BigQuery) |\n| **Tanya AI** | Pertanyaan gempa bumi apa pun, bahasa apa pun | Katalog + umpan langsung + pencarian web |\n| **Perangkat Tanggap** | Jam-jam setelah gempa | Semua di atas + OpenStreetMap |\n\nStrip gulir di bawah header menunjukkan peristiwa M5+ minggu ini di mana saja di\naplikasi — oranye untuk M6+, **merah untuk peringatan M6.5+**, biru untuk yang ditandai tsunami.\nDi sebagian besar halaman, gelembung obrolan **💬 Tanya QuakeSense** mengambang di kanan bawah: pertanyaan cepat\ntentang apa yang ada di layar, dijawab dengan nama peristiwa/lokasi yang tepat.\n\n#### Langsung Sekarang\nPeta dunia setiap gempa bumi dalam 7 hari terakhir: preset dan penggeser magnitudo,\nfilter lokasi, batas lempeng tektonik (garis merah — di situlah gempa terjadi),\npenandaan otomatis tsunami, ekspor CSV. Di bawah peta: **Briefing Situasi AI**\nuntuk setiap peristiwa signifikan, dan **liputan media global** — berita utama\ngempa bumi teratas dari media dunia.\n\n#### Pengawasan Anomali\nMembandingkan aktivitas minggu ini di setiap wilayah dengan rata-rata 50 tahunnya dan\nmenandai apa yang tidak biasa — kawanan, urutan gempa susulan — dengan penjelasan AI yang tenang.\n\n#### Area Saya\nPilih negara dan kota Anda dari daftar drop-down yang terverifikasi, pilih dari 8 bahasa\n(Inggris, Burma, Thai, Hindi, Bengali, Telugu, Marathi, Tamil), dan dapatkan\nprofil risiko komunitas berdasarkan catatan 50 tahun nyata di wilayah Anda — dengan\ngrafik dan peta setiap episentrum M5+ di dekat Anda.\n\n#### Tanya AI\nTanyakan apa pun tentang gempa bumi, dalam bahasa apa pun — ia menjawab dalam bahasa Anda.\nPertanyaan historis dijawab dari catatan USGS 50 tahun dengan SQL yang ditampilkan;\npertanyaan minggu ini dari umpan langsung; peristiwa terkini dengan pencarian web langsung,\n**sumber dikutip**. Setiap jawaban membutuhkan 👍/👎 agar kami terus meningkatkan.\nIa mengingat tindak lanjut (*\"dan untuk Jepang?\"*) dan dapat mendiskusikan profil Area Saya Anda.\n\n#### Perangkat Tanggap\nUntuk jam-jam setelah gempa: **laporan situasi (SITREP)** formal dengan\nlaporan eksternal yang diverifikasi web, **yang boleh dan tidak boleh dilakukan** untuk orang-orang yang menunggu\npenyelamatan (8 bahasa, panduan FEMA/Palang Merah), dan **rumah sakit, pemadam kebakaran dan\nkantor polisi** di dekat kota yang terkena dampak, dengan hotline darurat nasional.\nPeristiwa yang Anda pilih di Langsung Sekarang akan otomatis terbawa.\n\n---\n*Gempa bumi tidak dapat diprediksi. QuakeSense mendukung kesadaran, komunikasi,\ndan keputusan kesiapsiagaan — tidak pernah prediksi.*\n", "fil": "\nSinusagot ng QuakeSense ang tatlong tanong pagkatapos ng lindol: **ano ang nangyari,\nano ang ibig sabihin nito para sa aking komunidad, at normal ba ang pattern na ito?** Ang menu ay nakaayos ayon sa mga sandaling iyon:\n\n| Seksyon | Layunin | Data sa likod nito |\n|---|---|---|\n| **Live Ngayon** | Ano ang nangyayari ngayon, sa buong mundo | USGS live feed (7 araw, M2.5+), bawat 5 min |\n| **Pagsubaybay sa Anomaly** | Normal ba ang linggong ito para sa bawat rehiyon? | Live feed vs 50-taong baseline |\n| **Aking Lugar** | Ano ang panganib kung saan *ako* nakatira? | 50-taong USGS catalog (BigQuery) |\n| **Magtanong sa AI** | Anumang tanong tungkol sa lindol, anumang wika | Catalog + live feed + web search |\n| **Response Toolkit** | Ang mga oras pagkatapos ng lindol | Lahat ng nasa itaas + OpenStreetMap |\n\nAng nag-i-scroll na strip sa ilalim ng header ay nagpapakita ng mga M5+ na kaganapan sa linggong ito sa lahat ng dako sa app — orange para sa M6+, **pula para sa M6.5+ na alerto**, asul para sa mga may flag na tsunami.\nSa karamihan ng mga pahina, isang **💬 Magtanong sa QuakeSense** na chat bubble ang lumulutang sa ibabang-kanan: mabilis na mga tanong tungkol sa kung ano ang nasa screen, sinasagot gamit ang eksaktong kaganapan/lokasyon na pinangalanan.\n\n#### Live Ngayon\nAng mapa ng mundo ng bawat lindol sa huling 7 araw: mga preset at slider ng magnitude, filter ng lokasyon, mga hangganan ng tectonic plate (pulang linya — doon nangyayari ang mga lindol), auto-flagging ng tsunami, CSV export. Sa ibaba ng mapa: **AI Situation Briefings** para sa anumang mahalagang kaganapan, at **pandaigdigang saklaw ng media** — mga pangunahing balita tungkol sa lindol mula sa media ng mundo.\n\n#### Pagsubaybay sa Anomaly\nInihahambing ang aktibidad sa linggong ito sa bawat rehiyon laban sa 50-taong average nito at nagtatakda ng flag sa kung ano ang hindi pangkaraniwan — mga swarm, aftershock sequence — na may kalmadong paliwanag ng AI.\n\n#### Aking Lugar\nPiliin ang iyong bansa at bayan mula sa mga na-verify na dropdown, pumili mula sa 8 wika (English, Burmese, Thai, Hindi, Bengali, Telugu, Marathi, Tamil), at makakuha ng profile ng panganib ng komunidad na nakabatay sa tunay na 50-taong talaan ng iyong lugar — na may mga chart at mapa ng bawat M5+ epicenter na malapit sa iyo.\n\n#### Magtanong sa AI\nMagtanong ng anuman tungkol sa mga lindol, sa anumang wika — sasagutin ito sa iyong wika.\nAng mga tanong sa kasaysayan ay sinasagot mula sa 50 taon ng mga talaan ng USGS na may ipinapakitang SQL; ang mga tanong sa linggong ito ay mula sa live feed; ang mga kasalukuyang kaganapan ay may live web search, **binanggit ang mga pinagmulan**. Bawat sagot ay may 👍/👎 upang patuloy kaming bumuti.\nNaaalala nito ang mga follow-up (*\"at para sa Japan?\"*) at maaaring talakayin ang iyong profile sa Aking Lugar.\n\n#### Response Toolkit\nPara sa mga oras pagkatapos ng lindol: isang pormal na **ulat ng sitwasyon (SITREP)** na may na-verify sa web na mga panlabas na ulat, **mga dapat at hindi dapat gawin** para sa mga naghihintay ng rescue (8 wika, gabay ng FEMA/Red Cross), at **mga ospital, istasyon ng bumbero at pulis** malapit sa anumang apektadong bayan, na may mga pambansang hotline ng emergency.\nAng kaganapan na pinili mo sa Live Ngayon ay awtomatikong naililipat.\n\n---\n*Hindi mahuhulaan ang mga lindol. Sinusuportahan ng QuakeSense ang kamalayan, komunikasyon, at mga desisyon sa paghahanda — hindi kailanman hula.*\n", "es": "\nQuakeSense responde a tres preguntas después de un terremoto: **qué acaba de\nsuceder, qué significa para mi comunidad y si este patrón es normal.** El menú\nestá organizado en torno a esos momentos:\n\n| Sección | Propósito | Datos detrás de esto |\n|---|---|---|\n| **En Vivo Ahora** | Qué está pasando ahora mismo, en todo el mundo | Fuente en vivo de USGS (7 días, M2.5+), cada 5 min |\n| **Vigilancia de Anomalías** | ¿Es esta semana normal para cada región? | Fuente en vivo vs línea base de 50 años |\n| **Mi Área** | ¿Cuál es el riesgo donde *yo* vivo? | Catálogo USGS de 50 años (BigQuery) |\n| **Preguntar a la IA** | Cualquier pregunta sobre terremotos, cualquier idioma | Catálogo + fuente en vivo + búsqueda web |\n| **Kit de Herramientas de Respuesta** | Las horas después de un terremoto | Todo lo anterior + OpenStreetMap |\n\nLa franja de desplazamiento bajo el encabezado muestra los eventos M5+ de esta\nsemana en toda la aplicación — naranja para M6+, **rojo para alertas M6.5+**,\nazul para los marcados con tsunami. En la mayoría de las páginas, una burbuja\nde chat **💬 Preguntar a QuakeSense** flota en la parte inferior derecha:\npreguntas rápidas sobre lo que está en pantalla, respondidas con el evento/\nubicación exacta nombrada.\n\n#### En Vivo Ahora\nEl mapa mundial de cada terremoto en los últimos 7 días: preajustes y\ndelizador de magnitud, filtro de ubicación, límites de placas tectónicas\n(líneas rojas — ahí es donde ocurren los terremotos), marcado automático de\ntsunamis, exportación CSV. Debajo del mapa: **Informes de Situación de IA**\npara cualquier evento significativo, y **cobertura mediática global** — los\nprincipales titulares de terremotos de los medios mundiales.\n\n#### Vigilancia de Anomalías\nCompara la actividad de esta semana en cada región con su promedio de 50 años\ny señala lo inusual — enjambres, secuencias de réplicas — con explicaciones\ntranquilas de IA.\n\n#### Mi Área\nElija su país y ciudad de los menús desplegables verificados, seleccione entre\n8 idiomas (inglés, birmano, tailandés, hindi, bengalí, telugu, marathi, tamil),\ny obtenga un perfil de riesgo comunitario basado en el registro real de 50 años\nde su área — con gráficos y un mapa de cada epicentro M5+ cerca de usted.\n\n#### Preguntar a la IA\nHaga cualquier pregunta sobre terremotos, en cualquier idioma — responde en el\nsuyo. Las preguntas históricas se responden a partir de 50 años de registros\ndel USGS con el SQL mostrado; las preguntas de esta semana a partir de la\nfuente en vivo; los eventos actuales con búsqueda web en vivo, **fuentes\ncitadas**. Cada respuesta recibe un 👍/👎 para que sigamos mejorando. Recuerda\nseguimientos (*\"¿y para Japón?\"*) y puede discutir su perfil de Mi Área.\n\n#### Kit de Herramientas de Respuesta\nPara las horas después de un terremoto: un **informe de situación (SITREP)**\nformal con informes externos verificados por la web, **qué hacer y qué no\nhacer** para las personas que esperan rescate (8 idiomas, guía de FEMA/Cruz\nRoja), y **hospitales, estaciones de bomberos y policía** cerca de cualquier\nciudad afectada, con líneas directas de emergencia nacionales. El evento que\nseleccionó en En Vivo Ahora se transfiere automáticamente.\n\n---\n*Los terremotos no se pueden predecir. QuakeSense apoya la concienciación, la\ncomunicación y las decisiones de preparación — nunca la predicción.*\n", "tr": "\nQuakeSense bir depremden sonra üç soruyu yanıtlar: **az önce ne oldu, bu benim topluluğum için ne anlama geliyor ve bu düzen normal mi?** Menü bu anlar etrafında düzenlenmiştir:\n\n| Bölüm | Amaç | Arkasındaki Veriler |\n|---|---|---|\n| **Şimdi Canlı** | Şu anda dünya genelinde neler oluyor | USGS canlı akışı (7 gün, M2.5+), her 5 dakikada bir |\n| **Anomali İzleme** | Bu hafta her bölge için normal mi? | Canlı akış ve 50 yıllık temel karşılaştırması |\n| **Benim Bölgem** | *Benim* yaşadığım yerdeki risk nedir? | 50 yıllık USGS kataloğu (BigQuery) |\n| **Yapay Zekaya Sor** | Herhangi bir deprem sorusu, herhangi bir dil | Katalog + canlı akış + web araması |\n| **Müdahale Araç Kiti** | Depremden sonraki saatler | Yukarıdakilerin hepsi + OpenStreetMap |\n\nBaşlığın altındaki kayan şerit, uygulamadaki her yerde bu haftanın M5+ olaylarını gösterir — M6+ için turuncu, **M6.5+ uyarıları için kırmızı**, tsunami işaretli olanlar için mavi.\nÇoğu sayfada sağ altta **💬 QuakeSense'e Sor** sohbet balonu yüzer: ekranda görünenler hakkında hızlı sorular, tam olarak belirtilen olay/konum ile yanıtlanır.\n\n#### Şimdi Canlı\nSon 7 gündeki her depremin dünya haritası: büyüklük ön ayarları ve kaydırıcı, konum filtresi, tektonik plaka sınırları (kırmızı çizgiler — depremlerin olduğu yerler), tsunami otomatik işaretleme, CSV dışa aktarma. Haritanın altında: önemli olaylar için **Yapay Zeka Durum Brifingleri** ve **küresel medya kapsamı** — dünya medyasından en önemli deprem başlıkları.\n\n#### Anomali İzleme\nBu haftanın her bölgedeki aktivitesini 50 yıllık ortalamasıyla karşılaştırır ve olağandışı olanları — sürüler, artçı şok dizileri — sakin yapay zeka açıklamalarıyla işaretler.\n\n#### Benim Bölgem\nDoğrulanmış açılır menülerden ülkenizi ve şehrinizi seçin, 8 dilden (İngilizce, Birmanca, Tayca, Hintçe, Bengalce, Telugu, Marathi, Tamil) birini seçin ve bölgenizin gerçek 50 yıllık kaydına dayanan bir topluluk risk profili alın — yakınınızdaki her M5+ merkez üssünün grafikleri ve haritası ile.\n\n#### Yapay Zekaya Sor\nDepremler hakkında herhangi bir dilde herhangi bir şey sorun — sizin dilinizde yanıtlar.\nTarihsel sorular 50 yıllık USGS kayıtlarından, gösterilen SQL ile yanıtlanır; bu haftaki sorular canlı akıştan; güncel olaylar canlı web aramasıyla, **kaynaklar belirtilerek** yanıtlanır. Her yanıt bir 👍/👎 alır, böylece sürekli gelişiriz.\nTakip sorularını (*\"ve Japonya için?\"*) hatırlar ve Benim Bölgem profilinizi tartışabilir.\n\n#### Müdahale Araç Kiti\nDepremden sonraki saatler için: web'de doğrulanmış harici raporlarla resmi bir **durum raporu (SITREP)**, kurtarma bekleyen insanlar için **yapılması ve yapılmaması gerekenler** (8 dil, FEMA/Kızıl Haç rehberliği) ve etkilenen herhangi bir kasabanın yakınındaki **hastaneler, itfaiye ve polis karakolları**, ulusal acil durum hatları ile birlikte. Şimdi Canlı'da seçtiğiniz olay otomatik olarak aktarılır.\n\n---\n*Depremler tahmin edilemez. QuakeSense farkındalığı, iletişimi ve hazırlık kararlarını destekler — asla tahmini değil.*\n", "fa": "\nQuakeSense به سه سوال پس از زلزله پاسخ می‌دهد: **چه اتفاقی افتاد،\nبرای جامعه من چه معنایی دارد، و آیا این الگو طبیعی است؟** منو\nبر اساس این لحظات سازماندهی شده است:\n\n| بخش | هدف | داده‌های پشت آن |\n|---|---|---|\n| **اکنون زنده** | آنچه در حال حاضر در سراسر جهان اتفاق می‌افتد | فید زنده USGS (7 روز، M2.5+), هر 5 دقیقه |\n| **نظارت بر ناهنجاری** | آیا این هفته برای هر منطقه عادی است؟ | فید زنده در مقابل خط پایه 50 ساله |\n| **منطقه من** | خطر در جایی که *من* زندگی می‌کنم چقدر است؟ | کاتالوگ 50 ساله USGS (BigQuery) |\n| **از هوش مصنوعی بپرسید** | هر سوالی درباره زلزله، به هر زبانی | کاتالوگ + فید زنده + جستجوی وب |\n| **جعبه ابزار واکنش** | ساعات پس از زلزله | همه موارد بالا + OpenStreetMap |\n\nنوار پیمایشی زیر هدر، رویدادهای M5+ این هفته را در همه جای\nبرنامه نشان می‌دهد — نارنجی برای M6+, **قرمز برای هشدارهای M6.5+**, آبی برای موارد پرچم‌گذاری شده سونامی.\nدر بیشتر صفحات یک حباب چت **💬 از QuakeSense بپرسید** در پایین سمت راست شناور است: سوالات سریع\nدرباره آنچه روی صفحه است، با نام دقیق رویداد/مکان پاسخ داده می‌شود.\n\n#### اکنون زنده\nنقشه جهانی هر زلزله در 7 روز گذشته: پیش‌تنظیمات و نوار لغزنده بزرگی،\nفیلتر مکان، مرزهای صفحات تکتونیکی (خطوط قرمز — جایی که زلزله‌ها اتفاق می‌افتند)،\nپرچم‌گذاری خودکار سونامی، خروجی CSV. زیر نقشه: **گزارش‌های وضعیت هوش مصنوعی**\nبرای هر رویداد مهم، و **پوشش رسانه‌ای جهانی** — سرفصل‌های اصلی زلزله از\nرسانه‌های جهانی.\n\n#### نظارت بر ناهنجاری\nفعالیت این هفته در هر منطقه را با میانگین 50 ساله آن مقایسه می‌کند و\nموارد غیرعادی — خوشه‌ها، توالی پس‌لرزه‌ها — را با توضیحات آرام هوش مصنوعی پرچم‌گذاری می‌کند.\n\n#### منطقه من\nکشور و شهر خود را از لیست‌های کشویی تأیید شده انتخاب کنید، از 8 زبان\n(انگلیسی، برمه‌ای، تایلندی، هندی، بنگالی، تلوگو، مراتی، تامیلی) انتخاب کنید، و یک\nپروفایل خطر جامعه را بر اساس سابقه واقعی 50 ساله منطقه خود دریافت کنید — با\nنمودارها و نقشه‌ای از هر مرکز M5+ نزدیک شما.\n\n#### از هوش مصنوعی بپرسید\nهر سوالی درباره زلزله، به هر زبانی بپرسید — به زبان شما پاسخ می‌دهد.\nسوالات تاریخی از 50 سال سوابق USGS با نمایش SQL پاسخ داده می‌شوند؛\nسوالات این هفته از فید زنده؛ رویدادهای جاری با جستجوی زنده وب، **منابع ذکر شده**.\nهر پاسخ یک 👍/👎 می‌گیرد تا ما به بهبود ادامه دهیم.\nپیگیری‌ها را به خاطر می‌سپارد (*\"و برای ژاپن؟\"*) و می‌تواند درباره پروفایل منطقه من شما بحث کند.\n\n#### جعبه ابزار واکنش\nبرای ساعات پس از زلزله: یک **گزارش وضعیت (SITREP)** رسمی با\nگزارش‌های خارجی تأیید شده وب، **بایدها و نبایدها** برای افرادی که منتظر\nنجات هستند (8 زبان، راهنمایی FEMA/صلیب سرخ)، و **بیمارستان‌ها، ایستگاه‌های آتش‌نشانی و\nپلیس** نزدیک هر شهر آسیب‌دیده، با خطوط اضطراری ملی.\nرویدادی که در Live Now انتخاب کردید به طور خودکار منتقل می‌شود.\n\n---\n*زلزله‌ها قابل پیش‌بینی نیستند. QuakeSense از آگاهی، ارتباطات،\nو تصمیمات آمادگی حمایت می‌کند — هرگز پیش‌بینی نمی‌کند.*\n", "zh": "\nQuakeSense 在地震后回答三个问题：**刚刚发生了什么，这对我的社区意味着什么，以及这种模式正常吗？** 菜单围绕这些时刻组织：\n\n| 部分 | 目的 | 背后的数据 |\n|---|---|---|\n| **实时动态** | 全球正在发生什么 | USGS 实时数据（7 天，M2.5+），每 5 分钟更新 |\n| **异常监测** | 本周每个区域正常吗？ | 实时数据与 50 年基线对比 |\n| **我的区域** | 我居住的地方有什么风险？ | 50 年 USGS 目录 (BigQuery) |\n| **询问 AI** | 任何地震问题，任何语言 | 目录 + 实时数据 + 网络搜索 |\n| **响应工具包** | 地震发生后的几个小时 | 以上所有 + OpenStreetMap |\n\n标题下方的滚动条显示了本周应用程序中所有 M5+ 事件——橙色表示 M6+，**红色表示 M6.5+ 警报**，蓝色表示海啸标记。\n在大多数页面上，**💬 询问 QuakeSense** 聊天气泡浮动在右下角：关于屏幕内容的快速问题，用确切的事件/地点名称回答。\n\n#### 实时动态\n过去 7 天内全球所有地震的世界地图：震级预设和滑块、位置过滤器、构造板块边界（红线——地震发生的地方）、海啸自动标记、CSV 导出。地图下方：针对任何重大事件的 **AI 情况简报**，以及**全球媒体报道**——来自世界媒体的头条地震新闻。\n\n#### 异常监测\n将本周每个区域的活动与其 50 年平均值进行比较，并标记异常情况——群震、余震序列——并附有平静的 AI 解释。\n\n#### 我的区域\n从经过验证的下拉菜单中选择您的国家和城镇，从 8 种语言（英语、缅甸语、泰语、印地语、孟加拉语、泰卢固语、马拉地语、泰米尔语）中选择，并根据您所在区域真实的 50 年记录获取社区风险概况——附有图表和您附近所有 M5+ 震中的地图。\n\n#### 询问 AI\n用任何语言询问任何关于地震的问题——它会用您的语言回答。\n历史问题从 50 年的 USGS 记录中回答，并显示 SQL；本周问题从实时数据中回答；当前事件通过实时网络搜索回答，**并注明来源**。每个答案都可以点赞/点踩，以便我们不断改进。\n它会记住后续问题（*“那日本呢？”*），并可以讨论您的“我的区域”资料。\n\n#### 响应工具包\n地震发生后的几个小时：一份正式的**情况报告 (SITREP)**，包含经过网络验证的外部报告，为等待救援的人们提供的**注意事项**（8 种语言，FEMA/红十字会指南），以及任何受影响城镇附近的**医院、消防局和警察局**，以及国家紧急热线。\n您在“实时动态”中选择的事件会自动带入。\n\n---\n*地震无法预测。QuakeSense 支持意识、沟通和准备决策——绝非预测。*\n", "tpi": "\nQuakeSense i bekim tripela askim bihain long guria: **wanem i bin kamap nau tasol,\nwanem mining bilong en long komuniti bilong mi, na dispela pasin i stretpela pasin?**\nDispela menyu i bungim ol dispela taim:\n\n| Seksen | Askim | Data i stap bihain long en |\n|---|---|---|\n| **Nau Tasol** | Wanem i kamap nau tasol, long olgeta hap bilong graun | USGS live feed (7 de, M2.5+), olgeta 5 min |\n| **Lukaut Long Narakain Pasin** | Dispela wik i stretpela pasin bilong olgeta hap? | Live feed agensim 50-yia bilong bipo |\n| **Hap Bilong Mi** | Wanem risk i stap long hap we *mi* stap? | 50-yia USGS katalog (BigQuery) |\n| **Askim AI** | Wanem wanem askim bilong guria, wanem wanem tokples | Katalog + live feed + web search |\n| **Ol Samting Bilong Mekim Bihain** | Ol aua bihain long guria | Olgeta samting i stap antap + OpenStreetMap |\n\nDispela stript i ron aninit long het i soim ol M5+ guria bilong dispela wik long\nolgeta hap long app — orins bilong M6+, **ret bilong M6.5+ tokaut**, blu bilong\ntsunami-mak. Long planti pes wanpela **💬 Askim QuakeSense** chat babol i\nflot long daun-rait: ol kwik askim long wanem i stap long skrin, i bekim long\nraitpela guria/ples i tokaut.\n\n#### Nau Tasol\nGraun map bilong olgeta guria long las 7 de: ol mak bilong strong bilong guria\nna slider, ples bilong filter, ol lain bilong tektonik plet (ret lain — dispela\ni hap we ol guria i kamap), tsunami auto-mak, CSV eksport. Aninit long map:\n**AI Toksave Bilong Ples** bilong wanem wanem bikpela guria, na **ol nius bilong\nwol** — ol bikpela nius bilong guria long ol nius bilong wol.\n\n#### Lukaut Long Narakain Pasin\nI bungim ol wok bilong dispela wik long olgeta hap agensim 50-yia avarej bilong\nen na i makim wanem i narakain — ol swarm, ol aftershock — wantaim ol AI\ntoksavve i stap isi.\n\n#### Hap Bilong Mi\nMakim kantri na taun bilong yu long ol dropdown i stret, makim wanpela long 8\ntokples (English, Burmese, Thai, Hindi, Bengali, Telugu, Marathi, Tamil), na\nkisim wanpela komuniti risk profail i stap long tru 50-yia rikod bilong hap\nbilong yu — wantaim ol sat na wanpela map bilong olgeta M5+ senta bilong guria\nklostu long yu.\n\n#### Askim AI\nAskim wanem wanem bilong ol guria, long wanem wanem tokples — em i bekim long\ntokples bilong yu. Ol askim bilong bipo i bekim long 50 yia bilong USGS rikod\nwantaim SQL i soim; ol askim bilong dispela wik long live feed; ol samting i\nkamap nau wantaim live web search, **ol sors i tokaut**. Olgeta bekim i kisim\nwanpela 👍/👎 bilong mekim gut moa.\nEm i tingim ol askim bihain (*\"na bilong Japan?\"*) na i ken toktok long My Area\nprofail bilong yu.\n\n#### Ol Samting Bilong Mekim Bihain\nBilong ol aua bihain long guria: wanpela stretpela **ripot bilong ples (SITREP)**\nwantaim ol ripot bilong autsait i stret long web, **ol samting bilong mekim na\nnoken mekim** bilong ol man i wetim helpim (8 tokples, FEMA/Red Cross advais),\nna **ol haus sik, ol stesen bilong paia na polis** klostu long wanem wanem taun\ni gat hevi, wantaim ol nasonal emerjensi hotlain.\nDispela guria yu makim long Live Now i go insait stret.\n\n---\n*Ol guria i no ken tokaut bipo. QuakeSense i sapotim save, toktok, na ol\ndisesen bilong redi — i no bilong tokaut bipo.*\n", "ho": "\nQuakeSense ese ororo rua bona inai murimuri ai: **dahaka dohore ia vara, egu hanua dekenai edena bamona, bona inai kara be ia mauri noho, a?** Anina be inai bamona:\n\n| Sekson | Anina | Data ia noho | ia\n|---|---|---|\n| **Harihari Ia Mauri** | Dahaka ia vara noho, tanobada ibounai | USGS live feed (7 dina, M2.5+), minit 5 ta ta ai |\n| **Anomaly Watch** | Inai wiki be ia mauri noho, a? | Live feed vs 50-lagani baselain |\n| **Egu Hekou** | Egu noho gabu dekenai edena bamona? | 50-lagani USGS catalog (BigQuery) |\n| **AI Hamaoroa** | Orooro henanadai, gado ibounai | Catalog + live feed + web search |\n| **Response Toolkit** | Orooro murinai hora haida | Ibounai + OpenStreetMap |\n\nHeader henunai ia lao noho strip be inai wiki ena M5+ gaudia ibounai ia hahedinaraia — orange be M6+ dekenai, **red be M6.5+ alerts dekenai**, blue be tsunami-flagged dekenai. Peji momo dekenai **💬 Ask QuakeSense** chat bubble be hansi-diba dekenai ia noho: henanadai haraidia, ia hahedinaraia gauna dekenai, ia hahanaia.\n\n#### Harihari Ia Mauri\nTanobada ena map dekenai 7 dina lalonai ia vara gaudia ibounai: magnitude presets bona slider, gabu filter, tectonic plate boundaries (red lain — unai gabu dekenai ororo ia vara), tsunami auto-flagging, CSV export. Map henunai: **AI Situation Briefings** gauna badadia dekenai, bona **global media coverage** — tanobada ena media dekenai ororo ena sivarai badadia.\n\n#### Anomaly Watch\nInai wiki ena kara be 50-lagani average dekenai ia hahegeregerea bona dahaka ia mauri noho — swarms, aftershock sequences — AI ena hereva namodia dekenai ia hahedinaraia.\n\n#### Egu Hekou\nEmu hanua bona siti ia abia hidi, gado 8 dekenai (English, Burmese, Thai, Hindi, Bengali, Telugu, Marathi, Tamil), bona emu gabu ena 50-lagani record dekenai ia noho community risk profile ia abia — charts bona map dekenai M5+ epicenter ia noho.\n\n#### AI Hamaoroa\nOrooro dekenai dahaka ia noho, gado ibounai dekenai — emu gado dekenai ia hahanaia. Sivarai henanadai be 50-lagani USGS records dekenai ia hahanaia, SQL ia hahedinaraia; inai wiki henanadai be live feed dekenai; harihari gaudia be live web search dekenai, **sources ia hahedinaraia**. Hahanai ta ta be 👍/👎 ia abia, unai dainai ita ia namo noho. Ia be ia laloa noho (*\"bona Japan dekenai?\"*) bona emu My Area profile ia herevalaia diba.\n\n#### Response Toolkit\nOrooro murinai hora haida dekenai: **situation report (SITREP)** web-verified external reports dekenai, **kara namodia bona kara dikadia** (gado 8, FEMA/Red Cross ena hereva), bona **hospitals, fire bona police stations** hanua badina dekenai, national emergency hotlines danu. Live Now dekenai emu hidi gauna be ia lao noho.\n\n---\nOrooro be ia diba lasi. QuakeSense be diba, hereva, bona hegaegae dekenai ia durua — ia diba lasi.\n", "mi": "\nKa whakautu a QuakeSense i ngā pātai e toru i muri i te rū whenua: **he aha i\npa mai, he aha te tikanga mō tōku hapori, ā, he mea noa tēnei tauira?** Kua\nwhakaritea te tahua i runga i aua wā:\n\n| Wāhanga | Whāinga | Raraunga kei muri |\n|---|---|---|\n| **Ora Tonu** | He aha kei te tupu ināianei, puta noa i te ao | Te whāngai ora a USGS (7 rā, M2.5+), ia 5 meneti |\n| **Mātakitaki Rerekē** | He mea noa tēnei wiki mō ia rohe? | Whāngai ora ki te rārangi turanga 50-tau |\n| **Tōku Rohe** | He aha te mōrearea kei te wāhi e noho ana *ahau*? | Rārangi USGS 50-tau (BigQuery) |\n| **Pātai AI** | Tetahi pātai rū whenua, ahakoa he aha te reo | Rārangi + whāngai ora + rapu tukutuku |\n| **Kete Urupare** | Ngā haora i muri i te rū whenua | Katoa o runga ake nei + OpenStreetMap |\n\nKo te rīpene panuku i raro i te pane e whakaatu ana i ngā kaupapa M5+ o tēnei\nwiki i ngā wāhi katoa o te taupānga — karaka mō te M6+, **whero mō ngā matohi\nM6.5+**, kahurangi mō ngā mea kua tohua he tsunami. I te nuinga o ngā whārangi\nka puta he mirumiru kōrero **💬 Pātai ki a QuakeSense** kei te taha matau-raro:\nngā pātai tere mō ngā mea kei te mata, ka whakautua ki te kaupapa/wāhi tika\ni tapaina.\n\n#### Ora Tonu\nTe mahere o te ao mō ia rū whenua i ngā rā e 7 kua hipa: ngā tautuhinga\nmagnitude me te rēreti, te tātari wāhi, ngā rohe pereti tectonic (ngā rārangi\nwhero — kei reira ngā rū whenua e tupu ana), te tohu aunoa tsunami, te kaweake\nCSV. Kei raro i te mahere: **Ngā Whakamārama Āhuatanga AI** mō ngā kaupapa\nnui, me **ngā purongo pāpāho o te ao** — ngā upoko kōrero rū whenua nui mai i\nngā pāpāho o te ao.\n\n#### Mātakitaki Rerekē\nKa whakataurite i ngā mahi o tēnei wiki i ia rohe ki tōna toharite 50-tau, ā,\nka tohu i ngā mea rerekē — ngā kahui, ngā raupapa ruu o muri — me ngā\nwhakamārama AI mārie.\n\n#### Tōku Rohe\nKōwhiria tō whenua me tō tāone mai i ngā rārangi taka-iho kua whakamanahia,\nkōwhiria mai i ngā reo e 8 (Ingarihi, Burmese, Thai, Hindi, Bengali, Telugu,\nMarathi, Tamil), ā, ka whiwhi koe i tētahi kōtaha mōrearea hapori i runga i\nngā rekoata 50-tau tūturu o tō rohe — me ngā tūtohi me tētahi mahere o ia\nwaenganui M5+ e tata ana ki a koe.\n\n#### Pātai AI\nPātai i ngā mea katoa mō ngā rū whenua, ahakoa he aha te reo — ka whakautu i\ntō reo. Ka whakautua ngā pātai hītori mai i ngā rekoata USGS 50-tau me te SQL\nei whakaatuhia; ngā pātai o tēnei wiki mai i te whāngai ora; ngā kaupapa o\nnāianei me te rapu tukutuku ora, **ngā puna i whakahuatia**. Ka tangohia e ia\nwhakautu he 👍/👎 kia pai ake ai tātou. Ka maumahara ki ngā whai-ake (*\"me mō\nHapani?\"*) ā, ka taea te kōrero mō tō kōtaha Tōku Rohe.\n\n#### Kete Urupare\nMō ngā haora i muri i te rū whenua: he **pūrongo āhuatanga (SITREP)** ōkawa\nme ngā pūrongo o waho kua whakamanahia e te tukutuku, **ngā mahi me ngā kore\nmahi** mō ngā tāngata e tatari ana kia whakaorangia (8 reo, ngā tohutohu\nFEMA/Red Cross), me **ngā hōhipera, ngā teihana ahi me ngā pirihimana** e tata\nana ki tētahi tāone kua pāngia, me ngā rārangi waea ohotata ā-motu. Ko te\nkaupapa i kōwhiria e koe i te Ora Tonu ka kawea aunoa mai.\n\n---\nKāore e taea te matapae i ngā rū whenua. Ka tautoko a QuakeSense i te\nmōhiotanga, te kōrero, me ngā whakatau takatū — kaua rawa e matapae.\n", "ne": "\nभूकम्पपछि QuakeSense ले तीनवटा प्रश्नहरूको जवाफ दिन्छ: **अहिले के भयो, यसले मेरो समुदायलाई के अर्थ राख्छ, र के यो ढाँचा सामान्य हो?** मेनु ती क्षणहरू वरिपरि व्यवस्थित गरिएको छ:\n\n| खण्ड | उद्देश्य | यसको पछाडिको डेटा |\n|---|---|---|\n| **अहिले प्रत्यक्ष** | अहिले विश्वभर के भइरहेको छ | USGS प्रत्यक्ष फिड (७ दिन, M2.5+), हरेक ५ मिनेटमा |\n| **असामान्य निगरानी** | के यो हप्ता प्रत्येक क्षेत्रका लागि सामान्य छ? | प्रत्यक्ष फिड बनाम ५०-वर्षको आधाररेखा |\n| **मेरो क्षेत्र** | म बस्ने ठाउँमा जोखिम के छ? | ५०-वर्षको USGS सूची (BigQuery) |\n| **AI सोध्नुहोस्** | कुनै पनि भूकम्प प्रश्न, कुनै पनि भाषा | सूची + प्रत्यक्ष फिड + वेब खोज |\n| **प्रतिक्रिया उपकरण** | भूकम्पपछिका घण्टाहरू | माथिका सबै + OpenStreetMap |\n\nहेडर मुनिको स्क्रोलिङ स्ट्रिपले एपमा यस हप्ताका M5+ घटनाहरू देखाउँछ — M6+ को लागि सुन्तला, **M6.5+ अलर्टका लागि रातो**, सुनामी-चिह्नितका लागि निलो। धेरैजसो पृष्ठहरूमा **💬 QuakeSense सोध्नुहोस्** च्याट बबल तल-दायाँमा तैरिरहेको हुन्छ: स्क्रिनमा के छ भन्ने बारे द्रुत प्रश्नहरू, नाम दिइएको सटीक घटना/स्थानको साथ जवाफ दिइन्छ।\n\n#### अहिले प्रत्यक्ष\nपछिल्लो ७ दिनमा भएका हरेक भूकम्पको विश्व नक्सा: म्याग्निच्युड प्रिसेट र स्लाइडर, स्थान फिल्टर, टेक्टोनिक प्लेट सीमाना (रातो रेखाहरू — त्यहीँ भूकम्पहरू हुन्छन्), सुनामी स्वतः-चिह्नित, CSV निर्यात। नक्सा मुनि: कुनै पनि महत्त्वपूर्ण घटनाका लागि **AI स्थिति ब्रीफिंग**, र **विश्वव्यापी मिडिया कभरेज** — विश्व मिडियाबाट शीर्ष भूकम्प शीर्षकहरू।\n\n#### असामान्य निगरानी\nप्रत्येक क्षेत्रमा यस हप्ताको गतिविधि यसको ५०-वर्षको औसतसँग तुलना गर्छ र असामान्य कुराहरू — झुण्ड, पराकम्पन अनुक्रमहरू — शान्त AI स्पष्टीकरणका साथ झण्डा लगाउँछ।\n\n#### मेरो क्षेत्र\nप्रमाणित ड्रपडाउनबाट आफ्नो देश र सहर छान्नुहोस्, ८ भाषाहरू (अंग्रेजी, बर्मी, थाई, हिन्दी, बंगाली, तेलुगु, मराठी, तमिल) बाट छान्नुहोस्, र तपाईंको क्षेत्रको वास्तविक ५०-वर्षको रेकर्डमा आधारित सामुदायिक जोखिम प्रोफाइल प्राप्त गर्नुहोस् — चार्टहरू र तपाईंको नजिकका हरेक M5+ केन्द्रबिन्दुको नक्सा सहित।\n\n#### AI सोध्नुहोस्\nभूकम्पको बारेमा कुनै पनि कुरा सोध्नुहोस्, कुनै पनि भाषामा — यसले तपाईंको भाषामा जवाफ दिन्छ। ऐतिहासिक प्रश्नहरूको जवाफ ५० वर्षको USGS रेकर्डबाट SQL देखाइएको साथ दिइन्छ; यस हप्ताका प्रश्नहरू प्रत्यक्ष फिडबाट; हालका घटनाहरू प्रत्यक्ष वेब खोजको साथ, **स्रोतहरू उद्धृत गरिएका छन्**। हरेक जवाफले 👍/👎 लिन्छ ताकि हामी सुधार गरिरहन्छौं। यसले फलो-अपहरू (*\"र जापानको लागि?\"*) सम्झन्छ र तपाईंको मेरो क्षेत्र प्रोफाइलबारे छलफल गर्न सक्छ।\n\n#### प्रतिक्रिया उपकरण\nभूकम्पपछिका घण्टाहरूका लागि: वेब-प्रमाणित बाह्य रिपोर्टहरू सहितको औपचारिक **स्थिति रिपोर्ट (SITREP)**, उद्धारको लागि पर्खिरहेका मानिसहरूका लागि **गर्नुपर्ने र नगर्नुपर्ने कुराहरू** (८ भाषाहरू, FEMA/Red Cross मार्गदर्शन), र कुनै पनि प्रभावित सहर नजिकका **अस्पतालहरू, दमकल र प्रहरी चौकीहरू**, राष्ट्रिय आपतकालीन हटलाइनहरू सहित। तपाईंले प्रत्यक्षमा रोज्नुभएको घटना स्वतः सर्छ।\n\n---\n*भूकम्पको भविष्यवाणी गर्न सकिँदैन। QuakeSense ले जागरूकता, सञ्चार, र तयारी निर्णयहरूलाई समर्थन गर्दछ — कहिल्यै भविष्यवाणी होइन।*\n", "el": "\nΤο QuakeSense απαντά σε τρία ερωτήματα μετά από έναν σεισμό: **τι συνέβη μόλις,\nτι σημαίνει για την κοινότητά μου, και είναι αυτό το μοτίβο φυσιολογικό;** Το μενού είναι\nοργανωμένο γύρω από αυτές τις στιγμές:\n\n| Ενότητα | Σκοπός | Δεδομένα που το υποστηρίζουν |\n|---|---|---|\n| **Ζωντανά Τώρα** | Τι συμβαίνει αυτή τη στιγμή, παγκοσμίως | Ζωντανή ροή USGS (7 ημέρες, M2.5+), κάθε 5 λεπτά |\n| **Παρακολούθηση Ανωμαλιών** | Είναι αυτή η εβδομάδα φυσιολογική για κάθε περιοχή; | Ζωντανή ροή έναντι βάσης 50 ετών |\n| **Η Περιοχή μου** | Ποιος είναι ο κίνδυνος εκεί που *εγώ* ζω; | Κατάλογος USGS 50 ετών (BigQuery) |\n| **Ρώτα την AI** | Οποιαδήποτε ερώτηση για σεισμούς, οποιαδήποτε γλώσσα | Κατάλογος + ζωντανή ροή + αναζήτηση στο διαδίκτυο |\n| **Εργαλειοθήκη Αντιμετώπισης** | Οι ώρες μετά από έναν σεισμό | Όλα τα παραπάνω + OpenStreetMap |\n\nΗ κυλιόμενη λωρίδα κάτω από την κεφαλίδα δείχνει τα γεγονότα M5+ αυτής της εβδομάδας παντού στην\nεφαρμογή — πορτοκαλί για M6+, **κόκκινο για ειδοποιήσεις M6.5+**, μπλε για αυτά που φέρουν σήμανση τσουνάμι.\nΣτις περισσότερες σελίδες μια φούσκα συνομιλίας **💬 Ρώτα το QuakeSense** επιπλέει κάτω δεξιά: γρήγορες\nερωτήσεις για το τι εμφανίζεται στην οθόνη, απαντώνται με το ακριβές γεγονός/τοποθεσία που αναφέρεται.\n\n#### Ζωντανά Τώρα\nΟ παγκόσμιος χάρτης κάθε σεισμού των τελευταίων 7 ημερών: προεπιλογές μεγέθους και\nρυθμιστικό, φίλτρο τοποθεσίας, όρια τεκτονικών πλακών (κόκκινες γραμμές — εκεί συμβαίνουν\nοι σεισμοί), αυτόματη σήμανση τσουνάμι, εξαγωγή CSV. Κάτω από τον χάρτη: **Ενημερώσεις Κατάστασης AI**\nγια οποιοδήποτε σημαντικό γεγονός, και **παγκόσμια κάλυψη από τα μέσα ενημέρωσης** — κορυφαίες\nειδήσεις σεισμών από τα παγκόσμια μέσα.\n\n#### Παρακολούθηση Ανωμαλιών\nΣυγκρίνει τη δραστηριότητα αυτής της εβδομάδας σε κάθε περιοχή με τον μέσο όρο των 50 ετών και\nσηματοδοτεί τι είναι ασυνήθιστο — σμήνη, ακολουθίες μετασεισμών — με ήρεμες εξηγήσεις AI.\n\n#### Η Περιοχή μου\nΕπιλέξτε τη χώρα και την πόλη σας από επαληθευμένα αναπτυσσόμενα μενού, επιλέξτε από 8 γλώσσες\n(Αγγλικά, Βιρμανικά, Ταϊλανδικά, Χίντι, Μπενγκάλι, Τελούγκου, Μαράθι, Ταμίλ), και λάβετε ένα\nπροφίλ κινδύνου κοινότητας βασισμένο στο πραγματικό ιστορικό 50 ετών της περιοχής σας — με\nδιαγράμματα και χάρτη κάθε επίκεντρου M5+ κοντά σας.\n\n#### Ρώτα την AI\nΡωτήστε οτιδήποτε για τους σεισμούς, σε οποιαδήποτε γλώσσα — απαντά στη δική σας.\nΙστορικές ερωτήσεις απαντώνται από 50 χρόνια αρχείων USGS με το SQL\nπου εμφανίζεται· ερωτήσεις αυτής της εβδομάδας από τη ζωντανή ροή· τρέχοντα γεγονότα με ζωντανή\nαναζήτηση στο διαδίκτυο, **πηγές αναφέρονται**. Κάθε απάντηση λαμβάνει ένα 👍/👎 ώστε να συνεχίζουμε να βελτιωνόμαστε.\nΘυμάται τις επακόλουθες ερωτήσεις (*\"και για την Ιαπωνία;\"*) και μπορεί να συζητήσει το προφίλ της περιοχής σας.\n\n#### Εργαλειοθήκη Αντιμετώπισης\nΓια τις ώρες μετά από έναν σεισμό: μια επίσημη **αναφορά κατάστασης (SITREP)** με\nεπαληθευμένες στο διαδίκτυο εξωτερικές αναφορές, **τι πρέπει και τι δεν πρέπει να κάνετε** για άτομα που περιμένουν\nδιάσωση (8 γλώσσες, οδηγίες FEMA/Ερυθρού Σταυρού), και **νοσοκομεία, πυροσβεστικούς και\nαστυνομικούς σταθμούς** κοντά σε οποιαδήποτε πληγείσα πόλη, με εθνικές τηλεφωνικές γραμμές έκτακτης ανάγκης.\nΤο γεγονός που επιλέξατε στο Live Now μεταφέρεται αυτόματα.\n\n---\n*Οι σεισμοί δεν μπορούν να προβλεφθούν. Το QuakeSense υποστηρίζει την ευαισθητοποίηση, την επικοινωνία,\nκαι τις αποφάσεις ετοιμότητας — ποτέ την πρόβλεψη.*\n", "it": "\nQuakeSense risponde a tre domande dopo un terremoto: **cosa è appena successo,\ncosa significa per la mia comunità e questo schema è normale?** Il menu è\norganizzato attorno a questi momenti:\n\n| Sezione | Scopo | Dati sottostanti |\n|---|---|---|\n| **Live Now** | Cosa sta succedendo in questo momento, in tutto il mondo | Feed live USGS (7 giorni, M2.5+), ogni 5 min |\n| **Anomaly Watch** | Questa settimana è normale per ogni regione? | Feed live vs linea di base di 50 anni |\n| **My Area** | Qual è il rischio dove *io* vivo? | Catalogo USGS di 50 anni (BigQuery) |\n| **Ask AI** | Qualsiasi domanda sui terremoti, qualsiasi lingua | Catalogo + feed live + ricerca web |\n| **Response Toolkit** | Le ore dopo un terremoto | Tutto quanto sopra + OpenStreetMap |\n\nLa striscia scorrevole sotto l'intestazione mostra gli eventi M5+ di questa settimana in\ntutta l'app — arancione per M6+, **rosso per gli avvisi M6.5+**, blu per quelli contrassegnati da tsunami.\nSulla maggior parte delle pagine una bolla di chat **💬 Chiedi a QuakeSense** fluttua in basso a destra: domande rapide\nsu ciò che è sullo schermo, risposte con l'esatto evento/posizione nominata.\n\n#### Live Now\nLa mappa mondiale di ogni terremoto negli ultimi 7 giorni: preset e\nslider di magnitudo, filtro per posizione, confini delle placche tettoniche (linee rosse — è lì che\nsuccedono i terremoti), segnalazione automatica di tsunami, esportazione CSV. Sotto la mappa: **Briefing sulla situazione AI**\nper qualsiasi evento significativo e **copertura mediatica globale** — i principali\ntitoli sui terremoti dai media mondiali.\n\n#### Anomaly Watch\nConfronta l'attività di questa settimana in ogni regione con la sua media di 50 anni e\nsegnala ciò che è insolito — sciami, sequenze di scosse di assestamento — con calme spiegazioni AI.\n\n#### My Area\nScegli il tuo paese e la tua città da menu a discesa verificati, scegli tra 8 lingue\n(inglese, birmano, tailandese, hindi, bengalese, telugu, marathi, tamil) e ottieni un\nprofilo di rischio della comunità basato sui dati reali di 50 anni della tua zona — con\ngrafici e una mappa di ogni epicentro M5+ vicino a te.\n\n#### Ask AI\nChiedi qualsiasi cosa sui terremoti, in qualsiasi lingua — risponde nella tua.\nLe domande storiche ricevono risposta da 50 anni di registrazioni USGS con il SQL\nmostrato; le domande di questa settimana dal feed live; gli eventi attuali con ricerca web\nin tempo reale, **fonti citate**. Ogni risposta riceve un 👍/👎 in modo da continuare a migliorare.\nRicorda i follow-up (*\"e per il Giappone?\"*) e può discutere il tuo profilo My Area.\n\n#### Response Toolkit\nPer le ore dopo un terremoto: un **rapporto sulla situazione (SITREP)** formale con\nrapporti esterni verificati via web, **cosa fare e cosa non fare** per le persone in attesa di\nsoccorso (8 lingue, linee guida FEMA/Croce Rossa) e **ospedali, stazioni dei vigili del fuoco e\ndi polizia** vicino a qualsiasi città colpita, con numeri di emergenza nazionali.\nL'evento che hai scelto su Live Now viene riportato automaticamente.\n\n---\n*I terremoti non possono essere previsti. QuakeSense supporta la consapevolezza, la comunicazione\ne le decisioni di preparazione — mai la previsione.*\n", "ps": "\nQuakeSense د زلزلې وروسته درې پوښتنې ځوابوي: **څه پیښ شول، دا زما د ټولنې لپاره څه معنی لري، او ایا دا نمونه عادي ده؟** مینو د دې شیبو په شاوخوا کې تنظیم شوی:\n\n| برخه | موخه | تر شا یې معلومات |\n|---|---|---|\n| **اوس ژوندی** | همدا اوس په ټوله نړۍ کې څه پیښیږي | USGS ژوندی فیډ (7 ورځې، M2.5+)، هره 5 دقیقې |\n| **غیر معمولي څارنه** | ایا دا اونۍ د هرې سیمې لپاره عادي ده؟ | ژوندی فیډ د 50 کلن بنسټیز سره پرتله کول |\n| **زما سیمه** | زما د اوسیدو ځای کې خطر څه دی؟ | 50 کلن USGS کتلاګ (BigQuery) |\n| **AI څخه پوښتنه وکړئ** | د زلزلې هره پوښتنه، هره ژبه | کتلاګ + ژوندی فیډ + ویب لټون |\n| **غبرګون کټ** | د زلزلې وروسته ساعتونه | پورته ټول + OpenStreetMap |\n\nد سرلیک لاندې سکرولینګ پټه په اپلیکیشن کې د دې اونۍ M5+ پیښې هرچیرې ښیې — نارنجي د M6+ لپاره، **سور د M6.5+ خبرتیاوو لپاره**، نیلي د سونامي نښه شوي لپاره.\nپه ډیرو پاڼو کې د **💬 QuakeSense څخه پوښتنه وکړئ** چیټ بلبل ښکته ښیې ته تیریږي: د سکرین په اړه چټکې پوښتنې، د دقیقې پیښې/ځای په نوم ځواب شوي.\n\n#### اوس ژوندی\nد تیرې 7 ورځو د هرې زلزلې نړیواله نقشه: د شدت پریسیټونه او سلایډر، د موقعیت فلټر، د ټیکټونیک پلیټ سرحدونه (سور کرښې — هلته زلزلې پیښیږي)، د سونامي اتوماتیک نښه کول، CSV صادرول. د نقشې لاندې: د هرې مهمې پیښې لپاره **د AI وضعیت لنډیزونه**، او **نړیوال میډیا پوښښ** — د نړۍ میډیا څخه د زلزلې مهم سرلیکونه.\n\n#### غیر معمولي څارنه\nد هرې سیمې د دې اونۍ فعالیت د هغې د 50 کلن اوسط سره پرتله کوي او هغه څه په نښه کوي چې غیر معمولي دي — ډلې، د وروسته شاک ترتیبونه — د آرام AI توضیحاتو سره.\n\n#### زما سیمه\nخپل هیواد او ښار د تایید شوي ډراپ ډاونونو څخه وټاکئ، له 8 ژبو څخه غوره کړئ (انګلیسي، برمی، تای، هندي، بنګالي، تیلګو، مراټي، تامل)، او ستاسو د سیمې د ریښتیني 50 کلن ریکارډ پراساس د ټولنې خطر پروفایل ترلاسه کړئ — د چارټونو او ستاسو نږدې د هر M5+ مرکز نقشې سره.\n\n#### AI څخه پوښتنه وکړئ\nد زلزلې په اړه هر څه په هره ژبه کې وپوښتئ — دا ستاسو په ژبه ځواب ورکوي. تاریخي پوښتنې د USGS 50 کلن ریکارډونو څخه د ښودل شوي SQL سره ځواب شوي؛ د دې اونۍ پوښتنې د ژوندي فیډ څخه؛ اوسني پیښې د ژوندي ویب لټون سره، **سرچینې ذکر شوي**. هر ځواب یو 👍/👎 اخلي ترڅو موږ پرمختګ ته دوام ورکړو. دا تعقیبونه په یاد لري (*\"او د جاپان لپاره؟\"*) او ستاسو د My Area پروفایل په اړه بحث کولی شي.\n\n#### غبرګون کټ\nد زلزلې وروسته ساعتونو لپاره: یو رسمي **وضعیت راپور (SITREP)** د ویب تایید شوي بهرني راپورونو سره، **څه باید وشي او څه باید ونه شي** د هغو خلکو لپاره چې د ژغورنې په تمه دي (8 ژبې، FEMA/ریډ کراس لارښوونې)، او **روغتونونه، اور وژنې او پولیس سټیشنونه** د هرې اغیزمنې ښارګوټي ته نږدې، د ملي اضطراري هټ لاینونو سره. هغه پیښه چې تاسو په Live Now کې غوره کړې په اتوماتيک ډول لیږدول کیږي.\n\n---\n*زلزلې وړاندوینه کیدی نشي. QuakeSense د پوهاوي، مخابراتو، او چمتووالي پریکړو ملاتړ کوي — هیڅکله وړاندوینه نه کوي.*\n", "prs": "\nQuakeSense به سه سوال بعد از زلزله پاسخ می‌دهد: **چه اتفاقی افتاد،\nبرای جامعه من چه معنایی دارد، و آیا این الگو عادی است؟** منو\nبر اساس این لحظات سازماندهی شده است:\n\n| بخش | هدف | داده‌های پشت آن |\n|---|---|---|\n| **اکنون زنده** | چه چیزی در حال حاضر در سراسر جهان اتفاق می‌افتد | فید زنده USGS (7 روز، M2.5+), هر 5 دقیقه |\n| **نظارت بر ناهنجاری** | آیا این هفته برای هر منطقه عادی است؟ | فید زنده در مقابل خط پایه 50 ساله |\n| **منطقه من** | خطر در جایی که *من* زندگی می‌کنم چقدر است؟ | کاتالوگ 50 ساله USGS (BigQuery) |\n| **از هوش مصنوعی بپرسید** | هر سوالی در مورد زلزله، به هر زبانی | کاتالوگ + فید زنده + جستجوی وب |\n| **جعبه ابزار واکنش** | ساعات پس از زلزله | همه موارد بالا + OpenStreetMap |\n\nنوار پیمایشی زیر سربرگ رویدادهای M5+ این هفته را در همه جای\nبرنامه نشان می‌دهد — نارنجی برای M6+, **قرمز برای هشدارهای M6.5+**، آبی برای موارد علامت‌گذاری شده با سونامی.\nدر بیشتر صفحات یک حباب چت **💬 از QuakeSense بپرسید** در پایین سمت راست شناور است: سوالات سریع\nدر مورد آنچه در صفحه است، با نام دقیق رویداد/مکان پاسخ داده می‌شود.\n\n#### اکنون زنده\nنقشه جهانی هر زلزله در 7 روز گذشته: پیش‌تنظیمات و نوار لغزنده بزرگی،\nفیلتر مکان، مرزهای صفحات تکتونیکی (خطوط قرمز — جایی که زلزله‌ها اتفاق می‌افتند)،\nعلامت‌گذاری خودکار سونامی، خروجی CSV. زیر نقشه: **گزارش‌های وضعیت هوش مصنوعی**\nبرای هر رویداد مهم، و **پوشش رسانه‌ای جهانی** — سرفصل‌های اصلی زلزله\nاز رسانه‌های جهانی.\n\n#### نظارت بر ناهنجاری\nفعالیت این هفته در هر منطقه را با میانگین 50 ساله آن مقایسه می‌کند و\nموارد غیرعادی — خوشه‌ها، توالی پس‌لرزه‌ها — را با توضیحات آرام هوش مصنوعی علامت‌گذاری می‌کند.\n\n#### منطقه من\nکشور و شهر خود را از لیست‌های کشویی تأیید شده انتخاب کنید، از 8 زبان\n(انگلیسی، برمه‌ای، تایلندی، هندی، بنگالی، تلوگو، مراتی، تامیلی) انتخاب کنید، و یک\nنمایه خطر جامعه را بر اساس سابقه 50 ساله واقعی منطقه خود دریافت کنید — با\nنمودارها و نقشه‌ای از هر مرکز M5+ نزدیک شما.\n\n#### از هوش مصنوعی بپرسید\nهر سوالی در مورد زلزله، به هر زبانی بپرسید — به زبان شما پاسخ می‌دهد.\nسوالات تاریخی از سوابق 50 ساله USGS با SQL نشان داده شده پاسخ داده می‌شوند؛\nسوالات این هفته از فید زنده؛ رویدادهای جاری با جستجوی زنده وب،\n**منابع ذکر شده**. هر پاسخ یک 👍/👎 می‌گیرد تا ما به بهبود ادامه دهیم.\nسوالات پیگیری را به خاطر می‌سپارد (*\"و برای ژاپن؟\"*) و می‌تواند نمایه منطقه من شما را مورد بحث قرار دهد.\n\n#### جعبه ابزار واکنش\nبرای ساعات پس از زلزله: یک **گزارش وضعیت (SITREP)** رسمی با\nگزارش‌های خارجی تأیید شده از وب، **بایدها و نبایدها** برای افرادی که منتظر\nنجات هستند (8 زبان، راهنمایی FEMA/صلیب سرخ)، و **بیمارستان‌ها، ایستگاه‌های آتش‌نشانی و\nپلیس** نزدیک هر شهر آسیب‌دیده، با خطوط اضطراری ملی.\nرویدادی که در Live Now انتخاب کردید به طور خودکار منتقل می‌شود.\n\n---\n*زلزله‌ها قابل پیش‌بینی نیستند. QuakeSense از آگاهی، ارتباطات،\nو تصمیمات آمادگی حمایت می‌کند — هرگز پیش‌بینی نمی‌کند.*\n"},
+    "feed_unavail": {"en": "Live feed unavailable.", "hi": "लाइव फ़ीड उपलब्ध नहीं है।", "ja": "ライブフィードは利用できません。", "id": "Umpan langsung tidak tersedia.", "fil": "Hindi available ang live feed.", "es": "Transmisión en vivo no disponible.", "tr": "Canlı yayın mevcut değil.", "fa": "فید زنده در دسترس نیست.", "zh": "实时信息源不可用。", "tpi": "Live feed i no stap.", "ho": "Laulau laulau.", "mi": "Kāore e wātea ana te puna ora.", "ne": "लाइभ फिड अनुपलब्ध छ।", "el": "Ζωντανή ροή μη διαθέσιμη.", "it": "Feed in tempo reale non disponibile.", "ps": "ژوندی فیډ شتون نلري.", "prs": "فید زنده در دسترس نیست."},
+    "no_live_data": {"en": "No live data available right now.", "hi": "अभी कोई लाइव डेटा उपलब्ध नहीं है।", "ja": "現在、ライブデータはありません。", "id": "Tidak ada data langsung tersedia saat ini.", "fil": "Walang live data na available sa ngayon.", "es": "No hay datos en vivo disponibles en este momento.", "tr": "Şu anda canlı veri yok.", "fa": "در حال حاضر داده زنده موجود نیست.", "zh": "目前没有实时数据。", "tpi": "Nogat live data nau.", "ho": "Laulau laulau.", "mi": "Kāore he raraunga ora e wātea ana ināianei.", "ne": "अहिले कुनै लाइभ डेटा उपलब्ध छैन।", "el": "Δεν υπάρχουν διαθέσιμα ζωντανά δεδομένα αυτήν τη στιγμή.", "it": "Nessun dato in tempo reale disponibile al momento.", "ps": "اوس مهال کوم ژوندی معلومات شتون نلري.", "prs": "در حال حاضر داده زنده موجود نیست."},
+    "tsunami_warn": {"en": "⚠️ Tsunami flag active this week:", "hi": "⚠️ इस सप्ताह सुनामी अलर्ट सक्रिय है:", "ja": "⚠️ 今週は津波フラグが有効です:", "id": "⚠️ Bendera tsunami aktif minggu ini:", "fil": "⚠️ Aktibo ang tsunami flag ngayong linggo:", "es": "⚠️ Bandera de tsunami activa esta semana:", "tr": "⚠️ Bu hafta aktif tsunami bayrağı:", "fa": "⚠️ پرچم سونامی این هفته فعال است:", "zh": "⚠️ 本周海啸警报生效：", "tpi": "⚠️ Tsunami flag i stap long dispela wik:", "ho": "⚠️ Laulau oi oi:", "mi": "⚠️ Te haki taiwhiriwiri e kaha ana i tēnei wiki:", "ne": "⚠️ यस हप्ता सुनामी झण्डा सक्रिय छ:", "el": "⚠️ Σημαία τσουνάμι ενεργή αυτήν την εβδομάδα:", "it": "⚠️ Bandiera tsunami attiva questa settimana:", "ps": "⚠️ د سونامي بیرغ پدې اونۍ کې فعال دی:", "prs": "⚠️ پرچم سونامی این هفته فعال است:"},
+    "tsunami_warn_suffix": {"en": "Coastal communities should follow official tsunami advisories.", "hi": "तटीय समुदायों को आधिकारिक सुनामी सलाह का पालन करना चाहिए।", "ja": "沿岸地域は公式の津波勧告に従ってください。", "id": "Komunitas pesisir harus mengikuti peringatan tsunami resmi.", "fil": "Dapat sundin ng mga komunidad sa baybayin ang mga opisyal na babala sa tsunami.", "es": "Las comunidades costeras deben seguir los avisos oficiales de tsunami.", "tr": "Sahil toplulukları resmi tsunami duyurularını takip etmelidir.", "fa": "جوامع ساحلی باید هشدارهای رسمی سونامی را دنبال کنند.", "zh": "沿海社区应遵循官方海啸公告。", "tpi": "Ol lain long solwara mas harim tok bilong tsunami.", "ho": "Oi oi oi.", "mi": "Me whai ngā hapori takutai i ngā tohutohu taiwhiriwiri mana.", "ne": "तटीय समुदायहरूले आधिकारिक सुनामी सल्लाहहरू पालना गर्नुपर्छ।", "el": "Οι παράκτιες κοινότητες πρέπει να ακολουθούν τις επίσημες προειδοποιήσεις για τσουνάμι.", "it": "Le comunità costiere dovrebbero seguire gli avvisi ufficiali di tsunami.", "ps": "ساحلي ټولنې باید د سونامي رسمي مشورې تعقیب کړي.", "prs": "جوامع ساحلی باید هشدارهای رسمی سونامی را دنبال کنند."},
+    "places_unavail": {"en": "Google Places unavailable", "hi": "Google Places उपलब्ध नहीं है", "ja": "Googleの場所が利用できません", "id": "Google Places tidak tersedia", "fil": "Hindi magamit ang Google Places", "es": "Lugares de Google no disponibles", "tr": "Google Konumları kullanılamıyor", "fa": "مکان‌های گوگل در دسترس نیست", "zh": "谷歌地图服务暂时不可用", "tpi": "Google Places i no ken yusim", "ho": "Google Places i no ken", "mi": "Kāore e taea te whakamahi a Google Places", "ne": "Google Places अनुपलब्ध छ", "el": "Οι Υπηρεσίες Google δεν είναι διαθέσιμες", "it": "Servizi di Google non disponibili", "ps": "د ګوګل ځایونه شتون نلري", "prs": "خدمات گوگل در دسترس نیست"},
+    "hist_layer_unavail": {"en": "Historical layer unavailable:", "hi": "ऐतिहासिक लेयर उपलब्ध नहीं है:", "ja": "履歴レイヤーが利用できません:", "id": "Lapisan historis tidak tersedia:", "fil": "Hindi magamit ang historical layer:", "es": "Capa histórica no disponible:", "tr": "Geçmiş katman kullanılamıyor:", "fa": "لایه تاریخی در دسترس نیست:", "zh": "历史图层不可用:", "tpi": "Histori bilong eni samting i no ken yusim:", "ho": "Histori bilong eni samting i no ken:", "mi": "Kāore e taea te whakamahi te kōwae hītori:", "ne": "ऐतिहासिक तह अनुपलब्ध छ:", "el": "Το ιστορικό επίπεδο δεν είναι διαθέσιμο:", "it": "Livello storico non disponibile:", "ps": "تاریخي طبقه شتون نلري:", "prs": "لایه تاریخی در دسترس نیست:"},
+    "osm_no_facilities": {"en": "OpenStreetMap has no tagged facilities within 20 km of this point. Local knowledge may know more.", "hi": "इस स्थान से 20 किमी के भीतर OpenStreetMap पर कोई टैग की गई सुविधा नहीं है। स्थानीय जानकारी अधिक सटीक हो सकती है।", "ja": "この地点から20km以内にOpenStreetMapで施設が見つかりませんでした。地域情報の方が詳しいかもしれません。", "id": "OpenStreetMap tidak memiliki fasilitas yang ditandai dalam jarak 20 km dari titik ini. Pengetahuan lokal mungkin tahu lebih banyak.", "fil": "Walang pasilidad na naka-tag ang OpenStreetMap sa loob ng 20 km mula sa puntong ito. Maaaring may alam ang lokal na kaalaman.", "es": "OpenStreetMap no tiene instalaciones etiquetadas a 20 km de este punto. El conocimiento local puede saber más.", "tr": "Bu noktanın 20 km çevresinde OpenStreetMap'te etiketlenmiş tesis bulunmuyor. Yerel bilgiler daha fazlasını bilebilir.", "fa": "OpenStreetMap هیچ تأسیسات تگ‌شده‌ای در فاصله ۲۰ کیلومتری این نقطه ندارد. دانش محلی ممکن است اطلاعات بیشتری داشته باشد.", "zh": "此地点20公里范围内未找到OpenStreetMap标记的设施。当地信息可能更丰富。", "tpi": "OpenStreetMap i no gat olsem wanpela haus tambu, polis, o siti long 20 km longwe long dispela hap. Ol manmeri bilong ples inap save moa.", "ho": "OpenStreetMap i no gat fasiliti klostu long 20 km. Ol manmeri bilong ples save harim.", "mi": "Kāore a OpenStreetMap i te whai taputapu kua tohua i roto i te 20 km o tēnei wāhi. Mā te mōhio o te rohe pea ka nui ake ngā kōrero.", "ne": "यो बिन्दुबाट २० किमी भित्र OpenStreetMap मा कुनै ट्याग गरिएका सुविधाहरू छैनन्। स्थानीय ज्ञानले थप बताउन सक्छ।", "el": "Το OpenStreetMap δεν έχει εγκαταστάσεις εντός 20 χλμ από αυτό το σημείο. Η τοπική γνώση μπορεί να γνωρίζει περισσότερα.", "it": "OpenStreetMap non ha strutture etichettate entro 20 km da questo punto. La conoscenza locale potrebbe fornire maggiori dettagli.", "ps": "OpenStreetMap د دې نقطې څخه په 20 کیلومترۍ کې هیڅ نښه شوي تاسیسات نلري. ځایی پوهه ممکن نور پوهیږي.", "prs": "OpenStreetMap هیچ تأسیسات برچسب‌گذاری شده‌ای در فاصله ۲۰ کیلومتری این نقطه ندارد. دانش محلی ممکن است بیشتر بداند."},
+    "facility_search_unavail": {"en": "Facility search unavailable right now", "hi": "अभी सुविधा खोज उपलब्ध नहीं है", "ja": "現在、施設検索は利用できません", "id": "Pencarian fasilitas tidak tersedia saat ini", "fil": "Hindi magamit ang paghahanap ng pasilidad sa ngayon", "es": "Búsqueda de instalaciones no disponible en este momento", "tr": "Tesis araması şu anda kullanılamıyor", "fa": "جستجوی تأسیسات در حال حاضر در دسترس نیست", "zh": "目前无法搜索设施", "tpi": "Maus bilong painim ol haus tambu i no ken yusim nau", "ho": "Saposim fasiliti i no ken.", "mi": "Kāore e taea te rapu taputapu i tēnei wā", "ne": "सुविधा खोज अहिले अनुपलब्ध छ", "el": "Η αναζήτηση εγκαταστάσεων δεν είναι διαθέσιμη αυτήν τη στιγμή", "it": "Ricerca strutture non disponibile al momento", "ps": "د تاسیساتو لټون اوس شتون نلري", "prs": "جستجوی تأسیسات در حال حاضر در دسترس نیست"},
+    "usgs_unreachable": {"en": "USGS live feed unreachable:", "hi": "USGS लाइव फ़ीड तक नहीं पहुंचा जा सका:", "ja": "USGSライブフィードに接続できません:", "id": "Umpan langsung USGS tidak terjangkau:", "fil": "Hindi maabot ang live feed ng USGS:", "es": "Fuente en vivo de USGS inalcanzable:", "tr": "USGS canlı akışı ulaşılamıyor:", "fa": "فید زنده USGS غیرقابل دسترس است:", "zh": "USGS实时信息无法访问:", "tpi": "USGS live feed i no ken putim tok:", "ho": "USGS live feed i no ken kam:", "mi": "Kāore e taea te hono atu ki te pūrua ora a USGS:", "ne": "USGS लाइभ फिड पुग्न सकिँदैन:", "el": "Η ζωντανή ροή του USGS δεν είναι προσβάσιμη:", "it": "Feed live USGS non raggiungibile:", "ps": "USGS مستقیم فیډ ته لاسرسی نشته:", "prs": "فید زنده USGS قابل دسترسی نیست:"},
+    "try_again_min": {"en": "Try again in a minute.", "hi": "एक मिनट में फिर से प्रयास करें।", "ja": "1分後にもう一度お試しください。", "id": "Coba lagi sebentar lagi.", "fil": "Subukang muli sa isang minuto.", "es": "Inténtalo de nuevo en un minuto.", "tr": "Bir dakika sonra tekrar deneyin.", "fa": "یک دقیقه دیگر امتحان کنید.", "zh": "请稍后再试。", "tpi": "Try gen long wanpela minit.", "ho": "Tries gen long wanpela minute.", "mi": "Tīhura anō i roto i te meneti.", "ne": "एक मिनेटमा फेरि प्रयास गर्नुहोस्।", "el": "Προσπαθήστε ξανά σε ένα λεπτό.", "it": "Riprova tra un minuto.", "ps": "یو دقیقې وروسته بیا هڅه وکړئ.", "prs": "یک دقیقه دیگر امتحان کنید."},
+    "find_facilities_btn": {"en": "Find hospitals, fire & police stations within 20 km", "hi": "20 किमी के भीतर अस्पताल, फायर व पुलिस स्टेशन खोजें", "ja": "20km以内の病院、消防・警察署を探す", "id": "Cari rumah sakit, kantor polisi & pemadam kebakaran dalam jarak 20 km", "fil": "Maghanap ng mga ospital, istasyon ng bumbero at pulis sa loob ng 20 km", "es": "Buscar hospitales, estaciones de bomberos y policía a 20 km", "tr": "20 km içinde hastane, itfaiye ve polis istasyonları bulun", "fa": "بیمارستان‌ها، ایستگاه‌های آتش‌نشانی و پلیس در فاصله ۲۰ کیلومتری را پیدا کنید", "zh": "查找20公里内的医院、消防局和警察局", "tpi": "Painim ol haus tambu, polis, na siti long 20 km", "ho": "Painim haus sik, polis, na siti stesin klostu long 20 km", "mi": "Kimihia ngā hōhipera, teihana ahi me ngā pirihimana i roto i te 20 km", "ne": "२० किमी भित्र अस्पताल, प्रहरी र दमकल स्टेसनहरू खोज्नुहोस्", "el": "Βρείτε νοσοκομεία, πυροσβεστικές & αστυνομικές υπηρεσίες εντός 20 χλμ", "it": "Trova ospedali, stazioni dei pompieri e di polizia entro 20 km", "ps": "په 20 کیلومترۍ کې روغتونونه، اور وژونکي او د پولیسو سټیشنونه ومومئ", "prs": "یافتن شفاخانه ها، ایستگاه های آتش نشانی و پولیس در فاصله ۲۰ کیلومتری"},
 }

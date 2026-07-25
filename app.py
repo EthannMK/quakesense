@@ -22,7 +22,7 @@ from src.ai import (situation_briefing, smart_ask, explain_anomaly,
                     log_feedback, prioritize_facilities)
 from src.config import MAPS_API_KEY
 from src.anomaly import detect
-from src.i18n import t, LANGS, NATIVE_NAME, ensure_language, all_languages
+from src.i18n import t, LANGS, NATIVE_NAME
 from src.live_feed import fetch_live, significant_events, PAGER_LABEL
 
 EMERGENCY_NUMBERS = {
@@ -43,57 +43,8 @@ EMERGENCY_NUMBERS = {
     "New Zealand": "111", "Italy": "112", "Greece": "112",
 }
 
-# Languages of the countries above whose primary language ISN'T already one
-# of the 8 hardcoded "core" languages (Burmese, Thai, Hindi, Bengali, Telugu,
-# Marathi, Tamil - already instant, no API call at all). These are the
-# world's major seismic zones (Ring of Fire + Alpide belt) - if a demo/judge
-# picks a non-core language, one of these is the most likely candidate, so
-# they're warmed FIRST (see _start_language_prewarm below), ready within
-# ~1-2 minutes of server start. Warmed once per server process, in a
-# background thread, sequentially (not all-at-once - concurrency across
-# the whole ~14-chunk-per-language batch would itself throttle, see
-# earlier tuning) so it doesn't compete with a live user's own request.
-_PREWARM_LANGUAGES = [
-    "Japanese", "Indonesian", "Filipino", "Turkish", "Nepali",
-    "Urdu", "Chinese (Simplified)", "Vietnamese", "Lao", "Spanish",
-    "Italian", "Greek",
-]
-
-
-@st.cache_resource(show_spinner=False)
-def _start_language_prewarm():
-    """@st.cache_resource (not cache_data) so this runs its body exactly
-    once per server process regardless of how many users/reruns hit this
-    line - it's a side-effecting thread launch, not a value to memoize.
-
-    Warms the priority list above first, then keeps going through EVERY
-    other language the picker offers (~190 total via all_languages()) so
-    that eventually any pick is a cache hit - but this is real background
-    work, not instant: ~190 languages x ~7s each sequentially is ~20-25
-    minutes to fully complete, and ~190 x ~14 Gemini calls of real API
-    spend. The priority list is still first in line and ready in ~1-2
-    minutes; everything past it just keeps filling in behind it for as
-    long as the server stays up."""
-    import threading
-    from src.i18n import _gemini_table, all_languages, LANGS
-
-    def worker():
-        rest = [l for l in all_languages()
-               if l not in LANGS and l not in _PREWARM_LANGUAGES]
-        for lang in _PREWARM_LANGUAGES + rest:
-            try:
-                _gemini_table(lang)
-            except Exception as e:
-                print(f"[prewarm] {lang} failed: {e!r}")
-        print(f"[prewarm] all {len(_PREWARM_LANGUAGES) + len(rest)} "
-             "languages warmed")
-    threading.Thread(target=worker, daemon=True, name="prewarm-languages").start()
-    return True
-
-
 st.set_page_config(page_title="QuakeSense - Global real-time earthquake intelligence",
                    page_icon=":material/earthquake:", layout="wide")
-_start_language_prewarm()  # after set_page_config - that must be Streamlit's first command
 
 # ----------------------------------------------------------------- themes --
 # Three complete palettes. Every color in the CSS below reads from the CSS
@@ -183,13 +134,6 @@ except Exception:
 st.markdown("<style>:root {" + "".join(
     f"--qs-{k.replace('_', '-')}: {v};" for k, v in PAL.items()
     if k not in ("base", "map_style")) + "}</style>", unsafe_allow_html=True)
-
-# Custom (non-core) language chosen? Batch-translate the UI once via Gemini.
-if st.session_state.ui_lang not in LANGS:
-    with st.spinner(f"Translating interface to {st.session_state.ui_lang}..."):
-        if not ensure_language(st.session_state.ui_lang):
-            st.toast(f"Could not translate to {st.session_state.ui_lang} - "
-                     "showing English.", icon="⚠️")
 
 # ------------------------------------------------------------------ style --
 st.markdown("""
@@ -1898,7 +1842,6 @@ THEME_KEYS = ["dark", "light", "warm"]
 THEME_LABEL = {"dark": ("th_dark", "th_dark_d"),
                "light": ("th_light", "th_light_d"),
                "warm": ("th_warm", "th_warm_d")}
-OTHER_LANG = "__other__"
 
 
 def _set_pref(theme=None, lang=None):
@@ -1927,8 +1870,6 @@ def _set_pref(theme=None, lang=None):
 
 
 def _lang_label(l):
-    if l == OTHER_LANG:
-        return "🌐 Other — any language (Gemini)"
     return NATIVE_NAME.get(l, l)
 
 
@@ -1937,26 +1878,18 @@ def welcome_dialog():
     """First-open setup: display mode + interface language. Both can be
     changed later from the sidebar."""
     st.markdown(t("wb_intro"))
-    langs = all_languages() + [OTHER_LANG]
+    langs = list(LANGS)
     cur = st.session_state.ui_lang
-    ix = langs.index(cur) if cur in langs else len(langs) - 1
-    pick = st.selectbox(t("wb_lang"), langs, index=ix, key="wb_lang",
+    ix = langs.index(cur) if cur in langs else 0
+    lang = st.selectbox(t("wb_lang"), langs, index=ix, key="wb_lang",
                         format_func=_lang_label)
-    lang = pick
-    if pick == OTHER_LANG:
-        lang = st.text_input(
-            "🌐 Language", value=cur if cur not in LANGS else "",
-            key="wb_lang_free",
-            placeholder="e.g. Bahasa Indonesia, Shan, Nepali, Swahili...",
-            help="Gemini translates the whole interface — regional and "
-                 "low-resource languages welcome.")
     theme = st.radio(t("wb_theme"), THEME_KEYS,
                      index=THEME_KEYS.index(st.session_state.ui_theme),
                      key="wb_theme",
                      format_func=lambda k: t(THEME_LABEL[k][0]),
                      captions=[t(THEME_LABEL[k][1]) for k in THEME_KEYS])
     if st.button(t("wb_start"), type="primary", use_container_width=True):
-        _set_pref(theme=theme, lang=(lang or "English").strip() or "English")
+        _set_pref(theme=theme, lang=lang)
         st.session_state.onboarded = True
         st.rerun()
 
@@ -2025,23 +1958,13 @@ if _theme_pick != st.session_state.ui_theme:
     _set_pref(theme=_theme_pick)
     st.rerun()
 
-_langs_sb = all_languages() + [OTHER_LANG]
+_langs_sb = list(LANGS)
 _cur_lang = st.session_state.ui_lang
 _sb_pick = st.sidebar.selectbox(
     "🌐 " + t("language"), _langs_sb,
-    index=(_langs_sb.index(_cur_lang) if _cur_lang in _langs_sb
-           else len(_langs_sb) - 1),
+    index=(_langs_sb.index(_cur_lang) if _cur_lang in _langs_sb else 0),
     key=f"sb_lang_{_cur_lang}", format_func=_lang_label)
-if _sb_pick == OTHER_LANG:
-    _typed = st.sidebar.text_input(
-        "🌐 Language", value=_cur_lang if _cur_lang not in LANGS else "",
-        key="sb_lang_free",
-        placeholder="e.g. Bahasa Indonesia, Shan, Nepali...",
-        help="Gemini translates the whole interface into any language.")
-    if _typed.strip() and _typed.strip() != _cur_lang:
-        _set_pref(lang=_typed.strip())
-        st.rerun()
-elif _sb_pick != _cur_lang:
+if _sb_pick != _cur_lang:
     _set_pref(lang=_sb_pick)
     st.rerun()
 
