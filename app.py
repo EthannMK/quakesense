@@ -113,6 +113,34 @@ section[data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) 
 
 /* Freeze the WHOLE top bar — wordmark, tagline, nav and live ticker — so the
    menu area is always visible and obviously navigation, not page content */
+/* Sample prompt chips inside the chat popup */
+.qs-sug-label {
+  font-size: 0.6rem; letter-spacing: 0.13em; text-transform: uppercase;
+  color: #8fa0b5; margin: 0.6rem 0 0.3rem 0;
+}
+div[data-testid="stPopoverBody"] [class*="st-key-qx_"] button {
+  background: #101a2b !important; border: 1px solid #2a3c52 !important;
+  color: #9fc4dd !important; font-size: 0.76rem !important;
+  font-weight: 500 !important; border-radius: 999px !important;
+  padding: 4px 12px !important; min-height: 0 !important;
+  text-align: left; line-height: 1.3;
+}
+div[data-testid="stPopoverBody"] [class*="st-key-qx_"] button:hover {
+  border-color: #45b3e6 !important; color: #dbe2ec !important;
+  background: #14243a !important;
+}
+
+/* Sidebar as a settings panel */
+.qs-set-title {
+  font-size: 1.02rem; font-weight: 700; color: #dbe2ec;
+  margin: 0 0 0.5rem 0; letter-spacing: 0.01em;
+}
+.qs-set-sec {
+  font-size: 0.62rem; letter-spacing: 0.13em; text-transform: uppercase;
+  color: #8fa0b5; margin: 0.9rem 0 0.3rem 0;
+  border-top: 1px solid #263145; padding-top: 0.6rem;
+}
+
 /* Answer rating buttons — blue thumb up, red thumb down (icon-only, compact) */
 [class*="st-key-fb_up_"] button, [class*="st-key-fb_down_"] button {
   width: 40px !important; min-width: 40px !important; height: 34px;
@@ -553,6 +581,12 @@ VOICE_OUTPUT_ENABLED = False   # per-answer "Listen" (text-to-speech)
 # Where the sidebar feedback form sends to. Never rendered as text in
 # the UI - it only ever appears inside a mailto link's href.
 FEEDBACK_TO = os.environ.get("FEEDBACK_EMAIL", "ethanmk2205@gmail.com")
+
+QUICK_EXAMPLES = [
+    "Should people nearby be worried?",
+    "Explain this in simple words",
+    "What should I do right now?",
+]
 
 BOT_INTRO = (
     "Hi, I'm **Terra** ✦ — powered by Gemini 2.5 Flash.\n\n"
@@ -1345,12 +1379,18 @@ function qsAddClose(){
 }
 qsAddClose(); setInterval(qsAddClose,400);
 </script>""", height=0)
-        st.caption(f"📍 Talking about: {context}")
+        st.caption(f"📍 Quick answers about: {context}")
+        pending_q = None
         box = st.container(height=300)
         with box:
             if not hist:
                 with st.chat_message("assistant", avatar=AVATARS["assistant"]):
                     st.markdown(BOT_INTRO)
+                st.markdown('<p class="qs-sug-label">Try asking</p>',
+                            unsafe_allow_html=True)
+                for _j, _ex in enumerate(QUICK_EXAMPLES):
+                    if st.button(_ex, key=f"qx_{_j}", use_container_width=True):
+                        pending_q = _ex
             for m in hist:
                 with st.chat_message(m["role"], avatar=AVATARS.get(m["role"])):
                     st.markdown(m["content"])
@@ -1376,7 +1416,8 @@ qsAddClose(); setInterval(qsAddClose,400);
                 q_sub = st.chat_input("Type a message…", key="quick_chat_input")
         else:
             q_sub = st.chat_input("Type a message…", key="quick_chat_input")
-        the_q = voice_q or (q_sub.strip() if q_sub and q_sub.strip() else None)
+        the_q = (pending_q or voice_q
+                 or (q_sub.strip() if q_sub and q_sub.strip() else None))
         if the_q:
             q = the_q
             recent = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in hist[-4:])
@@ -1923,36 +1964,48 @@ except Exception as e:
 
 render_ticker(live)
 
-# ----------------------------------------------------------------- sidebar --
+# -------------------------------------------------- sidebar = settings panel --
+st.sidebar.markdown('<p class="qs-set-title">⚙️ Settings</p>',
+                    unsafe_allow_html=True)
+
+st.sidebar.markdown('<p class="qs-set-sec">Data</p>', unsafe_allow_html=True)
 if st.sidebar.button("Refresh live feed", use_container_width=True):
     get_live.clear()
     st.rerun()
 
-st.sidebar.markdown("---")
+st.sidebar.markdown('<p class="qs-set-sec">Preferences</p>',
+                    unsafe_allow_html=True)
 
-# ---- suggestions / feedback (emails the team; address never displayed) ------
+# ---- suggestions / feedback -------------------------------------------------
+def _submit_feedback():
+    """Store the note and clear the form (runs before the rerun paints)."""
+    msg = (st.session_state.get("fb_form_msg") or "").strip()
+    name = (st.session_state.get("fb_form_name") or "").strip()
+    if not msg:
+        st.session_state["fb_warn"] = True
+        return
+    log_feedback(f"[suggestion] {name or 'anonymous'} -> {FEEDBACK_TO}",
+                 msg, "suggestion", "note")
+    st.session_state["fb_form_msg"] = ""
+    st.session_state["fb_form_name"] = ""
+    st.session_state["fb_warn"] = False
+    st.session_state["fb_sent"] = True
+
+
+st.sidebar.markdown('<p class="qs-set-sec">Feedback</p>',
+                    unsafe_allow_html=True)
 with st.sidebar.expander("💬 Suggestions & feedback"):
-    st.caption("Found a problem or have an idea? Tell us — it goes straight "
-               "to the QuakeSense team.")
-    fb_name = st.text_input("Your name (optional)", key="fb_form_name",
-                            placeholder="Name or organisation")
-    fb_msg = st.text_area("Your message", key="fb_form_msg", height=110,
-                          placeholder="What could we do better?")
-    if fb_msg and fb_msg.strip():
-        from urllib.parse import quote as _q
-        _body = _q(f"{fb_msg.strip()}\n\n—\nFrom: {fb_name.strip() or 'a QuakeSense user'}")
-        _subj = _q("QuakeSense feedback")
-        st.link_button("📧 Send feedback",
-                       f"mailto:{FEEDBACK_TO}?subject={_subj}&body={_body}",
-                       use_container_width=True)
-        if st.button("Or log it here instead", key="fb_form_log",
-                     use_container_width=True):
-            ok = log_feedback(f"[suggestion] {fb_name.strip() or 'anonymous'}",
-                              fb_msg.strip(), "suggestion", "note")
-            st.success("Thank you — your feedback was recorded."
-                       if ok else "Saved locally — thank you.")
-    else:
-        st.caption("Write a message to enable sending.")
+    st.caption("Found a problem or have an idea? Tell us.")
+    st.text_input("Your name (optional)", key="fb_form_name",
+                  placeholder="Name or organisation")
+    st.text_area("Your message", key="fb_form_msg", height=100,
+                 placeholder="What could we do better?")
+    st.button("Submit", key="fb_form_send", type="primary",
+              on_click=_submit_feedback)
+    if st.session_state.pop("fb_warn", False):
+        st.warning("Please write a message first.")
+    if st.session_state.pop("fb_sent", False):
+        st.success("Thank you — we've received your feedback.")
 
 st.sidebar.caption("Earthquakes cannot be predicted. This tool supports awareness "
                    "and decision-making, not prediction.")
@@ -2161,13 +2214,19 @@ elif page == "My Area":
 
     my_area_block(towns_db(), live)
 
+    _area_ctx = (f"My Area risk profile for {st.session_state.area['city']}"
+                 if st.session_state.get("area")
+                 else "My Area page (no town profiled yet)")
+    quick_ask(_area_ctx, live)
+
 # ====================================================================== ASK ==
 elif page == "Ask":
-    st.subheader("Ask about Earthquakes — AI agent")
-    st.caption("Ask anything, in any language — it replies in yours. Historical numbers "
-               "come from 50 years of USGS data (SQL shown), this week's events from the "
-               "live feed, and current news with web sources cited. It remembers "
-               "follow-ups and can discuss your My Area analysis (from the My Area page).")
+    st.subheader("✦ Ask — full answers with the evidence")
+    st.caption("Ask anything in any language. Historical numbers come from 50 years "
+               "of USGS records — **the query and the matching rows are shown**, so "
+               "every figure can be checked. This week's events come from the live "
+               "feed, current news with sources cited. For quick questions about a "
+               "page you're on, use the 💬 button instead.")
 
     chat_agent(live)
 
