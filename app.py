@@ -2007,12 +2007,15 @@ if page != st.session_state.get("ui_page"):
     st.session_state.ui_page = page
     st.query_params["page"] = page
 
+st.sidebar.markdown("---")
+st.sidebar.markdown(f'<p class="qs-credit">{t("sb_data")}</p>', unsafe_allow_html=True)
 if st.sidebar.button(t("refresh"), use_container_width=True):
     get_live.clear()
     st.rerun()
 
 # ---- display mode + language, changeable anytime ----
 st.sidebar.markdown("---")
+st.sidebar.markdown(f'<p class="qs-credit">{t("sb_prefs")}</p>', unsafe_allow_html=True)
 _theme_pick = st.sidebar.selectbox(
     "🎨 " + t("theme"), THEME_KEYS,
     index=THEME_KEYS.index(st.session_state.ui_theme),
@@ -2041,6 +2044,19 @@ if _sb_pick == OTHER_LANG:
 elif _sb_pick != _cur_lang:
     _set_pref(lang=_sb_pick)
     st.rerun()
+
+# ---- general feedback, separate from per-answer AI feedback ----
+st.sidebar.markdown("---")
+st.sidebar.markdown(f'<p class="qs-credit">{t("sb_feedback")}</p>', unsafe_allow_html=True)
+with st.sidebar.expander(t("fb_expander")):
+    _fb_text = st.text_area(t("fb_placeholder"), key="sb_feedback_text",
+                            label_visibility="collapsed")
+    if st.button(t("fb_submit"), key="sb_feedback_submit", use_container_width=True):
+        if _fb_text.strip():
+            log_feedback("", _fb_text.strip(), "sidebar_feedback", "")
+            st.session_state["sb_feedback_sent"] = True
+    if st.session_state.get("sb_feedback_sent"):
+        st.success(t("fb_thanks"))
 
 st.sidebar.markdown("---")
 st.sidebar.caption(t("disclaimer"))
