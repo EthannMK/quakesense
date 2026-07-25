@@ -22,6 +22,8 @@ from src.ai import (situation_briefing, smart_ask, explain_anomaly,
                     log_feedback, prioritize_facilities)
 from src.config import MAPS_API_KEY
 from src.anomaly import detect
+from src.aftershock import official_forecast, observed_aftershocks, GUIDANCE
+from src.weather import conditions as weather_conditions, advisory as weather_advisory
 from src.live_feed import fetch_live, significant_events, PAGER_LABEL
 
 EMERGENCY_NUMBERS = {
@@ -130,11 +132,28 @@ div[data-testid="stPopoverBody"] [class*="st-key-qx_"] button:hover {
   background: #14243a !important;
 }
 
-/* Sidebar as a settings panel */
-.qs-set-title {
-  font-size: 1.02rem; font-weight: 700; color: #dbe2ec;
-  margin: 0 0 0.5rem 0; letter-spacing: 0.01em;
+/* Sidebar toggle shows a gear instead of chevrons (Material Symbols is a
+   ligature font, so hiding the original text and injecting "settings" as
+   pseudo-content swaps the glyph) */
+[data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"],
+[data-testid="stExpandSidebarButton"] [data-testid="stIconMaterial"],
+[data-testid="stSidebarCollapsedControl"] [data-testid="stIconMaterial"] {
+  font-size: 0 !important; line-height: 1 !important;
 }
+[data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"]::after,
+[data-testid="stExpandSidebarButton"] [data-testid="stIconMaterial"]::after,
+[data-testid="stSidebarCollapsedControl"] [data-testid="stIconMaterial"]::after {
+  content: "settings";
+  font-family: "Material Symbols Rounded", "Material Symbols Outlined" !important;
+  font-size: 21px !important; color: #8fa0b5;
+}
+[data-testid="stSidebarCollapseButton"]:hover [data-testid="stIconMaterial"]::after,
+[data-testid="stExpandSidebarButton"]:hover [data-testid="stIconMaterial"]::after,
+[data-testid="stSidebarCollapsedControl"]:hover [data-testid="stIconMaterial"]::after {
+  color: #e08850;
+}
+
+/* Sidebar as a settings panel */
 .qs-set-sec {
   font-size: 0.62rem; letter-spacing: 0.13em; text-transform: uppercase;
   color: #8fa0b5; margin: 0.9rem 0 0.3rem 0;
@@ -1448,6 +1467,64 @@ qsAddClose(); setInterval(qsAddClose,400);
                                      "sources": []})
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def _oaf_cached(event_id: str):
+    return official_forecast(event_id)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _weather_cached(lat: float, lon: float):
+    return weather_conditions(lat, lon)
+
+
+def aftershock_block(ev: dict, live_df):
+    """Aftershock outlook: the OFFICIAL USGS forecast when one exists, plus
+    aftershocks already recorded. Never our own prediction."""
+    fc = _oaf_cached(ev.get("id", ""))
+    obs = observed_aftershocks(live_df, ev)
+    if not fc and not (obs and obs.get("count")):
+        return                       # nothing factual to show — stay quiet
+    with st.expander("🔄 Aftershock outlook", expanded=False):
+        if obs and obs.get("count"):
+            c1, c2 = st.columns(2)
+            c1.metric("Aftershocks recorded nearby", obs["count"],
+                      help="M2.5+ events within 150 km since this earthquake "
+                           "(USGS live feed).")
+            if obs.get("max_mag"):
+                c2.metric("Largest so far", f"M {obs['max_mag']:.1f}")
+        if fc:
+            st.markdown("**Official USGS aftershock forecast**")
+            rows = [{"Window": w["label"], "Magnitude": f"M{w['mag']:.0f}+",
+                     "Chance of at least one": f"{w['probability']}%"}
+                    for w in fc["windows"]]
+            st.dataframe(pd.DataFrame(rows), hide_index=True,
+                         use_container_width=True)
+            st.caption("Published by the USGS Operational Aftershock Forecast "
+                       "for this event. Aftershock forecasting is statistical; "
+                       "earthquakes themselves cannot be predicted.")
+        else:
+            st.caption("USGS has not issued an aftershock forecast for this "
+                       "event. The counts above are earthquakes already "
+                       "recorded — not a forecast.")
+        st.markdown(GUIDANCE)
+
+
+def weather_block(town_row):
+    """Weather where people are: rain drives landslide risk and shelter needs."""
+    w = _weather_cached(round(float(town_row["latitude"]), 2),
+                        round(float(town_row["longitude"]), 2))
+    if not w:
+        return
+    st.markdown(f"##### 🌦️ Weather in {town_row['name']}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Now", f"{w['icon']} {w['temp']:.0f}°C" if w.get("temp") is not None
+              else w["icon"], help=w["label"])
+    c2.metric("Rain chance · 24 h",
+              f"{w['rain_chance']}%" if w.get("rain_chance") is not None else "—")
+    c3.metric("Expected rain · 24 h", f"{w['rain_mm']} mm")
+    st.info(weather_advisory(w))
+
+
 @st.fragment
 def briefing_block(ev: dict, pick: str):
     """Generate + display the community briefing; reruns alone, not the page."""
@@ -1965,9 +2042,6 @@ except Exception as e:
 render_ticker(live)
 
 # -------------------------------------------------- sidebar = settings panel --
-st.sidebar.markdown('<p class="qs-set-title">⚙️ Settings</p>',
-                    unsafe_allow_html=True)
-
 st.sidebar.markdown('<p class="qs-set-sec">Data</p>', unsafe_allow_html=True)
 if st.sidebar.button("Refresh live feed", use_container_width=True):
     get_live.clear()
@@ -2158,6 +2232,7 @@ if page == "Live":
             st.caption(PAGER_LABEL.get(pager_raw, ""))
 
         briefing_block(ev, pick)
+        aftershock_block(ev, live)
 
         # ------------------------------------------- unusual activity (anomaly)
         st.divider()
@@ -2269,7 +2344,9 @@ elif page == "Respond":
             st.info("No towns within 150 km of this epicenter - it is likely offshore "
                     "or in a remote area. Select a different event above.")
         else:
-            facilities_block(near_towns.head(15).reset_index(drop=True), ev)
+            _towns_top = near_towns.head(15).reset_index(drop=True)
+            facilities_block(_towns_top, ev)
+            weather_block(_towns_top.iloc[0])
 
     # ---- Offline library ------------------------------------------------
     st.divider()
