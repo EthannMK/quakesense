@@ -34,16 +34,22 @@ that region's own 50-year weekly average, plus **global media coverage** and
 **official updates** from the USGS record and UN agencies.
 
 **📍 My Area** — pick any country and town on Earth and get a risk profile
-built from what has actually happened within 300 km since 1975, in **8
-languages** (English, Burmese, Thai, Hindi, Bengali, Telugu, Marathi, Tamil),
-with charts and a map of every nearby M5+ epicentre.
+built from what has actually happened within 300 km since 1975, written in
+one of 10 languages (English, Bahasa Indonesia, Japanese, Filipino, Turkish,
+Nepali, Hindi, Spanish, Burmese, Thai — picked for the countries with the
+heaviest earthquake exposure), with charts and a map of every nearby M5+
+epicentre.
 
-**✦ Ask** — a chat agent that answers in **whatever language you ask in**, and
-routes each question to the right source: historical questions become SQL over
-~86,000 verified USGS records (**the generated SQL and the matching rows are
-both displayed**, so any figure can be checked); this-week questions come from
-the live feed; current events are answered with Google Search grounding and
-**cited sources**. Every answer takes a 👍/👎 that is logged for review.
+**✦ Ask** — a chat agent that answers in **whatever language you ask in**
+(any language Gemini supports, not a fixed list, and it switches mid-conversation
+the moment you do), and routes each question to the right source: historical
+questions become SQL over ~86,000 verified USGS records (**the generated SQL
+and the matching rows are both displayed**, so any figure can be checked);
+this-week questions come from the live feed; current events are answered with
+Google Search grounding and **cited sources**. You can also ask by voice — a
+mic button records the question, Gemini transcribes it in whatever language
+was spoken, and the reply is read back with Cloud Text-to-Speech in a voice
+matched to that language. Every answer takes a 👍/👎 that is logged for review.
 
 **⛑️ Respond** — find the nearest hospitals, fire stations, police, pharmacies
 or shelters **from your own GPS location** (or any place you type), with
@@ -70,10 +76,10 @@ happened).
 USGS live feed + FDSN catalog ──► BigQuery (86k events)
                                         │
         Gemini 2.5 Flash on Vertex AI ──┤  briefings · NL→SQL · risk profiles
-        (streaming, Search grounding)   │  anomaly analysis · assistant
+        (streaming, Search grounding)   │  anomaly analysis · assistant · voice transcription
                                         ▼
                          Streamlit app on Cloud Run
-                  (+ Google Maps Platform, GDELT, ReliefWeb)
+     (+ Google Maps Platform, Cloud Text-to-Speech, Open-Meteo, GDELT, ReliefWeb)
 ```
 
 Design choices that matter:
@@ -85,6 +91,11 @@ Design choices that matter:
   rail falls back to official USGS event cards.
 - **Partial reruns** (`st.fragment`) keep the map and tables from re-rendering
   on every interaction.
+- **Two chat surfaces, two jobs.** The floating 💬 assistant on Live / My Area
+  / Respond only ever explains the app itself (what a page does, how to use a
+  feature) and hands off to ✦ Ask — with a one-tap button, not just a
+  suggestion — the moment a question is actually about earthquakes. ✦ Ask is
+  the one agent that touches the catalog, the live feed and web search.
 
 ## Running it yourself
 
@@ -110,8 +121,16 @@ Project id, region and model are set in `src/config.py`, or via the
 **Optional — Google Maps:** set `GOOGLE_MAPS_API_KEY` to enable the Respond
 page's live facility finder (place search, phone numbers, open-now status,
 route map with ETA). Enable **Maps Embed API** (free) and **Places API (New)**,
-then create an API key restricted to those two APIs. Without a key the app
-falls back to OpenStreetMap.
+then create an API key restricted to those two APIs (and set its application
+restrictions to **None** or **IP addresses** — an **HTTP referrers** restriction
+blocks the server-side calls this app makes). Without a key the app falls
+back to OpenStreetMap.
+
+**Optional — Voice:** enable the **Cloud Text-to-Speech API** on your GCP
+project for ✦ Ask's spoken replies to work (speech-to-text needs no separate
+API - it's just Gemini). Without it, voice input still works and the mic
+still transcribes your question, but replies won't be read back aloud - the
+text answer is unaffected either way.
 
 New to the project? See **[TEAM_SETUP.md](TEAM_SETUP.md)**.
 
@@ -134,13 +153,24 @@ Shaped by what people in earthquake-affected areas told us they actually want:
 
 - **Area alerts** — save your town, get an email/push within minutes of a
   significant quake nearby, with the plain-language briefing already written.
-- **Aftershock outlook** — surface the official USGS aftershock forecast for an
-  event. (Aftershock *forecasting* is established statistics; earthquake
-  *prediction* is not, and stays out of scope.)
-- **Weather with the response** — rain changes what people need: landslide risk
-  on shaken slopes, and shelter for anyone sleeping outside.
 - **Works offline** — installable app shell with the last known data cached.
 - **Regional agency feeds** (JMA, PHIVOLCS, Thai TMD) alongside USGS.
+
+Already shipped from that list:
+
+- **Aftershock outlook** — the official USGS aftershock forecast for an event,
+  plus aftershocks already recorded nearby, on the 🛰️ Live page. (Aftershock
+  *forecasting* is established statistics; earthquake *prediction* is not, and
+  stays out of scope.)
+- **Weather with the response** — rain/landslide advisory for the selected
+  town on the ⛑️ Respond page.
+- **Voice** — ask ✦ Ask by speaking (any language, transcribed by Gemini) and
+  hear the answer read back (Google Cloud Text-to-Speech, best available voice
+  per language).
+- **Interface language** — the app's own menus, headers and labels translate
+  into one of 10 languages from the sidebar. This is separate from the
+  language an *answer* is written in on My Area / Ask / Respond, which always
+  follows the question or profile request itself.
 
 ## Data sources
 
@@ -150,6 +180,8 @@ Shaped by what people in earthquake-affected areas told us they actually want:
 - **Tectonic plate boundaries** — Bird (2003), via fraxen/tectonicplates
 - **GDELT Project** — global news index · **ReliefWeb (UN OCHA)** — humanitarian
   situation reports · **Google Maps Platform** — places, routing and maps
+- **Open-Meteo** — free weather forecast (no API key), used for the rain/
+  landslide advisory on Respond
 
 The offline library links to official publications hosted by their publishers
 (FEMA, American Red Cross, USGS, Ready.gov, Earthquake Country Alliance); those

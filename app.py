@@ -19,8 +19,9 @@ import streamlit.components.v1 as components
 
 from src.ai import (situation_briefing, smart_ask, explain_anomaly,
                     area_profile, sitrep, do_dont, run_bigquery, TABLE_FQN,
-                    log_feedback, prioritize_facilities)
-from src.config import MAPS_API_KEY
+                    log_feedback, prioritize_facilities, BOT_NAME, APP_FACTS,
+                    transcribe_audio, text_to_speech)
+from src.config import MAPS_API_KEY, GEMINI_MODEL
 from src.anomaly import detect
 from src.aftershock import official_forecast, observed_aftershocks, GUIDANCE
 from src.weather import conditions as weather_conditions, advisory as weather_advisory
@@ -48,10 +49,155 @@ EMERGENCY_NUMBERS = {
 st.set_page_config(page_title="QuakeSense - Global real-time earthquake intelligence",
                    page_icon=":material/earthquake:", layout="wide")
 
+# UI chrome language - translates the app's own interface text (nav, headers,
+# sidebar). Chosen for the countries with the heaviest earthquake exposure,
+# English default.
+UI_LANGUAGES = ["English", "Bahasa Indonesia", "日本語", "Filipino", "Türkçe",
+                "नेपाली", "हिन्दी", "Español", "မြန်မာ", "ไทย"]
+
+# AI-content language - the language an answer/profile is WRITTEN in on My
+# Area / Respond. A different purpose from UI_LANGUAGES above (that one
+# translates interface chrome, this one steers Gemini's output), but kept
+# aligned to the same set of languages so the two pickers make sense together.
+APP_LANGUAGES = UI_LANGUAGES
+
+UI_STRINGS = {
+    "nav_live":        {"English": "🛰️ Live", "Bahasa Indonesia": "🛰️ Langsung", "日本語": "🛰️ ライブ", "Filipino": "🛰️ Live", "Türkçe": "🛰️ Canlı", "नेपाली": "🛰️ प्रत्यक्ष", "हिन्दी": "🛰️ लाइव", "Español": "🛰️ En vivo", "မြန်မာ": "🛰️ တိုက်ရိုက်", "ไทย": "🛰️ สด"},
+    "nav_my_area":     {"English": "📍 My Area", "Bahasa Indonesia": "📍 Wilayah Saya", "日本語": "📍 マイエリア", "Filipino": "📍 Aking Lugar", "Türkçe": "📍 Bölgem", "नेपाली": "📍 मेरो क्षेत्र", "हिन्दी": "📍 मेरा क्षेत्र", "Español": "📍 Mi Zona", "မြန်မာ": "📍 ကျွန်ုပ်၏ဒေသ", "ไทย": "📍 พื้นที่ของฉัน"},
+    "nav_ask":         {"English": "✦ Ask", "Bahasa Indonesia": "✦ Tanya", "日本語": "✦ 質問", "Filipino": "✦ Magtanong", "Türkçe": "✦ Sor", "नेपाली": "✦ सोध्नुहोस्", "हिन्दी": "✦ पूछें", "Español": "✦ Preguntar", "မြန်မာ": "✦ မေးရန်", "ไทย": "✦ ถาม"},
+    "nav_respond":     {"English": "⛑️ Respond", "Bahasa Indonesia": "⛑️ Respons", "日本語": "⛑️ 対応", "Filipino": "⛑️ Tumugon", "Türkçe": "⛑️ Müdahale", "नेपाली": "⛑️ प्रतिक्रिया", "हिन्दी": "⛑️ प्रतिक्रिया", "Español": "⛑️ Responder", "မြန်မာ": "⛑️ တုန့်ပြန်ရန်", "ไทย": "⛑️ ตอบสนอง"},
+    "tagline":         {"English": "Live · Global real-time earthquake intelligence", "Bahasa Indonesia": "Langsung · Intelijen gempa global waktu-nyata", "日本語": "ライブ・世界のリアルタイム地震インテリジェンス", "Filipino": "Live · Pandaigdigang real-time na impormasyon sa lindol", "Türkçe": "Canlı · Küresel gerçek zamanlı deprem istihbaratı", "नेपाली": "प्रत्यक्ष · विश्वव्यापी वास्तविक-समय भूकम्प जानकारी", "हिन्दी": "लाइव · वैश्विक रीयल-टाइम भूकंप जानकारी", "Español": "En vivo · Inteligencia sísmica global en tiempo real", "မြန်မာ": "တိုက်ရိုက် · ကမ္ဘာလုံးဆိုင်ရာ အချိန်နှင့်တပြေးညီ ငလျင်သတင်းအချက်အလက်", "ไทย": "สด · ข้อมูลแผ่นดินไหวทั่วโลกแบบเรียลไทม์"},
+    "sidebar_data":    {"English": "Data", "Bahasa Indonesia": "Data", "日本語": "データ", "Filipino": "Data", "Türkçe": "Veri", "नेपाली": "डाटा", "हिन्दी": "डेटा", "Español": "Datos", "မြန်မာ": "ဒေတာ", "ไทย": "ข้อมูล"},
+    "sidebar_refresh": {"English": "Refresh live feed", "Bahasa Indonesia": "Segarkan umpan langsung", "日本語": "ライブフィードを更新", "Filipino": "I-refresh ang live feed", "Türkçe": "Canlı akışı yenile", "नेपाली": "प्रत्यक्ष फिड ताजा गर्नुहोस्", "हिन्दी": "लाइव फ़ीड रीफ़्रेश करें", "Español": "Actualizar feed en vivo", "မြန်မာ": "တိုက်ရိုက်ဖိဒ်ကို ပြန်လည်စတင်ပါ", "ไทย": "รีเฟรชฟีดสด"},
+    "sidebar_prefs":   {"English": "Preferences", "Bahasa Indonesia": "Preferensi", "日本語": "設定", "Filipino": "Mga Kagustuhan", "Türkçe": "Tercihler", "नेपाली": "प्राथमिकताहरू", "हिन्दी": "प्राथमिकताएँ", "Español": "Preferencias", "မြန်မာ": "စိတ်ကြိုက်ရွေးချယ်မှုများ", "ไทย": "การตั้งค่า"},
+    "sidebar_language":{"English": "Language", "Bahasa Indonesia": "Bahasa", "日本語": "言語", "Filipino": "Wika", "Türkçe": "Dil", "नेपाली": "भाषा", "हिन्दी": "भाषा", "Español": "Idioma", "မြန်မာ": "ဘာသာစကား", "ไทย": "ภาษา"},
+    "sidebar_disclaimer": {"English": "Earthquakes cannot be predicted. This tool supports awareness and decision-making, not prediction.", "Bahasa Indonesia": "Gempa bumi tidak dapat diprediksi. Alat ini mendukung kesadaran dan pengambilan keputusan, bukan prediksi.", "日本語": "地震は予知できません。本ツールは予測ではなく、認識と意思決定を支援するものです。", "Filipino": "Hindi mahuhulaan ang mga lindol. Sinusuportahan ng tool na ito ang kamalayan at paggawa ng desisyon, hindi ang panghuhula.", "Türkçe": "Depremler tahmin edilemez. Bu araç tahmin değil, farkındalık ve karar almayı destekler.", "नेपाली": "भूकम्पको पूर्वानुमान गर्न सकिँदैन। यो उपकरणले पूर्वानुमान होइन, सचेतना र निर्णय लिने कार्यलाई समर्थन गर्छ।", "हिन्दी": "भूकंप की भविष्यवाणी नहीं की जा सकती। यह टूल जागरूकता और निर्णय लेने में मदद करता है, भविष्यवाणी में नहीं।", "Español": "Los terremotos no se pueden predecir. Esta herramienta apoya la conciencia y la toma de decisiones, no la predicción.", "မြန်မာ": "ငလျင်ကို ကြိုတင်ခန့်မှန်း၍မရပါ။ ဤကိရိယာသည် ခန့်မှန်းခြင်းမဟုတ်ဘဲ အသိပညာနှင့် ဆုံးဖြတ်ချက်ချမှုကို ပံ့ပိုးပေးသည်။", "ไทย": "ไม่สามารถพยากรณ์แผ่นดินไหวได้ เครื่องมือนี้ช่วยสร้างความตระหนักรู้และสนับสนุนการตัดสินใจ ไม่ใช่การพยากรณ์"},
+    "sidebar_built_with": {"English": "Built with", "Bahasa Indonesia": "Dibangun dengan", "日本語": "使用技術", "Filipino": "Ginawa gamit ang", "Türkçe": "Şununla oluşturuldu", "नेपाली": "यसद्वारा निर्मित", "हिन्दी": "इनसे निर्मित", "Español": "Creado con", "မြန်မာ": "ဖြင့်တည်ဆောက်ထားသည်", "ไทย": "สร้างด้วย"},
+    "sidebar_team":    {"English": "Developed by Team KODA", "Bahasa Indonesia": "Dikembangkan oleh Tim KODA", "日本語": "Team KODA 開発", "Filipino": "Binuo ng Team KODA", "Türkçe": "Team KODA tarafından geliştirildi", "नेपाली": "Team KODA द्वारा विकसित", "हिन्दी": "Team KODA द्वारा विकसित", "Español": "Desarrollado por Team KODA", "မြန်မာ": "Team KODA မှ ဖန်တီးသည်", "ไทย": "พัฒนาโดย Team KODA"},
+    "live_subheader":  {"English": "AI Situation Briefings", "Bahasa Indonesia": "Ringkasan Situasi AI", "日本語": "AI状況ブリーフィング", "Filipino": "AI Situation Briefing", "Türkçe": "Yapay Zeka Durum Raporları", "नेपाली": "एआई अवस्था विवरण", "हिन्दी": "एआई स्थिति संक्षिप्त विवरण", "Español": "Informes de Situación con IA", "မြန်မာ": "AI အခြေအနေရှင်းလင်းချက်", "ไทย": "สรุปสถานการณ์โดย AI"},
+    "myarea_subheader":{"English": "My Area — community seismic risk profile", "Bahasa Indonesia": "Wilayah Saya — profil risiko seismik komunitas", "日本語": "マイエリア — 地域の地震リスクプロファイル", "Filipino": "Aking Lugar — profile ng panganib sa lindol ng komunidad", "Türkçe": "Bölgem — toplum deprem riski profili", "नेपाली": "मेरो क्षेत्र — सामुदायिक भूकम्प जोखिम प्रोफाइल", "हिन्दी": "मेरा क्षेत्र — सामुदायिक भूकंप जोखिम प्रोफ़ाइल", "Español": "Mi Zona — perfil de riesgo sísmico comunitario", "မြန်မာ": "ကျွန်ုပ်၏ဒေသ — ရပ်ရွာငလျင်အန္တရာယ်ပရိုဖိုင်", "ไทย": "พื้นที่ของฉัน — ข้อมูลความเสี่ยงแผ่นดินไหวในชุมชน"},
+    "ask_subheader":   {"English": "✦ Ask — full answers with the evidence", "Bahasa Indonesia": "✦ Tanya — jawaban lengkap dengan bukti", "日本語": "✦ 質問 — 根拠付きの完全な回答", "Filipino": "✦ Magtanong — buong sagot na may ebidensya", "Türkçe": "✦ Sor — kanıtlarla birlikte tam yanıtlar", "नेपाली": "✦ सोध्नुहोस् — प्रमाणसहितको पूर्ण जवाफ", "हिन्दी": "✦ पूछें — प्रमाण सहित पूर्ण उत्तर", "Español": "✦ Preguntar — respuestas completas con evidencia", "မြန်မာ": "✦ မေးရန် — အထောက်အထားနှင့်တကွ အပြည့်အစုံဖြေကြားချက်", "ไทย": "✦ ถาม — คำตอบฉบับเต็มพร้อมหลักฐาน"},
+    "respond_subheader": {"English": "⛑️ Respond", "Bahasa Indonesia": "⛑️ Respons", "日本語": "⛑️ 対応", "Filipino": "⛑️ Tumugon", "Türkçe": "⛑️ Müdahale", "नेपाली": "⛑️ प्रतिक्रिया", "हिन्दी": "⛑️ प्रतिक्रिया", "Español": "⛑️ Responder", "မြန်မာ": "⛑️ တုန့်ပြန်ရန်", "ไทย": "⛑️ ตอบสนอง"},
+    "footer":          {"English": "Global real-time earthquake intelligence · USGS live feed & FDSN catalog · Vertex AI Gemini · Google BigQuery", "Bahasa Indonesia": "Intelijen gempa global waktu-nyata · Umpan langsung USGS & katalog FDSN · Vertex AI Gemini · Google BigQuery", "日本語": "世界のリアルタイム地震インテリジェンス · USGSライブフィード & FDSNカタログ · Vertex AI Gemini · Google BigQuery", "Filipino": "Pandaigdigang real-time na impormasyon sa lindol · USGS live feed at FDSN catalog · Vertex AI Gemini · Google BigQuery", "Türkçe": "Küresel gerçek zamanlı deprem istihbaratı · USGS canlı akışı ve FDSN kataloğu · Vertex AI Gemini · Google BigQuery", "नेपाली": "विश्वव्यापी वास्तविक-समय भूकम्प जानकारी · USGS प्रत्यक्ष फिड र FDSN क्याटलग · Vertex AI Gemini · Google BigQuery", "हिन्दी": "वैश्विक रीयल-टाइम भूकंप जानकारी · USGS लाइव फ़ीड और FDSN कैटलॉग · Vertex AI Gemini · Google BigQuery", "Español": "Inteligencia sísmica global en tiempo real · Feed en vivo de USGS y catálogo FDSN · Vertex AI Gemini · Google BigQuery", "မြန်မာ": "ကမ္ဘာလုံးဆိုင်ရာ အချိန်နှင့်တပြေးညီ ငလျင်သတင်းအချက်အလက် · USGS တိုက်ရိုက်ဖိဒ်နှင့် FDSN စာရင်း · Vertex AI Gemini · Google BigQuery", "ไทย": "ข้อมูลแผ่นดินไหวทั่วโลกแบบเรียลไทม์ · ฟีดสด USGS และแคตตาล็อก FDSN · Vertex AI Gemini · Google BigQuery"},
+}
+
+
+def t(key: str) -> str:
+    """UI chrome translation - separate from APP_LANGUAGES (which only sets
+    the language an AI answer is WRITTEN in). Falls back to English if the
+    current UI language or key is missing, so a partial translation never
+    breaks the page."""
+    lang = st.session_state.get("ui_language", "English")
+    entry = UI_STRINGS.get(key, {})
+    return entry.get(lang) or entry.get("English") or key
+
+# Single dark palette - chosen and tuned for eye comfort in low light (the
+# use case this app is actually built for: checking on an earthquake at
+# night). A theme switcher was tried and pulled after it kept surfacing
+# half-themed native Streamlit widgets across every page; one well-tuned
+# dark palette is safer than three inconsistently-themed ones.
+_pal = {
+    "bg": "#0d1321", "bg2": "#0d1321", "panel": "#161e2e",
+    "panel2": "#1a2333", "panel3": "#141b28",
+    "deep1": "#141b28", "deep2": "#141b28", "deep3": "#141b28",
+    "deep4": "#141b28", "deep5": "#141b28", "nav-active": "#1a2333",
+    "border": "#263145", "border2": "#263145", "border3": "#34435c",
+    "text": "#dbe2ec", "muted": "#8fa0b5", "muted2": "#8fa0b5",
+    "accent": "#e08850", "accent-light": "#eda06b", "accent-dark": "#5c3a1f",
+    "blue": "#45b3e6", "blue2": "#45b3e6", "blue3": "#45b3e6",
+    "red": "#ff6b61", "green": "#6fae7f",
+}
+
+if "ui_language" not in st.session_state:
+    st.session_state.ui_language = st.query_params.get("lang", "English")
+    if st.session_state.ui_language not in UI_LANGUAGES:
+        st.session_state.ui_language = "English"
+
+st.markdown(
+    "<style>:root {" +
+    "".join(f"--qs-{k}: {v};" for k, v in _pal.items()) +
+    "}</style>", unsafe_allow_html=True)
+
+# Short haptic buzz on every button/tab/chip tap, app-wide - phones otherwise
+# give zero physical confirmation that a tap registered, especially on
+# anything that takes a moment to respond (GPS, AI calls). Silently does
+# nothing on devices/browsers without the Vibration API (all of iOS Safari).
+components.html("""
+<script>
+try {
+  const doc = window.parent.document;
+  if (!doc.__qsHapticsAttached) {
+    doc.__qsHapticsAttached = true;
+    doc.addEventListener('pointerdown', function (e) {
+      const el = e.target.closest('button, [role="radio"], [role="tab"], a[data-testid^="stBaseLinkButton"]');
+      if (el) { try { doc.defaultView.navigator.vibrate && doc.defaultView.navigator.vibrate(12); } catch (err) {} }
+    }, true);
+  }
+} catch (e) {}
+</script>""", height=0)
+
 # ------------------------------------------------------------------ style --
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* ---------------------------------------------------- theme canvas ----
+   .streamlit/config.toml bakes in one static dark theme at startup - these
+   rules repaint the base app canvas and native widget chrome to follow our
+   --qs-* variables instead, so Dark/Light/Warm actually change the whole
+   app, not just the custom cards defined further down this stylesheet. */
+html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+  background-color: var(--qs-bg);
+  color: var(--qs-text);
+}
+/* Streamlit's own header bar sits fixed across the full width at the very
+   top with a huge z-index, invisible (transparent) but still solid for
+   touch/click - once our sticky nav below scrolls up to meet it, it sat
+   underneath that invisible bar and stopped responding to taps (mobile-only
+   symptom, since desktop clicks land below the bar's short height anyway
+   at most scroll positions). Letting clicks pass through it, then
+   re-enabling them only on its own real controls (sidebar toggle), fixes
+   that without touching anything else. */
+[data-testid="stHeader"], [data-testid="stToolbar"] {
+  background: transparent; pointer-events: none;
+}
+[data-testid="stHeader"] button, [data-testid="stHeader"] a,
+[data-testid="stToolbar"] button, [data-testid="stToolbar"] a {
+  pointer-events: auto;
+}
+section[data-testid="stSidebar"], section[data-testid="stSidebar"] > div,
+[data-testid="stSidebarContent"], [data-testid="stSidebarUserContent"] {
+  background-color: var(--qs-bg2) !important;
+}
+[data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li, [data-testid="stMarkdownContainer"] span,
+label p, .stMarkdown p, h1, h2, h3, h4 {color: var(--qs-text);}
+[data-testid="stCaptionContainer"] p {color: var(--qs-muted);}
+[data-testid="stMetric"], [data-testid="stExpander"] details,
+[data-testid="stExpander"] summary, [data-testid="stDataFrame"],
+[data-baseweb="select"] > div:first-child, [data-baseweb="popover"],
+[data-baseweb="menu"] {
+  background-color: var(--qs-panel) !important; border-color: var(--qs-border) !important;
+}
+[data-baseweb="select"] *, [data-baseweb="menu"] *, [data-baseweb="popover"] *,
+[data-testid="stMetricValue"], [data-testid="stMetricLabel"] p {
+  color: var(--qs-text) !important;
+}
+[data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea,
+[data-testid="stChatInput"] textarea, [data-testid="stNumberInput"] input {
+  background-color: var(--qs-panel) !important; color: var(--qs-text) !important;
+}
+[data-testid="stSlider"] [data-baseweb="slider"] > div {background-color: var(--qs-border) !important;}
+[data-testid="stSlider"] [role="slider"] {background-color: var(--qs-accent) !important;}
+input[type="checkbox"], input[type="radio"] {accent-color: var(--qs-accent) !important;}
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] div:first-child,
+[data-testid="stToggle"] [data-baseweb="checkbox"] div:first-child {
+  background-color: var(--qs-panel) !important; border-color: var(--qs-border) !important;
+}
+[data-testid="stCheckbox"] [aria-checked="true"] div:first-child,
+[data-testid="stToggle"] [aria-checked="true"] div:first-child {
+  background-color: var(--qs-accent) !important; border-color: var(--qs-accent) !important;
+}
 
 /* ============ Enterprise design system ============ */
 /* One professional typeface everywhere (flags-only font first - its
@@ -79,16 +225,25 @@ h1, h2, h3 {font-weight: 600; letter-spacing: -0.01em;}
 .block-container h3 {font-size: 1.08rem;}
 [data-testid="stCaptionContainer"], .stCaption {line-height: 1.45;}
 
-/* Controls: uniform radius, weight, focus */
-.stButton button, [data-testid="stBaseButton-secondary"] {
+/* Controls: uniform radius, weight, focus - and follow the theme instead of
+   Streamlit's own static secondaryBackgroundColor from config.toml */
+.stButton button, [data-testid="stBaseButton-secondary"],
+[data-testid="stBaseButton-secondary"], a[data-testid="stBaseLinkButton-secondary"] {
   border-radius: 8px; font-weight: 600;
+  background-color: var(--qs-panel) !important;
+  color: var(--qs-text) !important;
+  border-color: var(--qs-border) !important;
+}
+.stButton button:hover, [data-testid="stBaseButton-secondary"]:hover,
+a[data-testid="stBaseLinkButton-secondary"]:hover {
+  border-color: var(--qs-accent) !important; color: var(--qs-accent) !important;
 }
 [data-testid="stButtonGroup"] button {border-radius: 999px; font-weight: 600;}
 hr {margin: 1.1rem 0 0.9rem 0;}
 
 /* Chat: card-style message bubbles */
 [data-testid="stChatMessage"] {
-  background: #141b28; border: 1px solid #1d2637; border-radius: 12px;
+  background: var(--qs-panel3); border: 1px solid var(--qs-border2); border-radius: 12px;
   padding: 0.85rem 1rem; margin-bottom: 0.45rem;
 }
 
@@ -100,17 +255,17 @@ section[data-testid="stSidebar"] [role="radiogroup"] > label {
   transition: background 0.12s, border-color 0.12s; cursor: pointer;
 }
 section[data-testid="stSidebar"] [role="radiogroup"] > label:hover {
-  background: #161e2e;
+  background: var(--qs-panel);
 }
 section[data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) {
-  background: #18212f; border-left: 3px solid #e08850;
+  background: var(--qs-nav-active); border-left: 3px solid var(--qs-accent);
 }
 /* hide the round radio marker for a clean nav look */
 section[data-testid="stSidebar"] [role="radiogroup"] > label > div:first-child {
   display: none !important;
 }
 section[data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) p {
-  color: #e08850;
+  color: var(--qs-accent);
 }
 
 /* Freeze the WHOLE top bar — wordmark, tagline, nav and live ticker — so the
@@ -118,18 +273,18 @@ section[data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) 
 /* Sample prompt chips inside the chat popup */
 .qs-sug-label {
   font-size: 0.6rem; letter-spacing: 0.13em; text-transform: uppercase;
-  color: #8fa0b5; margin: 0.6rem 0 0.3rem 0;
+  color: var(--qs-muted); margin: 0.6rem 0 0.3rem 0;
 }
 div[data-testid="stPopoverBody"] [class*="st-key-qx_"] button {
-  background: #101a2b !important; border: 1px solid #2a3c52 !important;
-  color: #9fc4dd !important; font-size: 0.76rem !important;
+  background: var(--qs-deep1) !important; border: 1px solid var(--qs-border3) !important;
+  color: var(--qs-blue3) !important; font-size: 0.76rem !important;
   font-weight: 500 !important; border-radius: 999px !important;
   padding: 4px 12px !important; min-height: 0 !important;
   text-align: left; line-height: 1.3;
 }
 div[data-testid="stPopoverBody"] [class*="st-key-qx_"] button:hover {
-  border-color: #45b3e6 !important; color: #dbe2ec !important;
-  background: #14243a !important;
+  border-color: var(--qs-blue) !important; color: var(--qs-text) !important;
+  background: var(--qs-deep3) !important;
 }
 
 /* Sidebar toggle shows a gear instead of chevrons (Material Symbols is a
@@ -145,60 +300,81 @@ div[data-testid="stPopoverBody"] [class*="st-key-qx_"] button:hover {
 [data-testid="stSidebarCollapsedControl"] [data-testid="stIconMaterial"]::after {
   content: "settings";
   font-family: "Material Symbols Rounded", "Material Symbols Outlined" !important;
-  font-size: 21px !important; color: #8fa0b5;
+  font-size: 21px !important; color: var(--qs-muted);
 }
 [data-testid="stSidebarCollapseButton"]:hover [data-testid="stIconMaterial"]::after,
 [data-testid="stExpandSidebarButton"]:hover [data-testid="stIconMaterial"]::after,
 [data-testid="stSidebarCollapsedControl"]:hover [data-testid="stIconMaterial"]::after {
-  color: #e08850;
+  color: var(--qs-accent);
 }
 
-/* Sidebar as a settings panel */
-.qs-set-sec {
-  font-size: 0.62rem; letter-spacing: 0.13em; text-transform: uppercase;
-  color: #8fa0b5; margin: 0.9rem 0 0.3rem 0;
-  border-top: 1px solid #263145; padding-top: 0.6rem;
+/* Sidebar as a compact settings panel — small enough to need no scrollbar,
+   so the gear (collapse) control at the top stays reachable at a glance. */
+section[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"],
+section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+  gap: 0.35rem !important;
 }
+section[data-testid="stSidebar"] [data-testid="stElementContainer"] {
+  margin-left: 0 !important; margin-right: 0 !important; margin-bottom: 0 !important;
+  width: 100% !important;
+}
+/* margin-top reset excludes the last child, which gets margin-top:auto below
+   to push "Built with" to the bottom of the sidebar. */
+section[data-testid="stSidebar"] [data-testid="stElementContainer"]:not(:last-child) {
+  margin-top: 0 !important;
+}
+section[data-testid="stSidebar"] .stButton {margin: 0 !important; width: 100% !important;}
+section[data-testid="stSidebar"] .stButton button {width: 100% !important;}
+section[data-testid="stSidebar"] .stButton button {
+  padding: 0.3rem 0.8rem !important; min-height: 0 !important;
+  font-size: 0.8rem !important;
+}
+.qs-set-sec {
+  font-size: 0.58rem; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--qs-muted); margin: 1rem 0 0.7rem 0;
+  border-top: 1px solid var(--qs-border); padding-top: 0.7rem;
+}
+.qs-set-sec:first-of-type {margin-top: 0.2rem; border-top: none; padding-top: 0;}
 
 /* Answer rating buttons — blue thumb up, red thumb down (icon-only, compact) */
 [class*="st-key-fb_up_"] button, [class*="st-key-fb_down_"] button {
   width: 40px !important; min-width: 40px !important; height: 34px;
   padding: 0 !important; border-radius: 9px !important;
-  background: #131c2c !important; border: 1px solid #263145 !important;
+  background: var(--qs-panel2) !important; border: 1px solid var(--qs-border) !important;
 }
 [class*="st-key-fb_up_"] button [data-testid="stIconMaterial"] {
-  color: #45b3e6 !important; font-size: 19px !important;
+  color: var(--qs-blue) !important; font-size: 19px !important;
 }
 [class*="st-key-fb_down_"] button [data-testid="stIconMaterial"] {
-  color: #ff6b61 !important; font-size: 19px !important;
+  color: var(--qs-red) !important; font-size: 19px !important;
 }
-[class*="st-key-fb_up_"] button:hover {border-color: #45b3e6 !important;}
-[class*="st-key-fb_down_"] button:hover {border-color: #ff6b61 !important;}
+[class*="st-key-fb_up_"] button:hover {border-color: var(--qs-blue) !important;}
+[class*="st-key-fb_down_"] button:hover {border-color: var(--qs-red) !important;}
 
 /* Freeze just the nav buttons at the top of the scroll area — nothing else
    moves, so the rest of the layout is untouched. */
 .st-key-topnav {
   position: sticky; top: 0; z-index: 500;
-  background: #0d1321; padding: 0.35rem 0 0.15rem 0;
+  background: var(--qs-bg2); padding: 0.35rem 0 0.15rem 0;
 }
 
 /* Top navigation — a distinct segmented-control BAR (the app menu), so it
    reads as navigation, clearly separate from the page controls below it. */
 .st-key-topnav [role="radiogroup"] {
-  gap: 4px; flex-wrap: wrap; background: #10192a;
-  border: 1px solid #263145; border-radius: 12px;
+  gap: 4px; flex-wrap: wrap; background: var(--qs-deep2);
+  border: 1px solid var(--qs-border); border-radius: 12px;
   padding: 6px; margin-bottom: 16px;
 }
 .st-key-topnav [role="radiogroup"] > label {
   padding: 7px 18px; border-radius: 8px; margin: 0; cursor: pointer;
   border: none; background: transparent; transition: background 0.12s;
 }
-.st-key-topnav [role="radiogroup"] > label:hover {background: #1a2434;}
+.st-key-topnav [role="radiogroup"] > label:hover {background: var(--qs-deep4);}
 .st-key-topnav [role="radiogroup"] > label:has(input:checked) {
-  background: #e08850;
+  background: var(--qs-accent);
 }
 .st-key-topnav [role="radiogroup"] > label:has(input:checked) p {
-  color: #0d1321 !important;
+  color: var(--qs-bg2) !important;
 }
 .st-key-topnav [role="radiogroup"] > label > div:first-child {
   display: none !important;  /* hide the radio circle */
@@ -219,23 +395,23 @@ div[data-testid="stPopoverBody"] [class*="st-key-qx_"] button:hover {
 .st-key-stt_ask, .st-key-quick_stt {margin-top: 1.4rem;}
 .st-key-ask_chat_input [data-testid="stChatInput"],
 .st-key-quick_chat_input [data-testid="stChatInput"] {
-  border: 1.5px solid #45b3e6 !important; border-radius: 12px;
-  background: #0b1220 !important;
+  border: 1.5px solid var(--qs-blue) !important; border-radius: 12px;
+  background: var(--qs-bg) !important;
 }
 .st-key-ask_chat_input [data-testid="stChatInput"]:focus-within,
 .st-key-quick_chat_input [data-testid="stChatInput"]:focus-within {
-  border-color: #e08850 !important;
+  border-color: var(--qs-accent) !important;
   box-shadow: 0 0 0 2px rgba(224, 136, 80, 0.18) !important;
 }
 
 /* Messenger panel send button: light blue, filled on hover */
 div[data-testid="stPopoverBody"] [data-testid="stBaseButton-secondaryFormSubmit"] {
-  color: #45b3e6 !important; border-color: #2a3c52 !important;
+  color: var(--qs-blue) !important; border-color: var(--qs-border3) !important;
   border-radius: 10px; font-weight: 700; font-size: 1.05rem;
 }
 div[data-testid="stPopoverBody"] [data-testid="stBaseButton-secondaryFormSubmit"]:hover {
-  background: #45b3e6 !important; color: #0d1321 !important;
-  border-color: #45b3e6 !important;
+  background: var(--qs-blue) !important; color: var(--qs-bg2) !important;
+  border-color: var(--qs-blue) !important;
 }
 /* ================================================== */
 
@@ -259,40 +435,40 @@ div[data-testid="stPopoverBody"] [data-testid="stBaseButton-secondaryFormSubmit"
 .block-container {padding-top: 1.0rem; padding-bottom: 1.5rem;}
 
 .qs-header {
-  border-bottom: 1px solid #263145;
+  border-bottom: 1px solid var(--qs-border);
   padding: 0 0 0.8rem 0; margin-bottom: 0.3rem;
 }
 .qs-wordmark {
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
   font-size: 1.6rem; font-weight: 600; letter-spacing: 0.10em;
-  color: #dbe2ec; margin: 0;
+  color: var(--qs-text); margin: 0;
 }
-.qs-wordmark span {color: #e08850;}
+.qs-wordmark span {color: var(--qs-accent);}
 .qs-subline {
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
   font-size: 0.70rem; letter-spacing: 0.18em; text-transform: uppercase;
-  color: #8fa0b5; margin-top: 0.25rem;
+  color: var(--qs-muted); margin-top: 0.25rem;
 }
 .qs-live {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-  background: #6fae7f; margin-right: 6px;
+  background: var(--qs-green); margin-right: 6px;
 }
 
 [data-testid="stMetric"] {
-  background: #161e2e; border: 1px solid #263145; border-radius: 6px;
+  background: var(--qs-panel); border: 1px solid var(--qs-border); border-radius: 6px;
   padding: 12px 14px 9px 14px;
 }
 [data-testid="stMetricLabel"] p {
   font-size: 0.67rem !important; letter-spacing: 0.12em;
-  text-transform: uppercase; color: #8fa0b5 !important;
+  text-transform: uppercase; color: var(--qs-muted) !important;
 }
 [data-testid="stMetricValue"] {
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
   font-variant-numeric: tabular-nums; font-size: 1.65rem !important;
 }
 
-h2, h3 {letter-spacing: 0.01em; color: #dbe2ec;}
-section[data-testid="stSidebar"] {border-right: 1px solid #263145;}
+h2, h3 {letter-spacing: 0.01em; color: var(--qs-text);}
+section[data-testid="stSidebar"] {border-right: 1px solid var(--qs-border);}
 section[data-testid="stSidebar"] .stRadio label p {font-size: 0.95rem; font-weight: 600;}
 
 /* Narrower sidebar — but ONLY when expanded, so collapsing fully hides it
@@ -300,18 +476,42 @@ section[data-testid="stSidebar"] .stRadio label p {font-size: 0.95rem; font-weig
 section[data-testid="stSidebar"][aria-expanded="true"] {
   min-width: 15rem !important; max-width: 15rem !important;
 }
-.qs-credit {
-  font-size: 0.6rem; letter-spacing: 0.10em; text-transform: uppercase;
-  color: #8fa0b5; margin-bottom: 0.15rem;
+/* Push "Built with / Team KODA" to the bottom of the sidebar instead of
+   trailing right after whatever content happens to be above it. */
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+  display: flex; flex-direction: column; min-height: 100%;
 }
-.qs-credit-items {font-size: 0.66rem; color: #c3cede; line-height: 1.45; margin-bottom: 0.5rem;}
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > div {
+  flex: 1; display: flex; flex-direction: column; min-height: 100%;
+}
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"]
+  > div > [data-testid="stVerticalBlock"] {
+  flex: 1; display: flex; flex-direction: column;
+}
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"]
+  > div > [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:last-child {
+  margin-top: auto !important;
+}
 .qs-sidebar-bottom {
-  margin-top: 1.6rem; padding: 0.7rem 0 0.4rem 0;
-  border-top: 1px solid #263145;
+  margin-top: 0; padding: 0.6rem 0 0.1rem 0;
+  border-top: 1px solid var(--qs-border);
 }
-.qs-team {font-size: 0.64rem; color: #8fa0b5; margin-top: 0.35rem;}
+.qs-sidebar-bottom p, .qs-sidebar-bottom img {margin: 0 !important;}
+.qs-credit {
+  font-size: 0.52rem !important; letter-spacing: 0.10em; text-transform: uppercase;
+  color: var(--qs-muted) !important; margin-bottom: 0.15rem !important;
+}
+.qs-credit-items {
+  font-size: 0.56rem !important; color: var(--qs-muted2) !important;
+  line-height: 1.3; margin-bottom: 0.4rem !important;
+}
+.qs-sidebar-bottom img {display: block; margin: 0.2rem 0 !important;}
+.qs-team {
+  font-size: 0.54rem !important; color: var(--qs-muted) !important;
+  margin-top: 0.25rem !important;
+}
 section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
-  font-size: 0.68rem !important; line-height: 1.4;
+  font-size: 0.62rem !important; line-height: 1.3;
 }
 
 .stButton button[kind="primary"] {
@@ -327,7 +527,7 @@ button[data-testid="stPopoverButton"] {
   width: 58px !important; min-width: 58px !important; height: 58px !important;
   border-radius: 50% !important; padding: 0 !important;
   font-size: 0 !important; color: transparent !important;
-  background-color: #e08850 !important;
+  background-color: var(--qs-accent) !important;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M5 4h14a1.6 1.6 0 0 1 1.6 1.6v8.8A1.6 1.6 0 0 1 19 16H9l-4 3.6V5.6A1.6 1.6 0 0 1 6.6 4z' fill='%23ffffff'/%3E%3Ccircle cx='9' cy='10' r='1.15' fill='%23e08850'/%3E%3Ccircle cx='12.5' cy='10' r='1.15' fill='%23e08850'/%3E%3Ccircle cx='16' cy='10' r='1.15' fill='%23e08850'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: center;
   background-size: 30px 30px;
@@ -335,7 +535,7 @@ button[data-testid="stPopoverButton"] {
   transition: transform 0.12s, background-color 0.12s;
 }
 button[data-testid="stPopoverButton"]:hover {
-  background-color: #eda06b !important; transform: scale(1.06);
+  background-color: var(--qs-accent-light) !important; transform: scale(1.06);
 }
 button[data-testid="stPopoverButton"] * {
   display: none !important;  /* hide emoji label + chevron; the SVG bg is the icon */
@@ -350,20 +550,22 @@ div[data-testid="stPopoverBody"] {
   width: 384px !important; max-width: 92vw !important;
   max-height: 86vh; overflow: hidden !important;
   padding: 0.85rem !important;
+  background-color: var(--qs-bg) !important; color: var(--qs-text) !important;
+  border-color: var(--qs-border) !important;
 }
 /* Coloured header bar that bleeds to the panel edges */
 .qs-chat-head {
   display: flex; align-items: center; gap: 10px;
-  background: #e08850; margin: -0.85rem -0.85rem 0.6rem -0.85rem;
+  background: var(--qs-accent); margin: -0.85rem -0.85rem 0.6rem -0.85rem;
   padding: 0.7rem 0.9rem;
 }
 .qs-chat-av {
-  width: 32px; height: 32px; border-radius: 50%; background: #0d1321;
-  color: #e08850; display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 50%; background: var(--qs-bg2);
+  color: var(--qs-accent); display: flex; align-items: center; justify-content: center;
   font-size: 1rem; flex: 0 0 32px;
 }
-.qs-chat-title {font-weight: 700; font-size: 0.98rem; color: #0d1321; line-height: 1.1;}
-.qs-chat-sub {font-size: 0.68rem; color: #5c3a1f; line-height: 1.2;}
+.qs-chat-title {font-weight: 700; font-size: 0.98rem; color: var(--qs-bg2); line-height: 1.1;}
+.qs-chat-sub {font-size: 0.68rem; color: var(--qs-accent-dark); line-height: 1.2;}
 /* Compact chat text inside the popup */
 div[data-testid="stPopoverBody"] [data-testid="stChatMessage"] {
   padding: 0.5rem 0.55rem; margin-bottom: 0.3rem;
@@ -380,20 +582,20 @@ div[data-testid="stPopoverBody"] [data-testid="stChatMessage"] [data-testid="stC
 
 /* Live event ticker under the header */
 .qs-ticker {
-  overflow: hidden; white-space: nowrap; border: 1px solid #263145;
-  border-radius: 6px; background: #161e2e; padding: 0.35rem 0;
+  overflow: hidden; white-space: nowrap; border: 1px solid var(--qs-border);
+  border-radius: 6px; background: var(--qs-panel); padding: 0.35rem 0;
   margin: 0.35rem 0 0.75rem 0; position: relative;
 }
 .qs-ticker-inner {
   display: inline-block; padding-left: 100%;
   animation: qs-scroll 60s linear infinite;
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
-  font-size: 0.78rem; color: #c3cede;
+  font-size: 0.78rem; color: var(--qs-muted2);
 }
 .qs-ticker:hover .qs-ticker-inner {animation-play-state: paused;}
-.qs-ticker .m6 {color: #e08850; font-weight: 600;}
-.qs-ticker .alrt {color: #ff6b61; font-weight: 700;}
-.qs-ticker .tsu {color: #45b3e6; font-weight: 600;}
+.qs-ticker .m6 {color: var(--qs-accent); font-weight: 600;}
+.qs-ticker .alrt {color: var(--qs-red); font-weight: 700;}
+.qs-ticker .tsu {color: var(--qs-blue); font-weight: 600;}
 @keyframes qs-scroll {
   0% {transform: translateX(0);}
   100% {transform: translateX(-100%);}
@@ -408,28 +610,28 @@ div[data-testid="stPopoverBody"] [data-testid="stChatMessage"] [data-testid="stC
 .qs-newsrail:hover .qs-newsrail-inner {animation-play-state: paused;}
 @keyframes qs-rail {0% {transform: translateX(0);} 100% {transform: translateX(-50%);}}
 .qs-newscard {
-  flex: 0 0 250px; background: #161e2e; border: 1px solid #263145;
+  flex: 0 0 250px; background: var(--qs-panel); border: 1px solid var(--qs-border);
   border-radius: 8px; overflow: hidden; text-decoration: none !important;
   transition: border-color 0.15s;
 }
-.qs-newscard:hover {border-color: #e08850;}
+.qs-newscard:hover {border-color: var(--qs-accent);}
 .qs-newsimg {height: 118px; background-size: cover; background-position: center;
-             background-color: #263145;}
+             background-color: var(--qs-border);}
 .qs-newsmono {height: 118px; display: flex; align-items: center;
-              justify-content: center; background: #263145;
+              justify-content: center; background: var(--qs-border);
               font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
-              font-size: 36px; font-weight: 600; color: #e08850;}
+              font-size: 36px; font-weight: 600; color: var(--qs-accent);}
 .qs-newstxt {display: flex; flex-direction: column; gap: 4px; padding: 8px 10px 10px 10px;}
-.qs-newssrc {font-size: 0.66rem; color: #8fa0b5; text-transform: uppercase;
+.qs-newssrc {font-size: 0.66rem; color: var(--qs-muted); text-transform: uppercase;
              letter-spacing: 0.06em;}
-.qs-newstitle {font-size: 0.8rem; color: #dbe2ec; line-height: 1.35;
+.qs-newstitle {font-size: 0.8rem; color: var(--qs-text); line-height: 1.35;
                white-space: normal;}
 
 /* Chat input: light-blue send icon */
-[data-testid="stChatInput"] button {color: #45b3e6 !important;}
-[data-testid="stChatInput"] button svg {fill: #45b3e6 !important;}
-[data-testid="stChatInput"] button:hover {color: #e08850 !important;}
-[data-testid="stChatInput"] button:hover svg {fill: #e08850 !important;}
+[data-testid="stChatInput"] button {color: var(--qs-blue) !important;}
+[data-testid="stChatInput"] button svg {fill: var(--qs-blue) !important;}
+[data-testid="stChatInput"] button:hover {color: var(--qs-accent) !important;}
+[data-testid="stChatInput"] button:hover svg {fill: var(--qs-accent) !important;}
 
 /* GPS button: sized here; its internal styling is injected directly into
    the component (same-origin) by _style_gps_component() */
@@ -446,47 +648,47 @@ div[data-testid="stPopoverBody"] [data-testid="stColumn"] {
   width: auto !important; min-width: 0 !important;
 }
 
-/* Grab-style help finder */
+/* Step-by-step help finder */
 .qs-fac {
-  display: flex; gap: 12px; align-items: center; background: #161e2e;
-  border: 1px solid #263145; border-radius: 12px; padding: 10px 14px;
+  display: flex; gap: 12px; align-items: center; background: var(--qs-panel);
+  border: 1px solid var(--qs-border); border-radius: 12px; padding: 10px 14px;
   margin-bottom: 8px; transition: border-color 0.15s;
 }
-.qs-fac:hover {border-color: #e08850;}
+.qs-fac:hover {border-color: var(--qs-accent);}
 .qs-fac-ic {
-  width: 42px; height: 42px; border-radius: 50%; background: #263145;
+  width: 42px; height: 42px; border-radius: 50%; background: var(--qs-border);
   display: flex; align-items: center; justify-content: center;
   font-size: 20px; flex: 0 0 42px;
 }
 .qs-fac-main {flex: 1; min-width: 0;}
-.qs-fac-name {color: #dbe2ec; font-weight: 600; font-size: 0.92rem;}
-.qs-fac-addr {color: #8fa0b5; font-size: 0.78rem; margin-top: 1px;}
+.qs-fac-name {color: var(--qs-text); font-weight: 600; font-size: 0.92rem;}
+.qs-fac-addr {color: var(--qs-muted); font-size: 0.78rem; margin-top: 1px;}
 .qs-fac-actions {display: flex; gap: 14px; margin-top: 5px;}
 .qs-fac-actions a {
-  font-size: 0.8rem; color: #45b3e6; text-decoration: none; font-weight: 600;
+  font-size: 0.8rem; color: var(--qs-blue); text-decoration: none; font-weight: 600;
 }
-.qs-fac-actions a:hover {color: #e08850;}
+.qs-fac-actions a:hover {color: var(--qs-accent);}
 .qs-fac-meta {
   display: flex; flex-direction: column; align-items: flex-end; gap: 5px;
   flex: 0 0 auto;
 }
 .qs-km {
-  background: #263145; color: #e08850; font-weight: 600;
+  background: var(--qs-border); color: var(--qs-accent); font-weight: 600;
   border-radius: 999px; padding: 2px 10px; font-size: 0.76rem;
   white-space: nowrap;
 }
-.qs-open {color: #6fae7f; font-size: 0.72rem; white-space: nowrap;}
-.qs-closed {color: #ff6b61; font-size: 0.72rem; white-space: nowrap;}
-.qs-trip {font-size: 0.85rem; color: #dbe2ec; line-height: 1.9;}
-.qs-trip .dotA {color: #6fae7f;} .qs-trip .dotB {color: #ff6b61;}
-.qs-trip .leg {color: #8fa0b5; padding-left: 0.32rem;}
+.qs-open {color: var(--qs-green); font-size: 0.72rem; white-space: nowrap;}
+.qs-closed {color: var(--qs-red); font-size: 0.72rem; white-space: nowrap;}
+.qs-trip {font-size: 0.85rem; color: var(--qs-text); line-height: 1.9;}
+.qs-trip .dotA {color: var(--qs-green);} .qs-trip .dotB {color: var(--qs-red);}
+.qs-trip .leg {color: var(--qs-muted); padding-left: 0.32rem;}
 .qs-maphelp {
   display: flex; flex-direction: column; gap: 5px; margin-top: 10px;
-  padding: 10px 12px; background: #161e2e; border: 1px solid #263145;
-  border-radius: 10px; font-size: 0.8rem; color: #c3cede; line-height: 1.4;
+  padding: 10px 12px; background: var(--qs-panel); border: 1px solid var(--qs-border);
+  border-radius: 10px; font-size: 0.8rem; color: var(--qs-muted2); line-height: 1.4;
 }
-.qs-maphelp b {color: #dbe2ec;}
-.qs-maphelp .dotA {color: #6fae7f;} .qs-maphelp .dotB {color: #ff6b61;}
+.qs-maphelp b {color: var(--qs-text);}
+.qs-maphelp .dotA {color: var(--qs-green);} .qs-maphelp .dotB {color: var(--qs-red);}
 
 /* Small screens: tighten spacing so phones get a clean layout */
 @media (max-width: 640px) {
@@ -513,6 +715,12 @@ div[data-testid="stPopoverBody"] [data-testid="stColumn"] {
   .qs-newscard {flex: 0 0 210px;}
   .qs-newsimg, .qs-newsmono {height: 100px;}
   iframe {max-width: 100%;}
+  /* On phones, Streamlit's own header strip (holding the sidebar toggle)
+     sits fixed across the very top of the screen. Our nav sticks to top:0
+     too, so once scrolled it lands in that same band and visually collides
+     with the sidebar icon living there. Sticking a little lower instead
+     clears it - desktop doesn't need this, the two never overlap there. */
+  .st-key-topnav {top: 3.75rem;}
 }
 </style>
 """, unsafe_allow_html=True)
@@ -592,25 +800,87 @@ def asset_b64(name: str) -> str:
 AVATARS = {"user": os.path.join("assets", "user.png"),
            "assistant": os.path.join("assets", "gemini.png")}
 
-# Voice features are implemented but disabled: browser speech recognition
-# only handled English reliably. Flip these to re-enable.
-VOICE_INPUT_ENABLED = False    # microphone (speech-to-text)
-VOICE_OUTPUT_ENABLED = False   # per-answer "Listen" (text-to-speech)
+# The small popup's old mic (streamlit_mic_recorder's built-in browser speech
+# recognition, hard-coded to English) stays off - kept only in case it's
+# useful again later. Flip to re-enable.
+VOICE_INPUT_ENABLED = False    # popup mic (browser speech-to-text, English only)
+
+# The full ✦ Ask page's voice pipeline: same 🎙️ mic icon, but records raw audio
+# and transcribes it with Gemini (transcribe_audio) - understands any language,
+# unlike the browser recognition above - then narrates the reply with Cloud
+# Text-to-Speech (text_to_speech) in the language it was asked in.
+ASK_VOICE_ENABLED = True
 
 # Where the sidebar feedback form sends to. Never rendered as text in
 # the UI - it only ever appears inside a mailto link's href.
 FEEDBACK_TO = os.environ.get("FEEDBACK_EMAIL", "ethanmk2205@gmail.com")
 
+# This popup ONLY explains the app itself - it deliberately does not answer
+# earthquake content (that's the job of ✦ Ask, which has the catalog, live
+# feed and web search). Two different chat surfaces, two different jobs.
 QUICK_EXAMPLES = [
-    "Should people nearby be worried?",
-    "Explain this in simple words",
-    "What should I do right now?",
+    "What does this page show me?",
+    "How do I use My Area?",
+    "What can this app do?",
 ]
 
+POPUP_PROMPT = """You are """ + BOT_NAME + """, the small quick-help assistant that
+appears on every QuakeSense page except ✦ Ask. Your ONLY job is to help people
+understand and use the app itself. You do not answer questions about
+earthquakes as a topic (data, science, safety, current events, risk,
+aftershocks, weather) - a separate, more capable agent on the ✦ Ask page
+handles all of that, with the full USGS catalog, live feed and web search.
+
+""" + APP_FACTS + """
+
+The user is currently on: {context}
+
+Conversation so far:
+{history}
+
+Decide which kind of question this is:
+- ABOUT THE APP (what a page/feature does, how to use something, general
+  greetings/small talk) -> answer helpfully and specifically from the facts
+  above, in the same language as the question, under 100 words.
+- ABOUT EARTHQUAKES as a topic (a specific event, safety guidance, science,
+  current news, risk, aftershocks, weather, or anything needing the catalog
+  or live feed) -> do NOT answer the question itself. Write exactly one short,
+  friendly sentence in the same language as the question, telling them the
+  ✦ Ask page can give a full, verified answer. Then end your reply with the
+  exact token [[GOTO_ASK]] on its own line, nothing after it.
+
+Question: {question}"""
+
+
+def popup_answer(question: str, context: str, history: str) -> dict:
+    """Answers app-usage questions directly; flags earthquake-content
+    questions so the UI can offer a one-click link to ✦ Ask. Deliberately
+    self-contained (own Gemini call) rather than sharing smart_ask's routing,
+    so the two chat surfaces stay cleanly separated."""
+    from src.ai import _client, _config  # read-only reuse of the low-level client
+    prompt = POPUP_PROMPT.format(context=context, history=history or "(none)",
+                                 question=question)
+    try:
+        resp = _client().models.generate_content(
+            model=GEMINI_MODEL, contents=prompt, config=_config(temperature=0.3))
+        text = (resp.text or "").strip()
+    except Exception as e:
+        return {"answer": f"Unavailable right now ({str(e)[:60]}). "
+                          f"Try the ✦ Ask page instead.",
+                "goto_ask": True}
+    goto = "[[GOTO_ASK]]" in text
+    text = text.replace("[[GOTO_ASK]]", "").strip()
+    if not text:
+        text = "That sounds like a great question for our full earthquake agent."
+        goto = True
+    return {"answer": text, "goto_ask": goto}
+
+
 BOT_INTRO = (
-    "Hi, I'm **Terra** ✦ — powered by Gemini 2.5 Flash.\n\n"
-    "Ask me about anything on this page, any earthquake question in your own "
-    "language, or how to stay safe.\n\n"
+    "Hi, I'm **Terra** ✦.\n\n"
+    "Ask me about **this app** — what a page does, how to use a feature, "
+    "anything about QuakeSense itself. For earthquake questions (data, "
+    "safety, science), I'll point you to **✦ Ask**, our full research agent.\n\n"
     "What would you like to know?")
 
 
@@ -656,6 +926,14 @@ def places_search(query: str, lat: float, lon: float, n: int = 8):
                      "places.internationalPhoneNumber,places.location,"
                      "places.currentOpeningHours.openNow"},
         timeout=12)
+    if not r.ok:
+        # Google's actual reason (bad key, API not enabled, billing, quota...)
+        # lives in the response body, not in requests' generic HTTPError text.
+        try:
+            detail = r.json().get("error", {}).get("message", r.text[:200])
+        except Exception:
+            detail = r.text[:200]
+        raise RuntimeError(f"{r.status_code}: {detail}")
     r.raise_for_status()
     out = []
     for p in r.json().get("places", []):
@@ -744,7 +1022,7 @@ def cat_icon_html(cat_name: str, fallback: str) -> str:
 
 
 def _chip_pick(label, options, key, default=None):
-    """Grab-style chips (st.pills), selectbox fallback on old Streamlit."""
+    """Compact chip picker (st.pills), selectbox fallback on old Streamlit."""
     if hasattr(st, "pills"):
         val = st.pills(label, options, key=key,
                        default=default or options[0])
@@ -755,55 +1033,77 @@ def _chip_pick(label, options, key, default=None):
 def _style_mic_component():
     """Give the mic button the same accent border as the chat input. The
     component iframe is served by our own app (same origin), so a zero-height
-    helper frame can inject styling into its document."""
+    helper frame can inject styling into its document - reading the current
+    theme's colors straight off the parent document so it follows Dark/Light/
+    Warm without needing its own copy of the palette."""
     components.html("""
 <script>
-const micCss = `
-  html, body {margin:0; padding:0; background:transparent; overflow:hidden;
-              display:flex; align-items:center; justify-content:center;}
-  html body button, html body button:not([disabled]), button {
-    width: 44px !important; height: 42px !important;
-    background-color: #0b1220 !important;
-    border: 1.5px solid #45b3e6 !important;
-    border-color: #45b3e6 !important; border-style: solid !important;
-    border-width: 1.5px !important;
-    border-radius: 12px !important; cursor: pointer !important;
-    box-shadow: none !important; outline: none !important;
-    display: flex !important; align-items: center !important;
-    justify-content: center !important; padding: 0 !important;
-    font-size: 17px !important; line-height: 1 !important;
-    transition: border-color 0.15s, background-color 0.15s !important;
-  }
-  html body button:hover {
-    border-color: #e08850 !important; background-color: #131c2c !important;
-  }
-`;
+function qsVar(name, fallback) {
+  try {
+    const v = getComputedStyle(window.parent.document.documentElement)
+      .getPropertyValue(name).trim();
+    return v || fallback;
+  } catch (e) { return fallback; }
+}
 function injectMic() {
   try {
+    const bg = qsVar('--qs-bg', '#0b1220');
+    const blue = qsVar('--qs-blue', '#45b3e6');
+    const accent = qsVar('--qs-accent', '#e08850');
+    const panel2 = qsVar('--qs-panel2', '#131c2c');
+    const micCss = `
+      html, body {margin:0; padding:0; background:transparent; overflow:hidden;
+                  display:flex; align-items:center; justify-content:center;}
+      html body button, html body button:not([disabled]), button {
+        width: 44px !important; height: 42px !important;
+        background-color: ${bg} !important;
+        border: 1.5px solid ${blue} !important;
+        border-color: ${blue} !important; border-style: solid !important;
+        border-width: 1.5px !important;
+        border-radius: 12px !important; cursor: pointer !important;
+        box-shadow: none !important; outline: none !important;
+        display: flex !important; align-items: center !important;
+        justify-content: center !important; padding: 0 !important;
+        font-size: 17px !important; line-height: 1 !important;
+        transition: border-color 0.15s, background-color 0.15s !important;
+      }
+      html body button:hover {
+        border-color: ${accent} !important; background-color: ${panel2} !important;
+      }
+    `;
     const frames = window.parent.document.querySelectorAll('iframe');
     for (const f of frames) {
       const t = f.getAttribute('title') || '';
       if (!/mic_recorder|speech_to_text/i.test(t)) continue;
       const d = f.contentDocument;
-      if (d && d.head && !d.getElementById('qs-mic-style')) {
-        const s = d.createElement('style');
-        s.id = 'qs-mic-style'; s.textContent = micCss;
-        d.head.appendChild(s);
+      if (d && d.head) {
+        let s = d.getElementById('qs-mic-style');
+        if (!s) {
+          s = d.createElement('style'); s.id = 'qs-mic-style'; d.head.appendChild(s);
+        }
+        s.textContent = micCss;
       }
       // the component sets inline styles that beat stylesheet rules, so write
       // the accent border straight onto the element with top priority
       const btn = d ? d.querySelector('button') : null;
       if (btn) {
-        btn.style.setProperty('border', '1.5px solid #45b3e6', 'important');
-        btn.style.setProperty('background-color', '#0b1220', 'important');
+        btn.style.setProperty('border', '1.5px solid ' + blue, 'important');
+        btn.style.setProperty('background-color', bg, 'important');
         btn.style.setProperty('border-radius', '12px', 'important');
         btn.style.setProperty('width', '44px', 'important');
         btn.style.setProperty('height', '42px', 'important');
         btn.style.setProperty('box-shadow', 'none', 'important');
         btn.onmouseenter = function(){
-          btn.style.setProperty('border-color', '#e08850', 'important'); };
+          btn.style.setProperty('border-color', accent, 'important'); };
         btn.onmouseleave = function(){
-          btn.style.setProperty('border-color', '#45b3e6', 'important'); };
+          btn.style.setProperty('border-color', blue, 'important'); };
+        if (!btn.dataset.qsHaptic) {
+          btn.dataset.qsHaptic = "1";
+          btn.addEventListener('pointerdown', function () {
+            try { window.parent.navigator.vibrate && window.parent.navigator.vibrate(12); }
+            catch (e) {}
+          });
+        }
       }
     }
   } catch (e) {}
@@ -816,35 +1116,64 @@ setInterval(injectMic, 600);
 def _style_gps_component():
     """Restyle the third-party GPS button from the inside: the component
     iframe is served by our own app (same origin), so a zero-height helper
-    frame can inject our design system into its document - dark card,
-    accent crosshair, hover state - instead of its stock white box."""
+    frame can inject our design system into its document - themed card,
+    accent crosshair, hover state - instead of its stock white box. Colors
+    are read live off the parent document so it follows Dark/Light/Warm."""
     components.html("""
 <script>
-const css = `
-  html, body {margin:0; padding:0; background:transparent; overflow:hidden;
-              display:flex; align-items:center; justify-content:center;}
-  button {
-    width: 44px !important; height: 44px !important;
-    background: #161e2e !important; border: 1px solid #263145 !important;
-    border-radius: 12px !important; cursor: pointer !important;
-    display: flex !important; align-items: center !important;
-    justify-content: center !important; padding: 0 !important;
-    transition: border-color 0.15s !important;
-  }
-  button:hover {border-color: #e08850 !important; background: #1b2434 !important;}
-  button svg, button svg * {stroke: #e08850 !important; fill: #e08850 !important;}
-  button span, button div {color: #e08850 !important;}
-`;
+function qsVar(name, fallback) {
+  try {
+    const v = getComputedStyle(window.parent.document.documentElement)
+      .getPropertyValue(name).trim();
+    return v || fallback;
+  } catch (e) { return fallback; }
+}
 function inject() {
   try {
+    const panel = qsVar('--qs-panel', '#161e2e');
+    const border = qsVar('--qs-border', '#263145');
+    const accent = qsVar('--qs-accent', '#e08850');
+    const deep = qsVar('--qs-deep4', '#1b2434');
+    const css = `
+      html, body {margin:0; padding:0; background:transparent; overflow:hidden;
+                  display:flex; align-items:center; justify-content:center;}
+      button {
+        width: 44px !important; height: 44px !important;
+        background: ${panel} !important; border: 1px solid ${border} !important;
+        border-radius: 12px !important; cursor: pointer !important;
+        display: flex !important; align-items: center !important;
+        justify-content: center !important; padding: 0 !important;
+        transition: border-color 0.15s !important;
+      }
+      button:hover {border-color: ${accent} !important; background: ${deep} !important;}
+      button:active {
+        background: ${accent} !important; transform: scale(0.92) !important;
+        transition: transform 0.05s !important;
+      }
+      button svg, button svg * {stroke: ${accent} !important; fill: ${accent} !important;}
+      button span, button div {color: ${accent} !important;}
+    `;
     const frames = window.parent.document.querySelectorAll(
       'iframe[title="streamlit_geolocation.streamlit_geolocation"]');
     for (const f of frames) {
       const d = f.contentDocument;
-      if (d && d.head && !d.getElementById('qs-gps-style')) {
-        const s = d.createElement('style');
-        s.id = 'qs-gps-style'; s.textContent = css;
-        d.head.appendChild(s);
+      if (d && d.head) {
+        let s = d.getElementById('qs-gps-style');
+        if (!s) {
+          s = d.createElement('style'); s.id = 'qs-gps-style'; d.head.appendChild(s);
+        }
+        s.textContent = css;
+      }
+      // Immediate haptic buzz on tap - GPS acquisition can take a second or
+      // two with no visual change otherwise, which is why it can feel like
+      // the tap didn't register and needs pressing again.
+      const btn = d ? d.querySelector('button') : null;
+      if (btn && !btn.dataset.qsHaptic) {
+        btn.dataset.qsHaptic = "1";
+        btn.addEventListener('pointerdown', function () {
+          try { window.parent.navigator.vibrate && window.parent.navigator.vibrate(12); }
+          catch (e) {}
+        });
       }
     }
   } catch (e) {}
@@ -855,7 +1184,7 @@ setInterval(inject, 700);
 
 
 def google_places_section(trow, ev):
-    """Grab-style help finder. Top to bottom, one decision per row:
+    """Step-by-step help finder. Top to bottom, one decision per row:
     where you are -> what you need -> pick from cards -> route with ETA."""
     from urllib.parse import quote
     st.markdown("##### ⛑️ Find help")
@@ -866,6 +1195,15 @@ def google_places_section(trow, ev):
     #       auto-selects the device location.
     GPS_TXT = "📍 My location (GPS)"
     okey = f"gm_org_{trow['name']}"
+    pending_key = f"_pending_{okey}"
+
+    # Any value queued by a "Did you mean" click or the GPS fix below MUST be
+    # applied before the text_input with this key is instantiated - Streamlit
+    # forbids writing to a widget's session_state key after it's created in
+    # the same run (that was the StreamlitAPIException on the suggestion click).
+    if pending_key in st.session_state:
+        st.session_state[okey] = st.session_state.pop(pending_key)
+
     with st.container(border=True):
         st.markdown("🟢 **Starting point** — type a place, or tap the button "
                     "for your GPS location")
@@ -884,11 +1222,10 @@ def google_places_section(trow, ev):
             glat = round(float(loc["latitude"]), 5)
             glon = round(float(loc["longitude"]), 5)
             # Auto-fill the field the moment the device location arrives.
-            # (Streamlit keeps a widget's previous value for the same key, so
-            # the session value must be overwritten explicitly.)
             if st.session_state.get("_gps_fix") != (glat, glon):
                 st.session_state["_gps_fix"] = (glat, glon)
-                st.session_state[okey] = GPS_TXT
+                st.session_state[pending_key] = GPS_TXT
+                st.rerun(scope="fragment")
         with tc:
             typed = st.text_input(
                 "Starting point",
@@ -896,13 +1233,28 @@ def google_places_section(trow, ev):
                 placeholder="Type an address or place, like Google Maps",
                 key=okey, label_visibility="collapsed")
         t = (typed or "").strip()
+        default_origin = f"{trow['name']}, {trow['country']}"
         if use_me and (not t or t == GPS_TXT):
             lat, lon = glat, glon
             origin, origin_label = f"{glat},{glon}", "your current location"
+        elif t and t != default_origin:
+            # Custom typed location - geocode it instead of silently staying
+            # on the selected town's coordinates (that was the bug: weather,
+            # the facility search bias, and the fallback map center never
+            # actually moved to what was typed here).
+            try:
+                hit = places_search(t, float(trow["latitude"]),
+                                    float(trow["longitude"]), n=1)
+            except Exception:
+                hit = []
+            if hit:
+                lat, lon = hit[0]["lat"], hit[0]["lon"]
+            else:
+                lat, lon = float(trow["latitude"]), float(trow["longitude"])
+            origin, origin_label = t, t
         else:
             lat, lon = float(trow["latitude"]), float(trow["longitude"])
-            origin = t or f"{lat},{lon}"
-            origin_label = t or trow["name"]
+            origin, origin_label = default_origin, trow["name"]
 
         # Google-Maps-style hints while typing
         if t and t != GPS_TXT:
@@ -915,7 +1267,7 @@ def google_places_section(trow, ev):
                     label = h if len(h) <= 36 else h[:34] + "…"
                     if hcols[j].button(label, key=f"sg_{trow['name']}_{j}",
                                        help=h, use_container_width=True):
-                        st.session_state[okey] = h
+                        st.session_state[pending_key] = h
                         st.rerun(scope="fragment")
 
     # -- 2. WHAT YOU NEED (service chips) ---------------------------------
@@ -934,12 +1286,12 @@ def google_places_section(trow, ev):
                  "a facility name...")
 
     if not query.strip():
-        return
+        return lat, lon, origin_label
     try:
         places = places_search(query.strip(), lat, lon)
     except Exception as e:
         places = []
-        st.warning(f"Google Places unavailable ({str(e)[:80]}).")
+        st.warning(f"Google Places unavailable ({str(e)[:200]}).")
 
     # -- 3. NEAREST OPTIONS (ride-option cards) ---------------------------
     if places:
@@ -1007,6 +1359,7 @@ def google_places_section(trow, ev):
             f"?key={MAPS_API_KEY}&q={quote(query.strip())}"
             f"&center={lat},{lon}&zoom=12",
             height=360)
+    return lat, lon, origin_label
 
 
 @st.cache_data(show_spinner=False)
@@ -1133,30 +1486,40 @@ def news_rail_component(server_cards, fetch_photos=True):
     payload = _json.dumps(server_cards)
     majors = _json.dumps(list(MAJOR_OUTLETS))
     fetch_flag = "true" if fetch_photos else "false"
-    components.html("""
+    rail_css = f"""
 <style>
-body {margin:0; background:transparent; font-family:-apple-system,"Segoe UI",Roboto,sans-serif;}
-.qs-newsrail {overflow:hidden;}
-.qs-newsrail-inner {display:flex; gap:12px; width:max-content;
-  animation: qs-rail 70s linear infinite;}
-.qs-newsrail:hover .qs-newsrail-inner {animation-play-state:paused;}
-@keyframes qs-rail {0% {transform:translateX(0);} 100% {transform:translateX(-50%);}}
-.qs-newscard {flex:0 0 250px; background:#161e2e; border:1px solid #263145;
+body {{margin:0; background:transparent; font-family:-apple-system,"Segoe UI",Roboto,sans-serif;}}
+.qs-newsrail {{position:relative;}}
+.qs-newsrail-scroll {{overflow-x:auto; overflow-y:hidden; scroll-behavior:smooth;
+  scrollbar-width:none; -ms-overflow-style:none;}}
+.qs-newsrail-scroll::-webkit-scrollbar {{display:none;}}
+.qs-newsrail-inner {{display:flex; gap:12px; width:max-content;}}
+.qs-railbtn {{position:absolute; top:44%; transform:translateY(-50%); z-index:2;
+  width:30px; height:30px; border-radius:50%; border:1px solid {_pal['border']};
+  background:{_pal['panel']}; color:{_pal['text']}; display:flex; align-items:center;
+  justify-content:center; cursor:pointer; opacity:0.85; font-size:16px;
+  line-height:1; user-select:none; box-shadow:0 1px 4px rgba(0,0,0,0.4);}}
+.qs-railbtn:hover {{opacity:1; border-color:{_pal['accent']}; color:{_pal['accent']};}}
+.qs-railbtn.qs-rail-left {{left:2px;}}
+.qs-railbtn.qs-rail-right {{right:2px;}}
+.qs-newscard {{flex:0 0 250px; background:{_pal['panel']}; border:1px solid {_pal['border']};
   border-radius:8px; overflow:hidden; text-decoration:none;
-  transition:border-color 0.15s;}
-.qs-newscard:hover {border-color:#e08850;}
-.qs-newsimg {height:118px; background-size:cover; background-position:center;
-  background-color:#263145;}
-.qs-newsmono {height:118px; display:flex; align-items:center;
-  justify-content:center; background:#263145; font-size:30px;
-  font-weight:600; color:#e08850; letter-spacing:0.02em;}
-.qs-newstxt {display:flex; flex-direction:column; gap:4px; padding:8px 10px 10px;}
-.qs-newssrc {font-size:11px; color:#8fa0b5; text-transform:uppercase;
-  letter-spacing:0.06em;}
-.qs-newstitle {font-size:13px; color:#dbe2ec; line-height:1.35;}
-.qs-empty {color:#8fa0b5; font-size:13px;}
+  transition:border-color 0.15s;}}
+.qs-newscard:hover {{border-color:{_pal['accent']};}}
+.qs-newsimg {{height:118px; background-size:cover; background-position:center;
+  background-color:{_pal['border']};}}
+.qs-newsmono {{height:118px; display:flex; align-items:center;
+  justify-content:center; background:{_pal['border']}; font-size:30px;
+  font-weight:600; color:{_pal['accent']}; letter-spacing:0.02em;}}
+.qs-newstxt {{display:flex; flex-direction:column; gap:4px; padding:8px 10px 10px;}}
+.qs-newssrc {{font-size:11px; color:{_pal['muted']}; text-transform:uppercase;
+  letter-spacing:0.06em;}}
+.qs-newstitle {{font-size:13px; color:{_pal['text']}; line-height:1.35;}}
+.qs-empty {{color:{_pal['muted']}; font-size:13px;}}
 </style>
 <div id="rail"><span class="qs-empty">Loading headlines...</span></div>
+"""
+    components.html(rail_css + """
 <script>
 const FALLBACK = """ + payload + """;
 const MAJORS = """ + majors + """;
@@ -1180,6 +1543,21 @@ function card(c) {
        + '</span><span class="qs-newstitle">' + esc((c.title || '').slice(0, 110))
        + '</span></div></a>';
 }
+let railPauseUntil = 0;
+function railScroll(dir) {
+  const sc = document.getElementById('railScroll');
+  if (!sc) return;
+  sc.scrollBy({left: dir * 270, behavior: 'smooth'});
+  railPauseUntil = Date.now() + 2500;
+}
+function railAutoStep() {
+  const sc = document.getElementById('railScroll');
+  if (!sc || Date.now() < railPauseUntil || sc.matches(':hover')) return;
+  sc.scrollLeft += 1;
+  const half = sc.scrollWidth / 2;
+  if (sc.scrollLeft >= half) {sc.scrollLeft -= half;}
+}
+setInterval(railAutoStep, 40);
 function render(cards) {
   const el = document.getElementById('rail');
   if (!cards || !cards.length) {
@@ -1187,7 +1565,11 @@ function render(cards) {
     return;
   }
   const row = cards.map(card).join('');
-  el.innerHTML = '<div class="qs-newsrail"><div class="qs-newsrail-inner">' + row + row + '</div></div>';
+  el.innerHTML = '<div class="qs-newsrail">'
+    + '<div class="qs-railbtn qs-rail-left" onclick="railScroll(-1)">&#8249;</div>'
+    + '<div class="qs-railbtn qs-rail-right" onclick="railScroll(1)">&#8250;</div>'
+    + '<div class="qs-newsrail-scroll" id="railScroll">'
+    + '<div class="qs-newsrail-inner">' + row + row + '</div></div></div>';
 }
 render(FALLBACK);
 if (FETCH) {
@@ -1320,8 +1702,12 @@ def media_section(live_df):
     news_cards = [{"title": h["title"], "url": h["link"], "img": "",
                    "source": h["source"], "ago": h["ago"]}
                   for h in feeds["headlines"]]
-    if not news_cards:
-        news_cards = usgs_event_cards(live_df)
+    # Deliberately no USGS fallback here if the RSS fetch fails - that used
+    # to silently reuse the same cards as Official Updates below, making the
+    # two rails look identical whenever the news feed had a hiccup (looked
+    # like a bug, not a fallback). Passing an empty list instead lets the
+    # component's own client-side GDELT fetch try next; if that also comes
+    # up empty, it shows an honest "headlines unavailable" message.
     news_rail_component(news_cards)
 
     official = usgs_event_cards(live_df)
@@ -1377,7 +1763,7 @@ def quick_ask(context: str, live_df):
         st.markdown(
             '<div class="qs-chat-head"><div class="qs-chat-av">✦</div>'
             '<div><div class="qs-chat-title">Terra</div>'
-            '<div class="qs-chat-sub">QuakeSense assistant · Gemini 2.5 Flash'
+            '<div class="qs-chat-sub">QuakeSense assistant'
             '</div></div></div>', unsafe_allow_html=True)
         # inject an ✕ close button into the header (clicks the launcher to close)
         components.html("""
@@ -1389,7 +1775,7 @@ function qsAddClose(){
   if(head && !head.querySelector('.qs-x')){
     const x=doc.createElement('div');
     x.className='qs-x'; x.textContent='\\u2715';
-    x.style.cssText='margin-left:auto;cursor:pointer;color:#0d1321;'
+    x.style.cssText='margin-left:auto;cursor:pointer;color:var(--qs-accent-dark);'
       +'font-weight:700;font-size:17px;line-height:1;padding:2px 4px';
     x.onclick=function(){const t=doc.querySelector('button[data-testid=\\"stPopoverButton\\"]'); if(t) t.click();};
     head.appendChild(x);
@@ -1410,12 +1796,17 @@ qsAddClose(); setInterval(qsAddClose,400);
                 for _j, _ex in enumerate(QUICK_EXAMPLES):
                     if st.button(_ex, key=f"qx_{_j}", use_container_width=True):
                         pending_q = _ex
-            for m in hist:
+            for _i, m in enumerate(hist):
                 with st.chat_message(m["role"], avatar=AVATARS.get(m["role"])):
                     st.markdown(m["content"])
                     if m.get("sources"):
                         st.caption("Sources: " + " · ".join(
                             f"[{s['title']}]({s['uri']})" for s in m["sources"][:3]))
+                    if m.get("goto_ask") and st.button(
+                            "✦ Open Ask page", key=f"goto_ask_{_i}",
+                            use_container_width=True):
+                        st.session_state["_pending_topnav"] = "Ask"
+                        st.rerun()
         # Composer. (Voice input is available via VOICE_INPUT_ENABLED - kept
         # off for now: browser speech recognition only handled English.)
         voice_q = None
@@ -1440,10 +1831,6 @@ qsAddClose(); setInterval(qsAddClose,400);
         if the_q:
             q = the_q
             recent = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in hist[-4:])
-            ctx_hist = (f"[Floating mini-chat. The user is looking at: {context}. "
-                        f"Answer in under 120 words and ALWAYS name the specific "
-                        f"location/event you are referring to, so there is no "
-                        f"ambiguity.]\n{recent}")
             hist.append({"role": "user", "content": q})
             with box:
                 with st.chat_message("user", avatar=AVATARS["user"]):
@@ -1451,20 +1838,27 @@ qsAddClose(); setInterval(qsAddClose,400);
                 with st.chat_message("assistant", avatar=AVATARS["assistant"]):
                     try:
                         with st.spinner("Thinking..."):
-                            res = smart_ask(q, ctx_hist, live_df=live_df)
+                            res = popup_answer(q, context, recent)
                         st.markdown(res["answer"])
-                        srcs = res.get("sources") or []
-                        if srcs:
-                            st.caption("Sources: " + " · ".join(
-                                f"[{s['title']}]({s['uri']})" for s in srcs[:3]))
+                        if res.get("goto_ask"):
+                            _gk = f"goto_ask_live_{len(hist)}"
+                            if st.button("✦ Open Ask page", key=_gk,
+                                        use_container_width=True):
+                                st.session_state["_pending_topnav"] = "Ask"
+                                st.rerun()
                         hist.append({"role": "assistant", "content": res["answer"],
-                                     "sources": srcs})
+                                     "goto_ask": res.get("goto_ask", False)})
                     except Exception as e:
                         msg = (f"Unavailable right now ({str(e)[:60]}). "
-                               f"Try the Ask AI page.")
+                               f"Try the ✦ Ask page.")
                         st.markdown(msg)
+                        if st.button("✦ Open Ask page",
+                                    key=f"goto_ask_err_{len(hist)}",
+                                    use_container_width=True):
+                            st.session_state["_pending_topnav"] = "Ask"
+                            st.rerun()
                         hist.append({"role": "assistant", "content": msg,
-                                     "sources": []})
+                                     "goto_ask": True})
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -1479,11 +1873,12 @@ def _weather_cached(lat: float, lon: float):
 
 def aftershock_block(ev: dict, live_df):
     """Aftershock outlook: the OFFICIAL USGS forecast when one exists, plus
-    aftershocks already recorded. Never our own prediction."""
+    aftershocks already recorded. Never our own prediction.
+
+    Always rendered (same expander, every event) so its presence doesn't look
+    like a bug when USGS hasn't issued a forecast for a particular event."""
     fc = _oaf_cached(ev.get("id", ""))
     obs = observed_aftershocks(live_df, ev)
-    if not fc and not (obs and obs.get("count")):
-        return                       # nothing factual to show — stay quiet
     with st.expander("🔄 Aftershock outlook", expanded=False):
         if obs and obs.get("count"):
             c1, c2 = st.columns(2)
@@ -1492,6 +1887,10 @@ def aftershock_block(ev: dict, live_df):
                            "(USGS live feed).")
             if obs.get("max_mag"):
                 c2.metric("Largest so far", f"M {obs['max_mag']:.1f}")
+        else:
+            st.caption("No aftershocks recorded near this event yet (USGS "
+                       "live feed, past 14 days).")
+
         if fc:
             st.markdown("**Official USGS aftershock forecast**")
             rows = [{"Window": w["label"], "Magnitude": f"M{w['mag']:.0f}+",
@@ -1504,18 +1903,20 @@ def aftershock_block(ev: dict, live_df):
                        "earthquakes themselves cannot be predicted.")
         else:
             st.caption("USGS has not issued an aftershock forecast for this "
-                       "event. The counts above are earthquakes already "
-                       "recorded — not a forecast.")
+                       "event — it only publishes one for some events. The "
+                       "counts above are earthquakes already recorded, not a "
+                       "forecast.")
         st.markdown(GUIDANCE)
 
 
-def weather_block(town_row):
-    """Weather where people are: rain drives landslide risk and shelter needs."""
-    w = _weather_cached(round(float(town_row["latitude"]), 2),
-                        round(float(town_row["longitude"]), 2))
+def weather_block(lat: float, lon: float, label: str):
+    """Weather where people actually are - the resolved Starting point (GPS
+    or a custom typed location), not necessarily the affected-area town
+    dropdown, so it follows whichever location the user is really at."""
+    w = _weather_cached(round(float(lat), 2), round(float(lon), 2))
     if not w:
         return
-    st.markdown(f"##### 🌦️ Weather in {town_row['name']}")
+    st.markdown(f"##### 🌦️ Weather in {label}")
     c1, c2, c3 = st.columns(3)
     c1.metric("Now", f"{w['icon']} {w['temp']:.0f}°C" if w.get("temp") is not None
               else w["icon"], help=w["label"])
@@ -1571,24 +1972,35 @@ def _rate_answer(i: int, rating: str):
     m["rated"] = rating
 
 
-def _speak_button(text: str, key):
-    """Instant, free text-to-speech using the BROWSER's own speech engine
-    (Web Speech API) - no server call, no Cloud TTS API, no cost. The button
-    lives inside the component iframe so the click is a valid user gesture."""
-    import json as _json
-    clean = re.sub(r"[*#`>|_~]", "", text or "")
-    payload = _json.dumps(clean)
-    components.html(
-        "<style>.spk{background:#161e2e;color:#45b3e6;border:1px solid #263145;"
-        "border-radius:8px;padding:3px 11px;font:600 13px system-ui,sans-serif;"
-        "cursor:pointer;margin-right:6px}.spk:hover{border-color:#e08850;"
-        "color:#e08850}</style>"
-        "<button class='spk' onclick='qsSpeak()'>🔊 Listen</button>"
-        "<button class='spk' onclick='window.speechSynthesis.cancel()'>⏹️</button>"
-        "<script>const QT=" + payload + ";function qsSpeak(){try{"
-        "window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(QT);"
-        "u.rate=1.0;window.speechSynthesis.speak(u);}catch(e){}}</script>",
-        height=40)
+def _play_then_reveal(audio_bytes: bytes, key: str):
+    """Autoplay `audio_bytes` with no visible controls; once playback ends
+    (or fails / is blocked by the browser), swap in a normal player so the
+    answer can be replayed on demand.
+
+    Deliberately does NOT rely on the HTML `autoplay` attribute alone: mobile
+    browsers routinely block audio that isn't started synchronously within a
+    user gesture (this narration arrives asynchronously, after the AI answer
+    finishes streaming, well after the original tap) - and a *blocked*
+    autoplay fires neither "ended" nor "error", so relying on those alone
+    left the player invisible for a full 15 seconds with no sound and no
+    visible control, which looked like total silence/failure. Calling
+    play() ourselves lets us catch that rejection and reveal a normal,
+    tappable player immediately instead."""
+    b64 = base64.b64encode(audio_bytes).decode()
+    components.html(f"""
+      <audio id="aud_{key}" style="display:none;width:100%;height:34px;">
+        <source src="data:audio/mp3;base64,{b64}" type="audio/mpeg">
+      </audio>
+      <script>
+        const a = document.getElementById("aud_{key}");
+        const reveal = () => {{ a.style.display = "block"; a.controls = true; }};
+        a.addEventListener("ended", reveal);
+        a.addEventListener("error", reveal);
+        const p = a.play();
+        if (p && p.catch) {{ p.catch(reveal); }}
+        setTimeout(reveal, 15000);
+      </script>
+    """, height=40)
 
 
 @st.fragment
@@ -1609,7 +2021,7 @@ def chat_agent(live):
     if not st.session_state.chat:
         with st.chat_message("assistant", avatar=AVATARS["assistant"]):
             st.markdown(BOT_INTRO)
-        st.markdown("<p style='text-align:center;color:#8fa0b5;'>Try one of these:</p>",
+        st.markdown("<p style='text-align:center;color:var(--qs-muted);'>Try one of these:</p>",
                     unsafe_allow_html=True)
         r1 = st.columns(2)
         r2 = st.columns(2)
@@ -1643,30 +2055,47 @@ def chat_agent(live):
                     a2.button(":material/thumb_down:", key=f"fb_down_{i}",
                               help="Poor answer", on_click=_rate_answer,
                               args=(i, "down"))
-                if VOICE_OUTPUT_ENABLED:
-                    _speak_button(m["content"], f"spk_{i}")
+                if m.get("audio"):
+                    st.audio(m["audio"], format="audio/mp3")
 
     if st.session_state.get("area"):
         st.caption(f"The agent can see your current My Area analysis "
                    f"({st.session_state.area['city']}) — ask about it here.")
 
     # Composer. st.chat_input grows as you type, scrolls at its max height and
-    # carries its own send arrow. (Voice input behind VOICE_INPUT_ENABLED.)
+    # carries its own send arrow. (Voice input behind ASK_VOICE_ENABLED - same
+    # 🎙️ mic icon as before, but now records raw audio and transcribes it with
+    # Gemini instead of the browser's English-only speech recognition.)
     voice_q = None
-    if VOICE_INPUT_ENABLED:
+    if ASK_VOICE_ENABLED:
         _style_mic_component()
+        # Mic first, chat input second: side by side on desktop, but on a
+        # narrow phone screen Streamlit stacks these columns top-to-bottom in
+        # the order they're declared, so the mic ends up ABOVE the text
+        # field rather than squeezed right next to it. That's deliberate,
+        # not a layout accident - a thumb reaching for the send arrow at the
+        # edge of a chat_input is exactly the kind of slip-touch that would
+        # otherwise land on a mic button crammed right beside it, arming the
+        # recorder by mistake. Stacked, there's real space between "type" and
+        # "record" instead of two tiny targets touching each other.
         ic, tc = st.columns([0.07, 0.93], vertical_alignment="bottom")
         with ic:
             try:
-                from streamlit_mic_recorder import speech_to_text
-                voice_q = speech_to_text(
-                    language="en", start_prompt="🎙️", stop_prompt="🔴",
-                    just_once=True, use_container_width=False, key="stt_ask")
+                from streamlit_mic_recorder import mic_recorder
+                clip = mic_recorder(start_prompt="🎙️", stop_prompt="🔴",
+                                    just_once=True, use_container_width=False,
+                                    format="webm", key="mic_ask")
             except Exception:
-                pass
+                clip = None
         with tc:
             typed = st.chat_input("Ask anything about earthquakes…",
                                   key="ask_chat_input")
+        if clip and clip.get("bytes"):
+            with st.spinner("Transcribing..."):
+                voice_q = transcribe_audio(clip["bytes"], mime_type="audio/webm")
+            if not voice_q:
+                st.warning("Didn't catch any speech in that clip — try again, "
+                          "or type your question instead.")
     else:
         typed = st.chat_input("Ask anything about earthquakes…",
                               key="ask_chat_input")
@@ -1692,11 +2121,26 @@ def chat_agent(live):
                 srcs = res.get("sources") or []
                 if srcs:
                     st.caption(_sources_line(srcs))
+                # Narrate once the full answer has streamed - same pipeline
+                # whether the question was typed or spoken.
+                audio_bytes = None
+                if ASK_VOICE_ENABLED:
+                    try:
+                        audio_bytes = text_to_speech(answer, res.get("lang_code", "en"))
+                    except Exception:
+                        audio_bytes = None
+                    if audio_bytes:
+                        _play_then_reveal(audio_bytes,
+                                          key=f"voice_new_{len(st.session_state.chat)}")
+                    else:
+                        st.caption("🔇 Voice narration isn't available in this "
+                                  "language yet.")
                 st.session_state.chat.append({"role": "assistant", "content": answer,
                                               "sql": res["sql"], "df": res["df"],
                                               "mode": res.get("mode"),
                                               "sources": srcs,
-                                              "note": res.get("note", "")})
+                                              "note": res.get("note", ""),
+                                              "audio": audio_bytes})
             except Exception as e:
                 st.session_state.chat.append({
                     "role": "assistant",
@@ -1736,9 +2180,7 @@ def my_area_block(tdb, live):
                                         "to your town. Exact coordinates come from the "
                                         "GeoNames database, no guessing.")
         with a2:
-            lang = st.selectbox("Language", ["English", "Myanmar (Burmese)", "Thai",
-                                             "Hindi", "Bengali", "Telugu",
-                                             "Marathi", "Tamil"])
+            lang = st.selectbox("Language", APP_LANGUAGES)
         row = towns.iloc[pick_ix]
         sel = f"{row['name']}, {country}"
 
@@ -1814,18 +2256,18 @@ def my_area_block(tdb, live):
             g1, g2 = st.columns(2)
             with g1:
                 st.markdown("**Events per decade near you**")
-                st.bar_chart(hd.groupby("decade").size(), color="#e08850")
+                st.bar_chart(hd.groupby("decade").size(), color=_pal["accent"])
                 st.caption("Taller recent bars often reflect better instruments, "
                            "not necessarily more earthquakes.")
             with g2:
                 st.markdown("**How strong they were**")
-                st.bar_chart(hd.groupby("strength", observed=False).size(), color="#e08850")
+                st.bar_chart(hd.groupby("strength", observed=False).size(), color=_pal["accent"])
                 st.caption("Most events cluster at the lower magnitudes - "
                            "the big ones are rare but matter most.")
             with st.expander("Map: every M5+ epicenter within 300 km since 1975",
                              expanded=True):
                 hist_map = ar["df"].rename(columns={"latitude": "lat", "longitude": "lon"})
-                st.map(hist_map[["lat", "lon"]], zoom=5, color="#e08850", size=8000)
+                st.map(hist_map[["lat", "lon"]], zoom=5, color=_pal["accent"], size=8000)
 
 
 @st.fragment
@@ -1880,12 +2322,12 @@ def anomaly_explain_block(flagged, live_cells):
             st.markdown("**When they struck this week**")
             daily = evs.set_index(evs["time"].dt.floor("D")).groupby(level=0).size()
             daily.index = daily.index.strftime("%b %d")
-            st.bar_chart(daily, color="#e08850")
+            st.bar_chart(daily, color=_pal["accent"])
             st.caption("A tight burst suggests an aftershock sequence; "
                        "spread-out days suggest a swarm.")
         with v2:
             st.markdown("**Where they struck**")
-            st.map(evs[["lat", "lon"]], zoom=4, color="#e08850")
+            st.map(evs[["lat", "lon"]], zoom=4, color=_pal["accent"])
 
 
 @st.fragment
@@ -1926,9 +2368,7 @@ def guidance_block(context: str):
                               help="The advice changes completely depending on who "
                                    "you are and where you are right now.")
     with d2:
-        dd_lang = st.selectbox("Language", ["English", "Myanmar (Burmese)", "Thai",
-                                            "Hindi", "Bengali", "Telugu",
-                                            "Marathi", "Tamil"], key="rt_lang")
+        dd_lang = st.selectbox("Language", APP_LANGUAGES, key="rt_lang")
     if st.button("Generate guidance", type="primary", key="rt_dd"):
         with st.spinner("Writing guidance for your situation..."):
             st.session_state.dd = do_dont(context, dd_lang, dd_sit)
@@ -1956,7 +2396,11 @@ def facilities_block(top, ev=None):
                    "Numbers can differ by region.")
 
     if MAPS_API_KEY:
-        google_places_section(trow, ev)
+        resolved = google_places_section(trow, ev)
+        if resolved:
+            weather_block(*resolved)
+        else:
+            weather_block(trow["latitude"], trow["longitude"], trow["name"])
         return
 
     if st.button("Find hospitals, fire & police stations within 20 km"):
@@ -1979,6 +2423,8 @@ def facilities_block(top, ev=None):
         except Exception as e:
             st.warning(f"Facility search unavailable right now ({str(e)[:60]}). "
                        f"Try again in a minute.")
+
+    weather_block(trow["latitude"], trow["longitude"], trow["name"])
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -2018,19 +2464,29 @@ def emergency_facilities(lat: float, lon: float, radius_km: int = 20):
 
 
 # ----------------------------------------------------------------- header --
-st.markdown("""
+st.markdown(f"""
 <div class="qs-header">
   <p class="qs-wordmark">QUAKE<span>SENSE</span></p>
-  <p class="qs-subline"><span class="qs-live"></span>Live &nbsp;·&nbsp; Global real-time earthquake intelligence</p>
+  <p class="qs-subline"><span class="qs-live"></span>{t("tagline")}</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ---- top navigation — segmented tabs (mobile-friendly, no hamburger) -------
+# Apply any page-switch queued by the popup's "Open Ask" button BEFORE the
+# widget below is instantiated (Streamlit forbids writing to a widget's
+# session_state key after it's created in the same run).
+if "_pending_topnav" in st.session_state:
+    st.session_state["topnav"] = st.session_state.pop("_pending_topnav")
+
+# Stable internal keys (never translated) drive routing; format_func supplies
+# the translated label the user actually sees, so the UI language switch
+# never breaks navigation or the popup's "open Ask page" redirect.
+NAV_KEYS = ["Live", "My Area", "Ask", "Respond"]
+NAV_LABEL_KEYS = {"Live": "nav_live", "My Area": "nav_my_area",
+                  "Ask": "nav_ask", "Respond": "nav_respond"}
 page = st.radio(
-    "Navigation",
-    ["🛰️ Live", "📍 My Area", "✦ Ask", "⛑️ Respond"],
+    "Navigation", NAV_KEYS, format_func=lambda k: t(NAV_LABEL_KEYS[k]),
     horizontal=True, label_visibility="collapsed", key="topnav")
-page = page.split(" ", 1)[1]
 
 try:
     live = get_live()
@@ -2042,62 +2498,40 @@ except Exception as e:
 render_ticker(live)
 
 # -------------------------------------------------- sidebar = settings panel --
-st.sidebar.markdown('<p class="qs-set-sec">Data</p>', unsafe_allow_html=True)
-if st.sidebar.button("Refresh live feed", use_container_width=True):
+st.sidebar.markdown(f'<p class="qs-set-sec">{t("sidebar_data")}</p>', unsafe_allow_html=True)
+if st.sidebar.button(t("sidebar_refresh"), use_container_width=True):
     get_live.clear()
     st.rerun()
 
-st.sidebar.markdown('<p class="qs-set-sec">Preferences</p>',
+st.sidebar.markdown(f'<p class="qs-set-sec">{t("sidebar_prefs")}</p>',
                     unsafe_allow_html=True)
+_lang_choice = st.sidebar.selectbox(
+    t("sidebar_language"), UI_LANGUAGES,
+    index=UI_LANGUAGES.index(st.session_state.ui_language),
+    key="lang_pick",
+    help="Translates the app's own interface. Doesn't change the language "
+         "Terra writes answers in - that always matches your question.")
+if _lang_choice != st.session_state.ui_language:
+    st.session_state.ui_language = _lang_choice
+    st.query_params["lang"] = _lang_choice
+    st.rerun()
 
-# ---- suggestions / feedback -------------------------------------------------
-def _submit_feedback():
-    """Store the note and clear the form (runs before the rerun paints)."""
-    msg = (st.session_state.get("fb_form_msg") or "").strip()
-    name = (st.session_state.get("fb_form_name") or "").strip()
-    if not msg:
-        st.session_state["fb_warn"] = True
-        return
-    log_feedback(f"[suggestion] {name or 'anonymous'} -> {FEEDBACK_TO}",
-                 msg, "suggestion", "note")
-    st.session_state["fb_form_msg"] = ""
-    st.session_state["fb_form_name"] = ""
-    st.session_state["fb_warn"] = False
-    st.session_state["fb_sent"] = True
-
-
-st.sidebar.markdown('<p class="qs-set-sec">Feedback</p>',
-                    unsafe_allow_html=True)
-with st.sidebar.expander("💬 Suggestions & feedback"):
-    st.caption("Found a problem or have an idea? Tell us.")
-    st.text_input("Your name (optional)", key="fb_form_name",
-                  placeholder="Name or organisation")
-    st.text_area("Your message", key="fb_form_msg", height=100,
-                 placeholder="What could we do better?")
-    st.button("Submit", key="fb_form_send", type="primary",
-              on_click=_submit_feedback)
-    if st.session_state.pop("fb_warn", False):
-        st.warning("Please write a message first.")
-    if st.session_state.pop("fb_sent", False):
-        st.success("Thank you — we've received your feedback.")
-
-st.sidebar.caption("Earthquakes cannot be predicted. This tool supports awareness "
-                   "and decision-making, not prediction.")
+st.sidebar.caption(t("sidebar_disclaimer"))
 
 _koda_b64 = logo_b64()
 st.sidebar.markdown(f"""
 <div class="qs-sidebar-bottom">
-  <p class="qs-credit">Built with</p>
-  <p class="qs-credit-items">Google Cloud &nbsp;·&nbsp; BigQuery<br>
-  Vertex AI Gemini &nbsp;·&nbsp; Streamlit<br>
-  USGS Earthquake Hazards Program</p>
-  <img src="data:image/png;base64,{_koda_b64}" width="96">
-  <p class="qs-team">Developed by Team KODA</p>
+  <p class="qs-credit">{t("sidebar_built_with")}</p>
+  <p class="qs-credit-items">Google Cloud &nbsp;·&nbsp; BigQuery &nbsp;·&nbsp;
+  Vertex AI Gemini &nbsp;·&nbsp; Streamlit &nbsp;·&nbsp; USGS</p>
+  <img src="data:image/png;base64,{_koda_b64}" width="56">
+  <p class="qs-team">{t("sidebar_team")}</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ==================================================================== LIVE ==
 if page == "Live":
+    st.caption(t("sidebar_disclaimer"))
     if not feed_ok or live.empty:
         st.warning("No live data available right now.")
     else:
@@ -2204,7 +2638,7 @@ if page == "Live":
 
         # ---------------------------------------------- AI briefings section
         st.divider()
-        st.subheader("AI Situation Briefings")
+        st.subheader(t("live_subheader"))
         st.caption("Pick any significant event this week - Gemini writes a calm, "
                    "plain-language community briefing from the USGS data.")
         sig = significant_events(live)
@@ -2283,9 +2717,10 @@ Data: USGS (public domain) · Gemini on Vertex AI · BigQuery · Google Maps.
 
 # ================================================================= MY AREA ==
 elif page == "My Area":
-    st.subheader("My Area — community seismic risk profile")
+    st.subheader(t("myarea_subheader"))
     st.caption("Select your country and town - the agent combines your area's 50-year record "
                "with this week's live activity into a personal risk profile, in your language.")
+    st.caption(t("sidebar_disclaimer"))
 
     my_area_block(towns_db(), live)
 
@@ -2296,20 +2731,22 @@ elif page == "My Area":
 
 # ====================================================================== ASK ==
 elif page == "Ask":
-    st.subheader("✦ Ask — full answers with the evidence")
+    st.subheader(t("ask_subheader"))
     st.caption("Ask anything in any language. Historical numbers come from 50 years "
                "of USGS records — **the query and the matching rows are shown**, so "
                "every figure can be checked. This week's events come from the live "
                "feed, current news with sources cited. For quick questions about a "
                "page you're on, use the 💬 button instead.")
+    st.caption(t("sidebar_disclaimer"))
 
     chat_agent(live)
 
 # ==================================================================== RESPOND ==
 elif page == "Respond":
-    st.subheader("⛑️ Respond")
+    st.subheader(t("respond_subheader"))
     st.caption("Find nearby hospitals, fire and police, and download official "
                "safety guides for offline use.")
+    st.caption(t("sidebar_disclaimer"))
 
     # ---- Find help in the affected area --------------------------------
     st.markdown("##### Emergency resources in the affected area")
@@ -2344,9 +2781,7 @@ elif page == "Respond":
             st.info("No towns within 150 km of this epicenter - it is likely offshore "
                     "or in a remote area. Select a different event above.")
         else:
-            _towns_top = near_towns.head(15).reset_index(drop=True)
-            facilities_block(_towns_top, ev)
-            weather_block(_towns_top.iloc[0])
+            facilities_block(near_towns.head(15).reset_index(drop=True), ev)
 
     # ---- Offline library ------------------------------------------------
     st.divider()
@@ -2356,5 +2791,4 @@ elif page == "Respond":
               else "Respond page", live)
 
 st.divider()
-st.caption("Global real-time earthquake intelligence · USGS live feed & FDSN catalog · "
-           "Vertex AI Gemini · Google BigQuery")
+st.caption(t("footer"))

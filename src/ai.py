@@ -273,8 +273,13 @@ Also detect:
   Earth - e.g. "English", "Thai", "Myanmar (Burmese)", "Hindi", "Spanish",
   "Arabic", "Chinese", "French"). The answer must be in this language. The
   user may switch languages at any time mid-conversation - always follow the
-  latest question's language, never a previous one. If the question names a
-  target language ("answer in Thai", "explain in Spanish"), use that instead.
+  latest question's language, never a previous one - detect it from the
+  actual words used in THIS question, not from any earlier turn. If the
+  question names a target language ("answer in Thai", "explain in Spanish"),
+  use that instead.
+- "lang_code": the ISO 639-1 two-letter code for that same language (e.g.
+  "en", "th", "hi", "ml", "ta"). Best-effort guess is fine if a language has
+  no standard two-letter code.
 
 """ + _SCHEMA_BLOCK + """
 
@@ -285,7 +290,8 @@ Return JSON only:
 {{"route": "live" | "data" | "general" | "hybrid",
   "sql": "<the SELECT statement, or empty string when no catalog needed>",
   "fresh": true | false,
-  "language": "<language of the question>"}}
+  "language": "<language of the question>",
+  "lang_code": "<ISO 639-1 code of the question's language>"}}
 
 User question: {question}"""
 
@@ -294,7 +300,8 @@ This BigQuery SQL was executed: {sql}
 Result (as CSV, possibly truncated):
 {result}
 
-You are {bot}, QuakeSense's seismic data analyst. Respond in markdown with:
+You are {bot}, QuakeSense's seismic data analyst. This is a disaster-help
+platform - be direct and to the point. Respond in markdown with:
 1. A direct answer with the total count and NAMED specific events from the
    result: always call out the strongest (magnitude, place, date) and the most
    recent, plus any notable cluster in time. Bold the key numbers. The full
@@ -606,11 +613,23 @@ citizens, officials and journalists. If asked who you are, you are """ + BOT_NAM
 (Google's Gemini 2.5 Flash model on Vertex AI), integrated into QuakeSense by
 Team KODA.
 
-When asked about QuakeSense's features or your own capabilities, answer ONLY
-from the app facts below - they are authoritative. Never say the app "just
-shows text", never deny a feature listed there, and never speculate about
-features. If something is genuinely not in those facts, say you're not sure
-and suggest where in the app to look.
+Language ability: you are fluent in every language Gemini supports - Burmese,
+Thai, Hindi, Spanish, Arabic, Chinese, French, and hundreds more - with no
+restriction to a fixed list. You ALWAYS answer in whichever language the
+user's current message is written in (see {language} below), and switch
+immediately, mid-conversation, the instant the user switches languages -
+never stay in a previous turn's language. If asked "do you speak X" or
+"can you understand X", the answer is yes for any human language, full stop -
+never claim you only work in English or only support the small set of
+languages named in the app facts below (that list describes which languages
+the My Area / Response Toolkit page CONTENT can be generated in, a completely
+separate thing from what language you personally can converse in here).
+
+When asked about QuakeSense's FEATURES (not your own language ability),
+answer ONLY from the app facts below - they are authoritative. Never say the
+app "just shows text", never deny a feature listed there, and never
+speculate about features. If something is genuinely not in those facts, say
+you're not sure and suggest where in the app to look.
 
 """ + APP_FACTS + """
 
@@ -621,11 +640,14 @@ Question: {q}
 
 Respond entirely in {language}.
 
-Give a genuinely informative, well-organized answer in markdown: short paragraphs
-and/or a few bold-labelled points, the way a knowledgeable expert would explain it
-to an intelligent non-specialist. Cover the why/how, not just the what, with
-concrete examples where they help. Match length to the question - a definition
-deserves ~80 words, a "why/how" or current-events question 150-320. Never pad.
+This is a disaster-help platform - people may be reading this in an emergency, so
+be direct and to the point. Lead with the actionable answer first, no preamble
+("Great question", "Sure", etc.). Give a genuinely informative answer in markdown:
+short paragraphs and/or a few bold-labelled points, the way a knowledgeable expert
+would explain it to an intelligent non-specialist. Cover the why/how, not just the
+what, but never pad with filler. Match length to the question - a definition
+deserves ~50-80 words, a "why/how" or current-events question 100-220 words, and a
+safety/what-to-do-now question should be even tighter and lead with the action.
 
 Accuracy rules:
 - Never state precise historical statistics (exact counts, "the Nth strongest",
@@ -646,12 +668,12 @@ Catalog result (CSV, truncated): {result}
 
 Respond entirely in {language}.
 
-Combine the DATA with expert knowledge in markdown (150-280 words):
+This is a disaster-help platform - be direct and to the point. Combine the DATA
+with expert knowledge in markdown (120-220 words):
 1. Answer with concrete numbers from the result - bold the key figures.
-2. "**Insight:**" - one valuable observation from the data.
-3. "**Context:**" - a substantial paragraph of expert interpretation: the
-   tectonic setting, why the pattern exists, and practical guidance where
-   relevant. Explain like an expert talking to an intelligent non-specialist.
+2. "**Insight:**" - one valuable observation from the data, one sentence.
+3. "**Context:**" - a short paragraph of expert interpretation: the tectonic
+   setting, why the pattern exists, and practical guidance where relevant.
 Style: start directly with the answer - no "Based on the data" openers. Never
 mention BigQuery, SQL or databases in prose; attribute facts to "the official
 USGS earthquake record" when needed.
@@ -665,11 +687,12 @@ LIVE USGS FEED - every M2.5+ earthquake worldwide in the past 7 days
 
 Respond entirely in {language}.
 
-Answer from THIS FEED ONLY, in markdown (80-200 words): give the concrete
-numbers and name the specific events that answer the question (magnitude, place,
-time), bolding key figures. If the question is about a place with no events in
-the feed, say clearly that no M2.5+ events were recorded there in the past
-7 days - that is a meaningful, reassuring answer.
+This is a disaster-help platform - be direct and to the point. Answer from THIS
+FEED ONLY, in markdown (60-150 words): give the concrete numbers and name the
+specific events that answer the question (magnitude, place, time), bolding key
+figures. If the question is about a place with no events in the feed, say
+clearly that no M2.5+ events were recorded there in the past 7 days - that is a
+meaningful, reassuring answer.
 Attribute facts to "the live USGS feed (past 7 days)". Do not invent events.
 Never predict future earthquakes.
 End with: "Source: USGS real-time feed, updated every 5 minutes." """
@@ -689,10 +712,11 @@ def route_and_sql(question: str, history: str = "") -> dict:
         sql = re.sub(r"^```(sql)?|```$", "", sql, flags=re.MULTILINE).strip()
         return {"route": out.get("route", "general"), "sql": sql,
                 "fresh": bool(out.get("fresh")),
-                "language": out.get("language") or "English"}
+                "language": out.get("language") or "English",
+                "lang_code": (out.get("lang_code") or "en").strip().lower()[:2]}
     except Exception:
         return {"route": "general", "sql": "", "fresh": False,
-                "language": "English"}
+                "language": "English", "lang_code": "en"}
 
 
 def smart_ask(question: str, history: str = "", stream: bool = False,
@@ -702,10 +726,13 @@ def smart_ask(question: str, history: str = "", stream: bool = False,
     With stream=True the returned dict carries a "stream" generator of answer
     chunks (feed it to st.write_stream) plus a "sources" list that fills with
     web citations while the stream is consumed; otherwise "answer" holds the
-    full text. Answers match the language of the question.
+    full text. Answers match the language of the question - re-detected fresh
+    on every call, so switching languages mid-conversation is picked up
+    immediately. Every returned dict also carries "lang_code" (ISO 639-1),
+    for callers that want to narrate the answer with text-to-speech.
     """
     r = route_and_sql(question, history)
-    route, sql, lang = r["route"], r["sql"], r["language"]
+    route, sql, lang, lang_code = r["route"], r["sql"], r["language"], r["lang_code"]
 
     note = ""
     if route == "live" and live_df is not None and not live_df.empty:
@@ -716,11 +743,12 @@ def smart_ask(question: str, history: str = "", stream: bool = False,
                     "the answer service is unavailable right now.")
         if stream:
             return {"mode": "live", "sql": None, "df": None, "sources": [],
+                    "lang_code": lang_code,
                     "stream": _stream_text(prompt, 0.2, fallback)}
         resp = _client().models.generate_content(
             model=GEMINI_MODEL, contents=prompt, config=_config(temperature=0.2))
         return {"mode": "live", "sql": None, "df": None,
-                "answer": resp.text.strip()}
+                "lang_code": lang_code, "answer": resp.text.strip()}
 
     if route in ("data", "hybrid") and sql:
         try:
@@ -740,12 +768,13 @@ def smart_ask(question: str, history: str = "", stream: bool = False,
                 temp = 0.3
             if stream:
                 return {"mode": route, "sql": sql, "df": df, "sources": [],
+                        "lang_code": lang_code,
                         "stream": _stream_text(prompt, temp, fallback)}
             resp = _client().models.generate_content(
                 model=GEMINI_MODEL, contents=prompt,
                 config=_config(temperature=temp))
             return {"mode": route, "sql": sql, "df": df,
-                    "answer": resp.text.strip()}
+                    "lang_code": lang_code, "answer": resp.text.strip()}
         except Exception as e:
             note = (f"Catalog unavailable ({str(e)[:90]}) - answered from general "
                     f"knowledge instead. Check BigQuery credentials.")
@@ -756,7 +785,7 @@ def smart_ask(question: str, history: str = "", stream: bool = False,
     if stream:
         sources = []
         return {"mode": "general", "sql": None, "df": None, "note": note,
-                "sources": sources,
+                "sources": sources, "lang_code": lang_code,
                 "stream": _stream_text(prompt, 0.4,
                                        "The knowledge service is unavailable "
                                        "right now - please try again shortly.",
@@ -766,7 +795,7 @@ def smart_ask(question: str, history: str = "", stream: bool = False,
         model=GEMINI_MODEL, contents=prompt,
         config=_config(ground=ground, temperature=0.4))
     _collect_sources(resp, srcs)
-    return {"mode": "general", "sql": None, "df": None,
+    return {"mode": "general", "sql": None, "df": None, "lang_code": lang_code,
             "answer": resp.text.strip(), "note": note, "sources": srcs}
 
 
@@ -907,46 +936,130 @@ def explain_anomaly(cell: dict, events: pd.DataFrame,
 
 
 # ================================================================= voice ====
+TRANSCRIBE_PROMPT = """Transcribe exactly what the speaker says in this audio clip.
+
+Rules:
+- Output ONLY the transcript - no translation, no summary, no commentary, no
+  quotation marks, no "The speaker says" preamble.
+- Keep it in the SAME language the speaker used (do not translate to English).
+- If the clip is silent, unintelligible, or contains no speech, output exactly:
+  (no speech detected)"""
+
+
 def transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/wav") -> str:
-    """Speech-to-text via Gemini's own multimodal input (no separate Speech
-    API needed). Returns '' on any failure so callers degrade gracefully."""
+    """Speech-to-text via Gemini's native audio understanding.
+
+    Used for the Ask AI chat's microphone input - the returned text is then
+    fed into smart_ask() exactly like a typed question, so it gets the same
+    routing, SQL generation and language-matched answer. Any language works
+    here since Gemini transcribes natively, unlike browser speech recognition
+    which only reliably understands whatever language it's hard-coded to.
+    """
     try:
         from google.genai import types
         resp = _client().models.generate_content(
             model=GEMINI_MODEL,
             contents=[types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-                      "Transcribe this audio to plain text. Return ONLY the exact "
-                      "words spoken, in their original language, with no commentary."],
+                     TRANSCRIBE_PROMPT],
             config=_config(temperature=0.0))
-        return (resp.text or "").strip()
+        text = (resp.text or "").strip()
+        return "" if text == "(no speech detected)" else text
     except Exception:
         return ""
 
 
-# BCP-47 codes for the app's supported languages, for TTS voice selection
-_TTS_LANG = {
-    "english": "en-US", "myanmar": "my-MM", "burmese": "my-MM", "thai": "th-TH",
-    "hindi": "hi-IN", "bengali": "bn-IN", "telugu": "te-IN", "marathi": "mr-IN",
-    "tamil": "ta-IN", "spanish": "es-ES", "french": "fr-FR", "arabic": "ar-XA",
-    "chinese": "cmn-CN", "japanese": "ja-JP", "indonesian": "id-ID",
-}
+# In-memory cache: lang_code -> (voice_name, bcp47_language_code) so we don't
+# call list_voices() on every single answer.
+_TTS_VOICE_CACHE: dict = {}
+
+# Languages confirmed to have NO Cloud TTS voice at all, where falling back
+# to an English voice mispronounces the text so badly it's worse than no
+# audio (Burmese, confirmed by testing). Everything else still falls back
+# to English if its own language has no voice, so at least *something*
+# plays rather than staying silent - Burmese is the one specific exception,
+# not the default behavior.
+_TTS_NO_FALLBACK = {"my"}
 
 
-def synthesize_speech(text: str, language: str = "English") -> bytes:
-    """Text-to-speech via Google Cloud Text-to-Speech. Returns MP3 bytes, or
-    None if the API/library is unavailable (caller then hides the audio)."""
+def _best_tts_voice(client, lang_code: str):
+    """Pick the best available Cloud TTS voice for `lang_code`.
+
+    Preference order: Chirp3-HD > Chirp-HD > Chirp > Neural2 > Wavenet >
+    Standard (first four are Google's newest, most natural-sounding voice
+    families; not every language has them yet, hence the fallback chain).
+    `lang_code` is treated as a language_code prefix (e.g. "ml" matches
+    "ml-IN"), matching what route_and_sql() returns. Falls back to English
+    if the language has no voice of its own - UNLESS it's in
+    _TTS_NO_FALLBACK, where an English voice would mispronounce it badly
+    enough that no audio is the better outcome. Returns (None, None) if
+    even English is unavailable (e.g. the API is unreachable).
+    """
+    codes = [lang_code] if lang_code in _TTS_NO_FALLBACK else \
+        list(dict.fromkeys([lang_code, "en"]))
+    for code in codes:
+        if code in _TTS_VOICE_CACHE:
+            cached = _TTS_VOICE_CACHE[code]
+            if cached[0]:
+                return cached
+            continue
+        try:
+            voices = list(client.list_voices(language_code=code, timeout=10.0).voices)
+        except Exception:
+            voices = []
+        chosen = None
+        for pref in ("Chirp3-HD", "Chirp-HD", "Chirp", "Neural2", "Wavenet", "Standard"):
+            chosen = next((v for v in voices if pref in v.name), None)
+            if chosen:
+                break
+        if chosen is None and voices:
+            chosen = voices[0]
+        result = (chosen.name, chosen.language_codes[0]) if chosen else (None, None)
+        _TTS_VOICE_CACHE[code] = result
+        if result[0]:
+            return result
+    return (None, None)
+
+
+def text_to_speech(text: str, lang_code: str = "en") -> bytes | None:
+    """Narrate an answer with Google Cloud Text-to-Speech, returning MP3 bytes
+    (or None if narration isn't available - the caller should still show the
+    text either way).
+
+    `text` should be plain-ish prose; markdown symbols (*, #, etc.) are
+    stripped first so they aren't read aloud literally. Automatically picks
+    the best-quality voice available for `lang_code` (see _best_tts_voice),
+    falling back to English if that language has no voice at all.
+    """
+    clean = re.sub(r"(?m)^[ \t]*[-*+][ \t]+", "", text)
+    clean = re.sub(r"[*_#`>]", " ", clean)
+    clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", clean)  # markdown links -> label only
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if not clean:
+        return None
+    clean = clean[:1500]  # keep narration short - this is a to-the-point disaster tool
+
     try:
         from google.cloud import texttospeech
-        code = _TTS_LANG.get((language or "english").split()[0].lower().strip("()"),
-                             "en-US")
         client = texttospeech.TextToSpeechClient()
+        voice_name, bcp47 = _best_tts_voice(client, lang_code)
+        if not voice_name:
+            print(f"text_to_speech: no Cloud TTS voice for lang_code={lang_code!r} "
+                  f"(either that language isn't supported by Cloud TTS, or the "
+                  f"API/permissions aren't set up - check Cloud Run logs above "
+                  f"this line for a list_voices() error if it's the latter).")
+            return None
         resp = client.synthesize_speech(
-            input=texttospeech.SynthesisInput(text=text[:1800]),
+            input=texttospeech.SynthesisInput(text=clean),
             voice=texttospeech.VoiceSelectionParams(
-                language_code=code,
-                ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL),
+                language_code=bcp47, name=voice_name),
             audio_config=texttospeech.AudioConfig(
-                audio_encoding=texttospeech.AudioEncoding.MP3))
+                audio_encoding=texttospeech.AudioEncoding.MP3),
+            timeout=20.0,
+        )
         return resp.audio_content
-    except Exception:
+    except Exception as e:
+        # Printed (not raised) so a narration failure never breaks the answer
+        # itself - the text always still renders. Shows up in Cloud Run logs
+        # under the service's "Logs" tab if narration silently stops working.
+        print(f"text_to_speech failed for lang_code={lang_code!r}: {e!r}")
         return None

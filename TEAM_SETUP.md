@@ -90,7 +90,7 @@ them.
 
 | Path | What it is |
 |---|---|
-| `app.py` | The whole Streamlit UI — pages, layout, the Grab-style toolkit, news rails |
+| `app.py` | The whole Streamlit UI — pages, layout, the Respond toolkit, news rails |
 | `src/ai.py` | The AI layer: Terra (Gemini), question routing, NL→SQL, briefings, SITREP, risk profiles. **Start here for AI-workflow changes.** |
 | `src/config.py` | Project ID, region, model name, env vars |
 | `src/live_feed.py` | USGS live earthquake feed |
@@ -98,7 +98,7 @@ them.
 | `scripts/` | One-time data loaders (already run — don't need to touch) |
 | `data/` | Bundled data: towns, baseline, plate boundaries |
 | `assets/` | Logos and the Terra avatar |
-| `.streamlit/config.toml` | Theme |
+| `.streamlit/config.toml` | Fixed dark color theme, tuned for low-light readability |
 
 Every AI function in `src/ai.py` follows one pattern: **try the model, fall back
 to a deterministic result on failure**, so the app never crashes. Keep that
@@ -119,16 +119,23 @@ pattern for anything new.
 
 ---
 
-## Voice feature (Text-to-Speech) — extra notes
+## Voice feature (Text-to-Speech) — how it works
 
-If you're building the voice feature:
+Voice is built and live on ✦ Ask: the mic records a question in any language,
+Gemini transcribes it natively (no separate speech API), and the reply is
+read back with Cloud Text-to-Speech in the best available voice for that
+language (`_best_tts_voice` / `text_to_speech` in `src/ai.py`).
 
-- You have the **Service Usage Consumer** role and the **Cloud Text-to-Speech
-  API** is enabled — so you can call it with your normal login, no extra keys.
-- Add `google-cloud-texttospeech` to `requirements.txt`.
-- Use it via ADC: `from google.cloud import texttospeech`.
-- Follow the fallback pattern in `src/ai.py` — if TTS fails, the app should keep
-  working silently, never error out.
+- Uses the **Service Usage Consumer** role and the **Cloud Text-to-Speech
+  API**, both already enabled on the project — calls it with your normal
+  login, no extra keys needed.
+- Burmese is a deliberate exception: Cloud TTS has no Burmese voice at all,
+  so rather than mispronounce it with an English voice, narration is skipped
+  for that language specifically (`_TTS_NO_FALLBACK` in `src/ai.py`) - the
+  text answer still shows normally.
+- Follows the same fallback pattern as the rest of `src/ai.py` - if TTS
+  fails, the app keeps working silently (text answer unaffected), and the
+  reason gets printed to server logs rather than raised.
 
 ---
 
@@ -139,6 +146,8 @@ If you're building the voice feature:
 | `Your default credentials were not found` | Run `gcloud auth application-default login` (Part B, step 3) |
 | `403 ... permission denied` on BigQuery | Your IAM roles may not be active yet — confirm with Ethan |
 | `Google Places unavailable` in Response Toolkit | Maps key not set or API not enabled — optional, app still works |
+| `Google Places unavailable (400: API key not valid)` | Real key wasn't actually passed - check `GOOGLE_MAPS_API_KEY` isn't still the placeholder text from a copy-pasted deploy command |
+| Voice replies aren't read aloud (text still works) | Check the Cloud Text-to-Speech API is enabled and the deployed service account has permission to call it - the real reason is printed to Cloud Run logs |
 | Historical layer / risk profile fails locally | Almost always missing auth — re-run step 3 |
 | Port 8501 already in use | `streamlit run app.py --server.port 8502` |
 

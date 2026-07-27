@@ -6,61 +6,58 @@ GitHub: https://github.com/EthannMK/quakesense
 ## Before you hit record
 
 - Close other tabs/notifications. Full-screen the browser.
-- Preload the app once so the first real quake data is already warm (avoids a slow first load on camera).
-- Pick one significant event in Live Monitor ahead of time (M5.5+, on land) — you'll reuse it in the Ask the Data and Response Toolkit sections, so continuity reads well.
-- Know your Burmese/Hindi toggle location in My Area before recording — don't hunt for it live.
+- Preload the app once so live data is already warm (avoids a slow first load on camera).
+- Pick one significant event on Live ahead of time (M5.5+, on land) — reuse it on Ask and Respond so the demo feels continuous.
+- Know your interface-language click path (sidebar → Preferences → Language) before recording — don't hunt for it live.
+- Have one earthquake question typed and ready to paste into Ask, so you're not typing live.
 - Use Win+G (Windows) or QuickTime (Mac) to screen record. Do one silent dry run first.
 
 ## Full script — narrate this while you click
 
 ### 0:00–0:15 — Hook (15s)
-**Say:** "In March 2025, a magnitude 7.7 earthquake hit Mandalay, Myanmar. Millions of people went online searching for answers — and found raw numbers. No context, no guidance, nothing in their own language. QuakeSense turns that raw seismic data into decisions people can actually act on."
-**Show:** App already open on Live Monitor, world map visible.
+**Say:** "In March 2025, a magnitude 7.7 earthquake hit Mandalay, Myanmar. Millions of people went online searching for answers and found raw numbers — no context, no guidance, nothing in their own language. QuakeSense turns that raw seismic data into decisions people can actually act on."
+**Show:** App already open on 🛰️ Live, world map visible.
 
-### 0:15–0:45 — Live Monitor (30s)
-**Say:** "This is Live Monitor — every earthquake from the last 7 days, worldwide, pulled straight from USGS. Magnitude sizes the dot, older events fade out, and tectonic plate boundaries are overlaid so you can see *why* a region is active."
-**Do:** Click the M6+ filter. Point at tsunami auto-flagging if a flagged event is visible.
-**Say:** "For any significant event, one click generates an AI community briefing — plain language, matched to real severity, not hype."
-**Do:** Click your preselected event → Generate briefing → let it render, read one line aloud.
+### 0:15–0:50 — Live (35s)
+**Say:** "This is Live — every earthquake from the past 7 days worldwide, straight from USGS. Magnitude sizes the dot, and for any significant event, one click generates a plain-language AI briefing."
+**Do:** Click your preselected event → Generate community briefing → read one line aloud.
+**Say:** "Below that, Aftershock Outlook shows the official USGS forecast where one exists, plus aftershocks already recorded nearby — it never invents a probability. And this panel flags when a region's activity is way above its own 50-year average, so a swarm or sequence doesn't go unnoticed."
+**Do:** Expand the aftershock outlook briefly.
 
-### 0:45–1:15 — My Area, multilingual moment (30s)
-**Say:** "Ask the Data starts with My Area — pick any country and town in the world from verified dropdowns, and get a risk profile built from that area's actual 50-year record."
+### 0:50–1:15 — My Area (25s)
+**Say:** "My Area builds a risk profile for any town on Earth, from what's actually happened within 300 km since 1975."
 **Do:** Select a town (e.g. Chiang Mai or Bangkok). Show the scorecards and chart appear.
-**Say:** "And this works in 8 languages — including Burmese and Hindi, for the communities who need it most."
-**Do:** Switch language to Burmese, regenerate — this is your best visual "wow" moment, let it sit on screen for 2–3 seconds.
+**Say:** "And it's not just the answers — the whole interface translates into 10 languages, picked for the countries with the heaviest earthquake exposure."
+**Do:** Switch interface language in the sidebar, let the nav labels change on screen for 2 seconds.
 
-### 1:15–2:00 — The agent: verified vs. hallucinated (45s) — the money shot
-**Say:** "Below that is the real differentiator: an AI agent that answers any earthquake question — but never guesses."
-**Do:** Type: *"How many M6+ earthquakes hit Myanmar since 1990?"* → submit.
-**Say:** "It converts that into real SQL, runs it against 86,000 verified USGS records in BigQuery, and shows you both the query and the actual rows."
-**Do:** Expand "Show the SQL" panel, scroll the returned rows briefly.
-**Say:** "We asked a plain chatbot the same question once — it invented an earthquake that never happened. Ours can't do that. Every number here is checkable against usgs.gov."
+### 1:15–2:00 — Ask (45s) — the money shot
+**Say:** "This is the real differentiator: an agent that answers any earthquake question but never guesses."
+**Do:** Paste your preselected question (e.g. "How many M6+ earthquakes hit Myanmar since 1990?") → submit.
+**Say:** "It converts that into real SQL, runs it against 86,000 verified USGS records in BigQuery, and shows you both the query and the actual rows — every number here is checkable."
+**Do:** Expand the SQL panel briefly.
+**Say:** "You can also just ask it out loud."
+**Do:** Click the mic, ask a short question by voice, let the spoken reply play for 2–3 seconds.
 
-### 2:00–2:30 — Anomaly Watch (30s)
-**Say:** "Anomaly Watch compares this week's activity in every region against that region's own 50-year average — and flags what's statistically unusual."
-**Do:** Open a flagged region (e.g. the 221x-normal one), click Generate AI analysis.
-**Say:** "The AI explains the pattern, gives historical context, and offers calm, practical advice for nearby communities — it never predicts what happens next, because earthquakes can't be predicted. We say that on every page."
+### 2:00–2:35 — Respond (35s)
+**Say:** "Respond is for the hours right after — find the nearest hospitals, fire stations and police from your GPS or any address you type, with a route and arrival time."
+**Do:** Show the facility cards and the route map briefly.
+**Say:** "It also pulls the weather for that exact spot, because rain after a quake means landslide risk and changes what shelter looks like."
+**Do:** Point at the weather advisory box.
 
-### 2:30–2:50 — Response Toolkit (20s)
-**Say:** "For the people actually responding, there's the Response Toolkit."
-**Do:** Navigate to Response Toolkit, select your same preselected event.
-**Say:** "One click generates a formal situation report in the format emergency operations centers use, do's-and-don'ts safety guidance in 8 languages, and the nearest hospitals, fire stations, and verified hotlines — located from the event's real coordinates, not guesswork."
-**Do:** Briefly show the SITREP card and the facilities table.
-
-### 2:50–3:00 — Close (10s)
-**Say:** "USGS data, BigQuery, and Gemini — turned into decisions, in the languages people actually speak. QuakeSense is live now at this URL. Thank you."
-**Do:** Cut to the architecture slide or just hold on the live URL in the browser bar.
+### 2:35–2:50 — Close (15s)
+**Say:** "Real USGS data, BigQuery, and Gemini, turned into decisions people can act on, in the language they actually speak. QuakeSense is live now — thank you."
+**Do:** Cut to the architecture slide, or hold on the live URL in the browser bar.
 
 ## Don't forget to mention, somewhere in the 3 minutes
 
 - **Real data only** — 86,000 real USGS events, zero synthetic records.
 - **Never predicts** — awareness and preparedness, not forecasting (say this explicitly at least once).
 - **Verifiable** — SQL and rows shown, not just an AI's word.
-- **8 languages** — accessibility for the communities actually affected.
+- **10 languages** — accessibility for the communities actually affected.
 - **Deployed, not a mockup** — the live Cloud Run URL is the real thing judges can click themselves.
 
 ## If you're short on time, cut here first
 
-1. Shorten the Anomaly Watch section to 15s (skip reading the AI analysis aloud, just show it appears).
-2. Drop the Burmese language switch to a quick 2-second flash rather than waiting for full regeneration.
-3. Never cut the 1:15–2:00 agent section — it's your strongest differentiator and most memorable moment for judges.
+1. Shorten the My Area language switch to a 1-second flash rather than waiting for full regeneration.
+2. Drop the voice demo to a single short question, or skip playback and just show the mic recording.
+3. Never cut the 1:15–2:00 Ask section — it's your strongest differentiator and most memorable moment for judges.
