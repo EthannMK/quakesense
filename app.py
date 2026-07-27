@@ -1692,6 +1692,30 @@ def usgs_event_cards(live_df, n: int = 8):
     return out
 
 
+def media_search_fallback_cards(live_df, n: int = 6):
+    """Search-link cards for when live headlines can't be fetched (Google
+    News RSS runs server-side from Cloud Run, whose egress IPs get
+    rate-limited by news aggregators far more than a regular visitor's
+    browser does - this happens more often than it should).
+
+    Deliberately NOT the same content as Official Updates below (that used
+    to be the fallback here, and looked like a bug when both rails showed
+    identical USGS cards) - these link out to a live news search per event
+    instead, so the rail is never just stuck on "unavailable" for a long
+    time, but also never silently duplicates the other rail."""
+    if live_df is None or live_df.empty:
+        return []
+    from urllib.parse import quote as _urlquote
+    out = []
+    for r in significant_events(live_df, n).itertuples():
+        q = _urlquote(f"M{r.mag:.1f} earthquake {r.place}")
+        out.append({"title": f"Search coverage: M{r.mag:.1f} — {r.place}",
+                    "url": f"https://news.google.com/search?q={q}",
+                    "img": "", "mono": "🔎",
+                    "source": "Search the news", "ago": ""})
+    return out
+
+
 @st.fragment(run_every=60)
 def media_section(live_df):
     """Two card rails. (1) World media: photos fetched by the visitor's own
@@ -1702,12 +1726,12 @@ def media_section(live_df):
     news_cards = [{"title": h["title"], "url": h["link"], "img": "",
                    "source": h["source"], "ago": h["ago"]}
                   for h in feeds["headlines"]]
-    # Deliberately no USGS fallback here if the RSS fetch fails - that used
-    # to silently reuse the same cards as Official Updates below, making the
-    # two rails look identical whenever the news feed had a hiccup (looked
-    # like a bug, not a fallback). Passing an empty list instead lets the
-    # component's own client-side GDELT fetch try next; if that also comes
-    # up empty, it shows an honest "headlines unavailable" message.
+    if not news_cards:
+        # Search-link cards, NOT the same USGS event cards as Official
+        # Updates below (that duplication looked like a bug). The
+        # component's own client-side GDELT fetch still runs after this and
+        # replaces these with real headlines if it succeeds.
+        news_cards = media_search_fallback_cards(live_df)
     news_rail_component(news_cards)
 
     official = usgs_event_cards(live_df)
