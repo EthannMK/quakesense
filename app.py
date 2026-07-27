@@ -225,18 +225,29 @@ h1, h2, h3 {font-weight: 600; letter-spacing: -0.01em;}
 .block-container h3 {font-size: 1.08rem;}
 [data-testid="stCaptionContainer"], .stCaption {line-height: 1.45;}
 
-/* Controls: uniform radius, weight, focus - and follow the theme instead of
-   Streamlit's own static secondaryBackgroundColor from config.toml */
+/* Controls: uniform radius, weight, focus - every clickable button filled
+   with the same accent orange as the floating chat launcher, instead of
+   Streamlit's own static secondaryBackgroundColor from config.toml (which
+   is where the inconsistent "some buttons show black" came from - not
+   every native button type was covered by the old override, so whichever
+   ones weren't kept Streamlit's default dark styling instead). */
 .stButton button, [data-testid="stBaseButton-secondary"],
-[data-testid="stBaseButton-secondary"], a[data-testid="stBaseLinkButton-secondary"] {
-  border-radius: 8px; font-weight: 600;
-  background-color: var(--qs-panel) !important;
-  color: var(--qs-text) !important;
-  border-color: var(--qs-border) !important;
+[data-testid="stBaseButton-primary"], [data-testid="stBaseButton-primaryFormSubmit"],
+[data-testid="stBaseButton-secondaryFormSubmit"],
+a[data-testid="stBaseLinkButton-secondary"], a[data-testid="stBaseLinkButton-primary"],
+[data-testid="stDownloadButton"] button, [data-testid="stFormSubmitButton"] button {
+  border-radius: 8px; font-weight: 700;
+  background-color: var(--qs-accent) !important;
+  color: var(--qs-bg2) !important;
+  border-color: var(--qs-accent) !important;
 }
 .stButton button:hover, [data-testid="stBaseButton-secondary"]:hover,
-a[data-testid="stBaseLinkButton-secondary"]:hover {
-  border-color: var(--qs-accent) !important; color: var(--qs-accent) !important;
+[data-testid="stBaseButton-primary"]:hover, [data-testid="stBaseButton-primaryFormSubmit"]:hover,
+[data-testid="stBaseButton-secondaryFormSubmit"]:hover,
+a[data-testid="stBaseLinkButton-secondary"]:hover, a[data-testid="stBaseLinkButton-primary"]:hover,
+[data-testid="stDownloadButton"] button:hover, [data-testid="stFormSubmitButton"] button:hover {
+  background-color: var(--qs-accent-light) !important;
+  border-color: var(--qs-accent-light) !important;
 }
 [data-testid="stButtonGroup"] button {border-radius: 999px; font-weight: 600;}
 hr {margin: 1.1rem 0 0.9rem 0;}
@@ -404,14 +415,14 @@ section[data-testid="stSidebar"] .stButton button {
   box-shadow: 0 0 0 2px rgba(224, 136, 80, 0.18) !important;
 }
 
-/* Messenger panel send button: light blue, filled on hover */
+/* Messenger panel send button - same accent orange as every other button */
 div[data-testid="stPopoverBody"] [data-testid="stBaseButton-secondaryFormSubmit"] {
-  color: var(--qs-blue) !important; border-color: var(--qs-border3) !important;
+  background: var(--qs-accent) !important; color: var(--qs-bg2) !important;
+  border-color: var(--qs-accent) !important;
   border-radius: 10px; font-weight: 700; font-size: 1.05rem;
 }
 div[data-testid="stPopoverBody"] [data-testid="stBaseButton-secondaryFormSubmit"]:hover {
-  background: var(--qs-blue) !important; color: var(--qs-bg2) !important;
-  border-color: var(--qs-blue) !important;
+  background: var(--qs-accent-light) !important; border-color: var(--qs-accent-light) !important;
 }
 /* ================================================== */
 
